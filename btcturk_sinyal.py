@@ -107,7 +107,9 @@ def haber_puani(symbol):
 
     puan = 0
     haberler = []
-
+    
+    negatif_haber = False
+    
     for kaynak in RSS_KAYNAKLARI:
         try:
             feed = feedparser.parse(kaynak)
@@ -120,8 +122,6 @@ def haber_puani(symbol):
 
                     haber_turkce = cevir_tr(item.title)
                     haberler.append(haber_turkce)
-
-                    negatif_haber = False
 
                     for kelime in POZITIF:
                         if kelime in baslik:
