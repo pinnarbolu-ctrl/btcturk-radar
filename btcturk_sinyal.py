@@ -257,7 +257,7 @@ while True:
                 # =========================
 
                 if haber_skoru > 0 and genel_skor >= 6 and hacim_kat >= 1.8:
-                    durum = "🚀 HABER + HACİM ADAYI"
+                    durum = "🚀 ROKET ADAYI"
 
                 elif genel_skor >= 8 and hacim_kat >= 2.2 and btcden_guclu:
                     durum = "🔥 GÜÇLÜ ADAY"
