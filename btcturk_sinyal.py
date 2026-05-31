@@ -19,6 +19,8 @@ TARAMA_SURESI = 5 * 60
 
 gonderilenler = {}
 
+son_durumlar = {}
+
 RSS_KAYNAKLARI = [
     "https://cointelegraph.com/rss",
     "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml"
@@ -274,11 +276,14 @@ while True:
 
                 simdi = time.time()
 
-                if symbol in gonderilenler:
-                    if simdi - gonderilenler[symbol] < TEKRAR_SURESI:
-                        continue
+                if symbol in son_durumlar:
+                    if son_durumlar[symbol] == durum:
+                        if symbol in gonderilenler:
+                            if simdi - gonderilenler[symbol] < TEKRAR_SURESI:
+                                continue
 
                 gonderilenler[symbol] = simdi
+                son_durumlar[symbol] = durum
 
                 stop = fiyat * 0.985
                 hedef1 = fiyat * 1.03
