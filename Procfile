@@ -1,0 +1,1 @@
+worker: python btcturk_sinyal.py
