@@ -25,14 +25,23 @@ RSS_KAYNAKLARI = [
 ]
 
 POZITIF = [
-    "listing", "listed", "binance", "coinbase", "partnership",
-    "etf", "airdrop", "burn", "launch", "mainnet", "upgrade",
-    "integration", "support", "investment", "funding", "adoption"
+    "listing", "listed", "binance", "coinbase",
+    "partnership", "etf", "airdrop", "burn",
+    "launch", "mainnet", "upgrade",
+    "integration", "support", "investment",
+    "funding", "approval", "adoption",
+    "bullish", "surge", "rally"
 ]
 
+
 NEGATIF = [
-    "hack", "exploit", "lawsuit", "delist", "sec", "attack",
-    "scam", "fraud", "investigation"
+    "hack", "exploit", "lawsuit", "delist",
+    "sec", "attack", "scam", "fraud",
+    "investigation", "outage", "halted",
+    "stopped", "shutdown", "pressure",
+    "bearish", "loss", "dump",
+    "decline", "crash", "selloff",
+    "down", "weakness"
 ]
 
 # =========================
@@ -112,18 +121,24 @@ def haber_puani(symbol):
                     haber_turkce = cevir_tr(item.title)
                     haberler.append(haber_turkce)
 
+                    negatif_haber = False
+
                     for kelime in POZITIF:
                         if kelime in baslik:
                             puan += 5
 
                     for kelime in NEGATIF:
-                        if kelime in baslik:
-                            puan -= 10
-
+                         if kelime in baslik:
+                             puan -= 15
+                             negatif_haber = True
+ 
         except:
             pass
 
     puan = max(min(puan, 20), 0)
+    
+    if negatif_haber and puan < 10:
+        puan = 0
 
     return puan, haberler[:2]
 
@@ -245,7 +260,7 @@ while True:
                     durum = "🚀 HABER + HACİM ADAYI"
 
                 elif genel_skor >= 8 and hacim_kat >= 2.2 and btcden_guclu:
-                    durum = "🔥 GÜÇLÜ TEKNİK ADAY"
+                    durum = "🔥 GÜÇLÜ ADAY"
 
                 elif genel_skor >= 6.5 and hacim_kat >= 2.5 and degisim3 > 0.5:
                     durum = "📈 İZLEME ADAYI"
