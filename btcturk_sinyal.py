@@ -27,14 +27,13 @@ RSS_KAYNAKLARI = [
 POZITIF = [
     "listing", "listed", "binance", "coinbase", "partnership",
     "etf", "airdrop", "burn", "launch", "mainnet", "upgrade",
-    "integration", "support", "investment", "funding"
+    "integration", "support", "investment", "funding", "adoption"
 ]
 
 NEGATIF = [
     "hack", "exploit", "lawsuit", "delist", "sec", "attack",
     "scam", "fraud", "investigation"
 ]
-
 
 # =========================
 # TELEGRAM
@@ -47,17 +46,12 @@ def telegram_gonder(mesaj):
         try:
             r = requests.get(
                 url,
-                params={
-                    "chat_id": chat_id,
-                    "text": mesaj
-                },
+                params={"chat_id": chat_id, "text": mesaj},
                 timeout=10
             )
             print(chat_id, r.text)
-
         except Exception as e:
             print(chat_id, e)
-
 
 # =========================
 # ÇEVİRİ
@@ -65,16 +59,12 @@ def telegram_gonder(mesaj):
 
 def cevir_tr(metin):
     try:
-        return GoogleTranslator(
-            source="auto",
-            target="tr"
-        ).translate(metin)
+        return GoogleTranslator(source="auto", target="tr").translate(metin)
     except:
         return metin
 
-
 # =========================
-# BTCTURK VERİ
+# VERİ ÇEKME
 # =========================
 
 def veri_getir(symbol, saat=24):
@@ -82,11 +72,10 @@ def veri_getir(symbol, saat=24):
 
     url = (
         f"https://graph-api.btcturk.com/v1/klines/history?"
-        f"symbol={symbol}&resolution=60&from={simdi-(saat*3600)}&to={simdi}"
+        f"symbol={symbol}&resolution=60&from={simdi - (saat * 3600)}&to={simdi}"
     )
 
     return requests.get(url, timeout=10).json()
-
 
 def btc_gucu():
     try:
@@ -97,10 +86,8 @@ def btc_gucu():
             return 0
 
         return ((c[-1] - c[-4]) / c[-4]) * 100
-
     except:
         return 0
-
 
 # =========================
 # HABER PUANI
@@ -120,7 +107,7 @@ def haber_puani(symbol):
                 baslik = item.title.lower()
 
                 if coin in baslik:
-                    puan += 5
+                    puan += 8
 
                     haber_turkce = cevir_tr(item.title)
                     haberler.append(haber_turkce)
@@ -136,8 +123,9 @@ def haber_puani(symbol):
         except:
             pass
 
-    return puan, haberler[:2]
+    puan = max(min(puan, 20), 0)
 
+    return puan, haberler[:2]
 
 # =========================
 # ANA BOT
@@ -160,6 +148,7 @@ while True:
         adaylar = []
 
         for coin in ticker:
+
             try:
                 symbol = coin["pair"]
 
@@ -194,7 +183,6 @@ while True:
                 hacim_kat = son_hacim / ort_hacim
 
                 btcden_guclu = degisim3 > btc
-                coktan_ucmamis = degisim24 < 8
                 son_mum_yesil = c[-1] > o[-1]
                 zirve_yakin = fiyat > max(h[-12:-1]) * 0.995
 
@@ -204,7 +192,6 @@ while True:
                 )
 
                 haber_skoru, haberler = haber_puani(symbol)
-                haber_skoru = max(min(haber_skoru, 20), 0)
 
                 # =========================
                 # SKOR HESABI
@@ -213,63 +200,61 @@ while True:
                 hacim_skoru = min(hacim_kat * 2, 10)
                 momentum_skoru = max(0, degisim3 * 2)
                 btc_skoru = 3 if btcden_guclu else 0
-                ucma_skoru = 2 if coktan_ucmamis else -5
                 mum_skoru = 1 if son_mum_yesil else 0
                 zirve_skoru = 1 if zirve_yakin else 0
 
                 genel_skor = (
-                    hacim_skoru * 0.35
+                    hacim_skoru * 0.40
                     + momentum_skoru * 0.30
                     + btc_skoru * 0.15
-                    + haber_skoru * 0.20
-                    + ucma_skoru
+                    + haber_skoru * 0.15
                     + mum_skoru
                     + zirve_skoru
                 )
 
                 # =========================
-                # PUMP / ZİRVE CEZALARI
+                # RİSK CEZALARI
                 # =========================
 
-                if degisim3 > 6:
+                if degisim24 > 10:
                     genel_skor -= 4
 
-                if degisim1 > 3:
+                if degisim3 > 7:
                     genel_skor -= 4
 
-                if degisim24 > 8:
-                    genel_skor -= 3
+                if degisim1 > 4:
+                    genel_skor -= 4
 
-                if degisim24 > 0 and degisim3 > degisim24 * 0.8:
-                    genel_skor -= 3
+                if degisim24 > 0 and degisim3 > degisim24 * 0.85:
+                    genel_skor -= 2
 
-                if degisim3 > 0 and degisim1 > degisim3 * 0.5:
+                if degisim3 > 0 and degisim1 > degisim3 * 0.65:
                     genel_skor -= 2
 
                 if hacim_kat > 7 and degisim3 > 6:
-                    genel_skor -= 2
+                    genel_skor -= 3
 
                 if satis_baskisi:
                     genel_skor -= 5
 
                 # =========================
-                # ADAY TİPİ - SON KARAR
+                # ADAY SEÇİMİ
                 # =========================
 
-                if haber_skoru > 0 and genel_skor >= 8 and hacim_kat >= 3:
-                    durum = "🚀 ÇOK GÜÇLÜ ADAY"
+                if haber_skoru > 0 and genel_skor >= 6 and hacim_kat >= 1.8:
+                    durum = "🚀 HABER + HACİM ADAYI"
 
-                elif genel_skor >= 11 and hacim_kat >= 4:
-                    durum = "🔥 GÜÇLÜ ADAY"
+                elif genel_skor >= 8 and hacim_kat >= 2.2 and btcden_guclu:
+                    durum = "🔥 GÜÇLÜ TEKNİK ADAY"
 
-                elif genel_skor >= 7.5 and hacim_kat >= 2.7:
-                    durum = "📈 TEKNİK ADAY"
+                elif genel_skor >= 6.5 and hacim_kat >= 2.5 and degisim3 > 0.5:
+                    durum = "📈 İZLEME ADAYI"
 
                 else:
                     continue
 
                 # =========================
-                # TEKRAR GÖNDERME KONTROLÜ
+                # TEKRAR KONTROLÜ
                 # =========================
 
                 simdi = time.time()
