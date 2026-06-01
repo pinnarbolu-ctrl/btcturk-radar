@@ -258,13 +258,16 @@ while True:
                 # ADAY SEÇİMİ
                 # =========================
 
-                if haber_skoru > 0 and genel_skor >= 6 and hacim_kat >= 1.8:
+                if haber_skoru >= 15 and genel_skor >= 18:
+                    durum = "💎 SÜPER ROKET"
+
+                elif haber_skoru > 0 and genel_skor >= 13 and hacim_kat >= 1.8:
                     durum = "🚀 ROKET ADAYI"
-
-                elif genel_skor >= 8 and hacim_kat >= 2.2 and btcden_guclu:
+                
+                elif genel_skor >= 10 and hacim_kat >= 2.2 and btcden_guclu:
                     durum = "🔥 GÜÇLÜ ADAY"
-
-                elif genel_skor >= 6.5 and hacim_kat >= 2.5 and degisim3 > 0.5:
+                    
+                elif genel_skor >= 7.5 and hacim_kat >= 3 and degisim3 > 1:
                     durum = "📈 İZLEME ADAYI"
 
                 else:
