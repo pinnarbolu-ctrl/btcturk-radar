@@ -340,11 +340,6 @@ while True:
                     f"Hedef 2: {round(a['hedef2'], 4)}\n"
                 )
 
-                if len(a["haberler"]) > 0:
-                    satir += "Türkçe Haber:\n"
-                    for hbr in a["haberler"]:
-                        satir += f"- {hbr}\n"
-
                 satir += "\n"
 
                 print(satir)
