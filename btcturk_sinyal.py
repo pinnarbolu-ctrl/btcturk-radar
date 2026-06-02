@@ -7,7 +7,7 @@ from deep_translator import GoogleTranslator
 # AYARLAR
 # =========================
 
-BOT_TOKEN = "8553499613:AAFCVhTwsMlbbjvSovJytNm1mCLJGZQkW-U"
+BOT_TOKEN = "8553499613:AAEBGkSA5lEePscTF5ruwlxPrPedamAFVrA"
 
 CHAT_IDS = [
     2097448038,
