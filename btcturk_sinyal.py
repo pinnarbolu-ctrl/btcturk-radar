@@ -364,8 +364,33 @@ while True:
                 durum = a["durum"]
 
                 eski_durum = son_durumlar.get(symbol)
-                durum_degisti = eski_durum is not None and eski_durum != durum
+                
+                durum_seviyesi = {
+                    "📈 İZLEME ADAYI": 1,
+                    "🔥 GÜÇLÜ ADAY": 2,
+                    "🚀 ROKET ADAYI": 3,
+                    "💎 SÜPER ROKET": 4
+                } 
 
+                if (
+                    eski_durum is not None
+                    and eski_durum in durum_seviyesi
+                    and durum in durum_seviyesi
+                    and durum_seviyesi[durum] > durum_seviyesi[eski_durum]
+                ):
+    
+                    mesaj_yukselis = (
+                        f"⬆️ DURUM YÜKSELDİ\n\n"
+                        f"{symbol}\n\n"
+                        f"{eski_durum}\n"
+                        f"⬆️\n"
+                        f"{durum}\n\n"
+                        f"Skor: {round(a['skor'], 2)}"
+               ) 
+
+               telegram_gonder(mesaj_yukselis)
+               print(mesaj_yukselis)
+ 
                 if eski_durum == durum:
                     if symbol in gonderilenler:
                         if simdi - gonderilenler[symbol] < TEKRAR_SURESI:
