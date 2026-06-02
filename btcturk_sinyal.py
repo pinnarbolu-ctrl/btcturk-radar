@@ -152,7 +152,7 @@ while True:
 
     try:
         print()
-        print("AKILLI PARA + TÜRKÇE HABER RADARI")
+        print("AKILLI PARA RADARI")
         print("--------------------------------")
 
         btc = btc_gucu()
@@ -321,7 +321,7 @@ while True:
             adaylar = sorted(adaylar, key=lambda x: x["skor"], reverse=True)
 
             mesaj = (
-                f"🚀 AKILLI PARA + TÜRKÇE HABER RADARI\n"
+                f"🚀 AKILLI PARA RADARI\n"
                 f"BTC 3s: %{round(btc, 2)}\n\n"
             )
 
