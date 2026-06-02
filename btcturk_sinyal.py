@@ -379,17 +379,17 @@ while True:
                     and durum_seviyesi[durum] > durum_seviyesi[eski_durum]
                 ):
     
-                    mesaj_yukselis = (
+                    	mesaj_yukselis = (
                         f"⬆️ DURUM YÜKSELDİ\n\n"
                         f"{symbol}\n\n"
                         f"{eski_durum}\n"
                         f"⬆️\n"
                         f"{durum}\n\n"
                         f"Skor: {round(a['skor'], 2)}"
-               ) 
+                    ) 
 
-               telegram_gonder(mesaj_yukselis)
-               print(mesaj_yukselis)
+                    	telegram_gonder(mesaj_yukselis)
+                    	print(mesaj_yukselis)
  
                 if eski_durum == durum:
                     if symbol in gonderilenler:
