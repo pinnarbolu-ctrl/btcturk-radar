@@ -1,13 +1,10 @@
+
 import requests
 import time
 import feedparser
 from deep_translator import GoogleTranslator
 
-# =========================
-# AYARLAR
-# =========================
-
-BOT_TOKEN = "8553499613:AAEBGkSA5lEePscTF5ruwlxPrPedamAFVrA"
+BOT_TOKEN = "8553499613:AAHkPbN5W4MS3NlwtN0HRH7PyFt_aXLiChQ"
 
 CHAT_IDS = [
     2097448038,
@@ -18,8 +15,8 @@ TEKRAR_SURESI = 3 * 60 * 60
 TARAMA_SURESI = 5 * 60
 
 gonderilenler = {}
-
 son_durumlar = {}
+aktif_sinyaller = {}
 
 RSS_KAYNAKLARI = [
     "https://cointelegraph.com/rss",
@@ -35,7 +32,6 @@ POZITIF = [
     "bullish", "surge", "rally"
 ]
 
-
 NEGATIF = [
     "hack", "exploit", "lawsuit", "delist",
     "sec", "attack", "scam", "fraud",
@@ -45,10 +41,6 @@ NEGATIF = [
     "decline", "crash", "selloff",
     "down", "weakness"
 ]
-
-# =========================
-# TELEGRAM
-# =========================
 
 def telegram_gonder(mesaj):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -64,19 +56,11 @@ def telegram_gonder(mesaj):
         except Exception as e:
             print(chat_id, e)
 
-# =========================
-# ÇEVİRİ
-# =========================
-
 def cevir_tr(metin):
     try:
         return GoogleTranslator(source="auto", target="tr").translate(metin)
     except:
         return metin
-
-# =========================
-# VERİ ÇEKME
-# =========================
 
 def veri_getir(symbol, saat=24):
     simdi = int(time.time())
@@ -87,6 +71,18 @@ def veri_getir(symbol, saat=24):
     )
 
     return requests.get(url, timeout=10).json()
+
+def anlik_fiyat(symbol):
+    try:
+        d = veri_getir(symbol, 1)
+        c = d["c"]
+
+        if len(c) == 0:
+            return None
+
+        return c[-1]
+    except:
+        return None
 
 def btc_gucu():
     try:
@@ -100,18 +96,23 @@ def btc_gucu():
     except:
         return 0
 
-# =========================
-# HABER PUANI
-# =========================
+def sure_yaz(saniye):
+    dakika = int(saniye // 60)
+    saat = dakika // 60
+    kalan_dakika = dakika % 60
+
+    if saat > 0:
+        return f"{saat} saat {kalan_dakika} dk"
+
+    return f"{dakika} dk"
 
 def haber_puani(symbol):
     coin = symbol.replace("TRY", "").lower()
 
     puan = 0
     haberler = []
-    
     negatif_haber = False
-    
+
     for kaynak in RSS_KAYNAKLARI:
         try:
             feed = feedparser.parse(kaynak)
@@ -121,34 +122,88 @@ def haber_puani(symbol):
 
                 if coin in baslik:
                     puan += 8
-
-                    haber_turkce = cevir_tr(item.title)
-                    haberler.append(haber_turkce)
+                    haberler.append(cevir_tr(item.title))
 
                     for kelime in POZITIF:
                         if kelime in baslik:
                             puan += 5
 
                     for kelime in NEGATIF:
-                         if kelime in baslik:
-                             puan -= 15
-                             negatif_haber = True
- 
+                        if kelime in baslik:
+                            puan -= 15
+                            negatif_haber = True
+
         except:
             pass
 
     puan = max(min(puan, 20), 0)
-    
+
     if negatif_haber and puan < 10:
         puan = 0
 
     return puan, haberler[:2]
 
-# =========================
-# ANA BOT
-# =========================
+def hedef_stop_kontrol():
+    kapanacaklar = []
 
-onceki_durumlar = {}
+    for symbol, s in list(aktif_sinyaller.items()):
+        fiyat = anlik_fiyat(symbol)
+
+        if fiyat is None:
+            continue
+
+        giris = s["giris"]
+        kazanc = ((fiyat - giris) / giris) * 100
+        gecen_sure = sure_yaz(time.time() - s["zaman"])
+
+        if not s["stop_bildi"] and fiyat <= s["stop"]:
+            mesaj = (
+                f"❌ STOP OLDU\n"
+                f"{symbol}\n"
+                f"Kategori: {s['durum']}\n"
+                f"Giriş: {round(giris, 4)}\n"
+                f"Stop: {round(s['stop'], 4)}\n"
+                f"Anlık: {round(fiyat, 4)}\n"
+                f"Sonuç: %{round(kazanc, 2)}\n"
+                f"Süre: {gecen_sure}"
+            )
+            telegram_gonder(mesaj)
+            print(mesaj)
+            kapanacaklar.append(symbol)
+            continue
+
+        if not s["hedef1_bildi"] and fiyat >= s["hedef1"]:
+            mesaj = (
+                f"✅ HEDEF 1 GELDİ\n"
+                f"{symbol}\n"
+                f"Kategori: {s['durum']}\n"
+                f"Giriş: {round(giris, 4)}\n"
+                f"Hedef 1: {round(s['hedef1'], 4)}\n"
+                f"Anlık: {round(fiyat, 4)}\n"
+                f"Kazanç: %{round(kazanc, 2)}\n"
+                f"Süre: {gecen_sure}"
+            )
+            telegram_gonder(mesaj)
+            print(mesaj)
+            s["hedef1_bildi"] = True
+
+        if not s["hedef2_bildi"] and fiyat >= s["hedef2"]:
+            mesaj = (
+                f"🚀 HEDEF 2 GELDİ\n"
+                f"{symbol}\n"
+                f"Kategori: {s['durum']}\n"
+                f"Giriş: {round(giris, 4)}\n"
+                f"Hedef 2: {round(s['hedef2'], 4)}\n"
+                f"Anlık: {round(fiyat, 4)}\n"
+                f"Kazanç: %{round(kazanc, 2)}\n"
+                f"Süre: {gecen_sure}"
+            )
+            telegram_gonder(mesaj)
+            print(mesaj)
+            kapanacaklar.append(symbol)
+
+    for symbol in kapanacaklar:
+        aktif_sinyaller.pop(symbol, None)
 
 while True:
 
@@ -156,6 +211,8 @@ while True:
         print()
         print("AKILLI PARA RADARI")
         print("--------------------------------")
+
+        hedef_stop_kontrol()
 
         btc = btc_gucu()
 
@@ -212,10 +269,6 @@ while True:
 
                 haber_skoru, haberler = haber_puani(symbol)
 
-                # =========================
-                # SKOR HESABI
-                # =========================
-
                 hacim_skoru = min(hacim_kat * 2, 10)
                 momentum_skoru = max(0, degisim3 * 2)
                 btc_skoru = 3 if btcden_guclu else 0
@@ -230,10 +283,6 @@ while True:
                     + mum_skoru
                     + zirve_skoru
                 )
-
-                # =========================
-                # RİSK CEZALARI
-                # =========================
 
                 if degisim24 > 10:
                     genel_skor -= 4
@@ -256,39 +305,20 @@ while True:
                 if satis_baskisi:
                     genel_skor -= 5
 
-                # =========================
-                # ADAY SEÇİMİ
-                # =========================
-
                 if haber_skoru >= 15 and genel_skor >= 18 and hacim_kat >= 5 and btcden_guclu:
                     durum = "💎 SÜPER ROKET"
 
                 elif haber_skoru > 0 and genel_skor >= 13 and hacim_kat >= 2.5 and btcden_guclu:
                     durum = "🚀 ROKET ADAYI"
-                
+
                 elif genel_skor >= 10 and hacim_kat >= 2.2 and btcden_guclu:
                     durum = "🔥 GÜÇLÜ ADAY"
-                    
+
                 elif genel_skor >= 7.5 and hacim_kat >= 3 and degisim3 > 1 and btcden_guclu:
                     durum = "📈 İZLEME ADAYI"
 
                 else:
                     continue
-
-                # =========================
-                # TEKRAR KONTROLÜ
-                # =========================
-
-                simdi = time.time()
-
-                if symbol in son_durumlar:
-                    if son_durumlar[symbol] == durum:
-                        if symbol in gonderilenler:
-                            if simdi - gonderilenler[symbol] < TEKRAR_SURESI:
-                                continue
-
-                gonderilenler[symbol] = simdi
-                son_durumlar[symbol] = durum
 
                 stop = fiyat * 0.985
                 hedef1 = fiyat * 1.03
@@ -306,7 +336,6 @@ while True:
                     "btc": btc,
                     "btcden_guclu": btcden_guclu,
                     "haber_skoru": haber_skoru,
-                    "haberler": haberler,
                     "stop": stop,
                     "hedef1": hedef1,
                     "hedef2": hedef2
@@ -327,31 +356,83 @@ while True:
                 f"BTC 3s: %{round(btc, 2)}\n\n"
             )
 
-            for sira, a in enumerate(adaylar[:3], start=1):
+            simdi = time.time()
+            gosterilecekler = []
 
-                satir = (
-                    f"{sira}. {a['symbol']}\n"
-                    f"{a['durum']}\n"
-                    f"Genel Skor: {round(a['skor'], 2)}\n"
-                    f"1s: {round(a['degisim1'], 2)}%\n"
-                    f"3s: {round(a['degisim3'], 2)}%\n"
-                    f"24s: {round(a['degisim24'], 2)}%\n"
-                    f"Hacim: {round(a['hacim'], 2)} kat\n"
-                    f"BTC'den güçlü: {a['btcden_guclu']}\n"
-                    f"Haber skoru: {a['haber_skoru']}\n"
-                    f"Fiyat: {round(a['fiyat'], 4)}\n"
-                    f"Stop: {round(a['stop'], 4)}\n"
-                    f"Hedef 1: {round(a['hedef1'], 4)}\n"
-                    f"Hedef 2: {round(a['hedef2'], 4)}\n"
-                )
+            for a in adaylar:
+                symbol = a["symbol"]
+                durum = a["durum"]
 
-                satir += "\n"
+                eski_durum = son_durumlar.get(symbol)
+                durum_degisti = eski_durum is not None and eski_durum != durum
 
-                print(satir)
-                mesaj += satir
+                if eski_durum == durum:
+                    if symbol in gonderilenler:
+                        if simdi - gonderilenler[symbol] < TEKRAR_SURESI:
+                            continue
 
-            telegram_gonder(mesaj)
-            print("Telegram gönderildi.")
+                a["eski_durum"] = eski_durum
+                a["durum_degisti"] = durum_degisti
+                gosterilecekler.append(a)
+
+                if len(gosterilecekler) >= 5:
+                    break
+
+            if len(gosterilecekler) == 0:
+                print("Yeni gönderilecek aday yok.")
+
+            else:
+                for sira, a in enumerate(gosterilecekler, start=1):
+                    symbol = a["symbol"]
+
+                    gonderilenler[symbol] = simdi
+                    son_durumlar[symbol] = a["durum"]
+
+                    if symbol not in aktif_sinyaller:
+                        aktif_sinyaller[symbol] = {
+                            "giris": a["fiyat"],
+                            "stop": a["stop"],
+                            "hedef1": a["hedef1"],
+                            "hedef2": a["hedef2"],
+                            "durum": a["durum"],
+                            "zaman": simdi,
+                            "hedef1_bildi": False,
+                            "hedef2_bildi": False,
+                            "stop_bildi": False
+                        }
+                    else:
+                        aktif_sinyaller[symbol]["durum"] = a["durum"]
+
+                    satir = (
+                        f"{sira}. {a['symbol']}\n"
+                        f"{a['durum']}\n"
+                    )
+
+                    if a["durum_degisti"]:
+                        satir += (
+                            f"🔄 Durum değişti: "
+                            f"{a['eski_durum']} → {a['durum']}\n"
+                        )
+
+                    satir += (
+                        f"Genel Skor: {round(a['skor'], 2)}\n"
+                        f"1s: {round(a['degisim1'], 2)}%\n"
+                        f"3s: {round(a['degisim3'], 2)}%\n"
+                        f"24s: {round(a['degisim24'], 2)}%\n"
+                        f"Hacim: {round(a['hacim'], 2)} kat\n"
+                        f"BTC'den güçlü: {a['btcden_guclu']}\n"
+                        f"Haber skoru: {a['haber_skoru']}\n"
+                        f"Fiyat: {round(a['fiyat'], 4)}\n"
+                        f"Stop: {round(a['stop'], 4)}\n"
+                        f"Hedef 1: {round(a['hedef1'], 4)}\n"
+                        f"Hedef 2: {round(a['hedef2'], 4)}\n\n"
+                    )
+
+                    print(satir)
+                    mesaj += satir
+
+                telegram_gonder(mesaj)
+                print("Telegram gönderildi.")
 
         print("5 dk bekleniyor...")
         time.sleep(TARAMA_SURESI)
