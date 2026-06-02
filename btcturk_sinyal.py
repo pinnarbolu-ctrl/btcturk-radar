@@ -148,6 +148,8 @@ def haber_puani(symbol):
 # ANA BOT
 # =========================
 
+onceki_durumlar = {}
+
 while True:
 
     try:
