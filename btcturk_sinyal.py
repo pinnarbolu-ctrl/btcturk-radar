@@ -4,7 +4,7 @@ import time
 import feedparser
 from deep_translator import GoogleTranslator
 
-BOT_TOKEN = "8553499613:AAFezrOMK6dAKoWAG2hCKeobhTM-gQZTRTs"
+BOT_TOKEN = os.getenv("8553499613:AAFezrOMK6dAKoWAG2hCKeobhTM-gQZTRTs")
 
 CHAT_IDS = [
     2097448038,
