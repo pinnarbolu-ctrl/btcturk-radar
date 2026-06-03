@@ -364,7 +364,7 @@ while True:
                 durum = a["durum"]
 
                 eski_durum = son_durumlar.get(symbol)
-                durum_degisti = eski durum is not None and eski_durum != durum
+                durum_degisti = eski_durum is not None and eski_durum != durum
                 
                 durum_seviyesi = {
                     "📈 İZLEME ADAYI": 1,
