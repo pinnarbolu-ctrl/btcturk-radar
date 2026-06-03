@@ -250,7 +250,8 @@ while True:
 
             try:
                 symbol = coin["pair"]
-
+                print(coin)
+                
                 if not symbol.endswith("TRY"):
                     continue
 
