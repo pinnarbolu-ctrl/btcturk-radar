@@ -4,7 +4,7 @@ import time
 import feedparser
 from deep_translator import GoogleTranslator
 
-BOT_TOKEN = "BURAYA_TOKEN_YAZ"
+BOT_TOKEN = "8553499613:AAHkPbN5W4MS3NlwtN0HRH7PyFt_aXLiChQ"
 
 CHAT_IDS = [
     2097448038,
