@@ -2,6 +2,7 @@
 import requests
 import time
 import feedparser
+import os
 from deep_translator import GoogleTranslator
 
 BOT_TOKEN = os.getenv("8553499613:AAFezrOMK6dAKoWAG2hCKeobhTM-gQZTRTs")
