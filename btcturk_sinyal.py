@@ -222,19 +222,19 @@ def kategori_belirle(genel_skor, hacim_kat, haber_skoru, btcden_guclu, degisim1,
     if gec_pump and hacim_kat >= 4 and btcden_guclu:
         return "⚠️ Geç Pump"
 
-    if haber_skoru >= 15 and genel_skor >= 16 and hacim_kat >= 4 and btcden_guclu:
+    if haber_skoru >= 15 and genel_skor >= 17 and hacim_kat >= 4 and btcden_guclu:
         return "💎 Süper Roket"
 
-    if haber_skoru > 0 and genel_skor >= 11 and hacim_kat >= 2.5 and btcden_guclu:
+    if haber_skoru > 0 and genel_skor >= 12 and hacim_kat >= 2.5 and btcden_guclu:
         return "📰 Haberli Roket"
 
-    if haber_skoru == 0 and genel_skor >= 12 and hacim_kat >= 3 and btcden_guclu:
+    if haber_skoru == 0 and genel_skor >= 13 and hacim_kat >= 3 and btcden_guclu:
         return "🚀 Sessiz Roket"
 
-    if genel_skor >= 9.5 and hacim_kat >= 2.5 and btcden_guclu:
+    if genel_skor >= 11 and hacim_kat >= 2.5 and btcden_guclu:
         return "🔥 Güçlü"
 
-    if genel_skor >= 7.5 and hacim_kat >= 3 and degisim3 > 1 and btcden_guclu:
+    if genel_skor >= 8 and hacim_kat >= 3 and degisim3 > 1 and btcden_guclu:
         return "📈 İzleme"
 
     return None
