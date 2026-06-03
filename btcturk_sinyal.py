@@ -309,14 +309,26 @@ while True:
                 zirve_skoru = 1 if zirve_yakin else 0
 
                 genel_skor = (
-                    hacim_skoru * 0.40
-                    + momentum_skoru * 0.30
-                    + btc_skoru * 0.15
-                    + haber_skoru * 0.15
+                    hacim_skoru * 0.50
+                    + momentum_skoru * 0.20
+                    + btc_skoru * 0.10
+                    + haber_skoru * 0.20
                     + mum_skoru
                     + zirve_skoru
                 )
+                
+                if hacim_kat >= 5:
+                    genel_skor += 3
 
+                if hacim_kat >= 8:
+                    genel_skor += 5
+
+                if haber_skoru >= 15:
+                    genel_skor += 3
+
+                if haber_skoru > 0 and hacim_kat > 3:
+                    genel_skor += 4
+                
                 if degisim24 > 10:
                     genel_skor -= 4
 
