@@ -247,16 +247,16 @@ def kategori_belirle(genel_skor, hacim_kat, haber_skoru, btcden_guclu, degisim1,
     if haber_skoru >= 15 and genel_skor >= 18 and hacim_kat >= 5 and btcden_guclu:
         return "💎 Süper Roket", "En güçlü aday"
 
-    if haber_skoru > 0 and genel_skor >= 12 and hacim_kat >= 3 and btcden_guclu:
-        return "🚀 Roket Adayı", "Haberli"
+    if haber_skoru > 0 and genel_skor >= 12 and hacim_kat >= 3 and degisim3 > 0 and btcden_guclu:
+    	return "🚀 Roket Adayı", "Haberli"
 
-    if haber_skoru == 0 and genel_skor >= 13 and hacim_kat >= 4 and btcden_guclu:
-        return "🚀 Roket Adayı", "Sessiz"
+    if haber_skoru == 0 and genel_skor >= 13 and hacim_kat >= 4 and degisim3 > 0.5 and btcden_guclu:
+    	return "🚀 Roket Adayı", "Sessiz"
 
     if genel_skor >= 12 and hacim_kat >= 4 and btcden_guclu:
-        return "🔥 Güçlü", "Güçlü"
+        return "🔥 Güçlü", "Güçlü İzleme"
 
-    if genel_skor >= 9 and hacim_kat >= 4 and degisim3 > 1 and btcden_guclu:
+    if genel_skor >= 8.5 and hacim_kat >= 3.5 and degisim3 > 1 and btcden_guclu:
         return "📈 İzleme", "Arka plan"
 
     return None, None
