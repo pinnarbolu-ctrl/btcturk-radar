@@ -4,7 +4,7 @@ import time
 import feedparser
 from deep_translator import GoogleTranslator
 
-BOT_TOKEN = "8553499613:AAHkPbN5W4MS3NlwtN0HRH7PyFt_aXLiChQ"
+BOT_TOKEN = "BURAYA_TOKEN_YAZ"
 
 CHAT_IDS = [
     2097448038,
@@ -42,6 +42,14 @@ NEGATIF = [
     "down", "weakness"
 ]
 
+DURUM_SEVIYESI = {
+    "📈 İZLEME ADAYI": 1,
+    "🔥 GÜÇLÜ ADAY": 2,
+    "🚀 ROKET ADAYI": 3,
+    "💎 SÜPER ROKET": 4
+}
+
+
 def telegram_gonder(mesaj):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
@@ -56,11 +64,13 @@ def telegram_gonder(mesaj):
         except Exception as e:
             print(chat_id, e)
 
+
 def cevir_tr(metin):
     try:
         return GoogleTranslator(source="auto", target="tr").translate(metin)
     except:
         return metin
+
 
 def veri_getir(symbol, saat=24):
     simdi = int(time.time())
@@ -71,6 +81,7 @@ def veri_getir(symbol, saat=24):
     )
 
     return requests.get(url, timeout=10).json()
+
 
 def anlik_fiyat(symbol):
     try:
@@ -84,6 +95,7 @@ def anlik_fiyat(symbol):
     except:
         return None
 
+
 def btc_gucu():
     try:
         d = veri_getir("BTCTRY", 6)
@@ -96,6 +108,7 @@ def btc_gucu():
     except:
         return 0
 
+
 def sure_yaz(saniye):
     dakika = int(saniye // 60)
     saat = dakika // 60
@@ -106,11 +119,11 @@ def sure_yaz(saniye):
 
     return f"{dakika} dk"
 
+
 def haber_puani(symbol):
     coin = symbol.replace("TRY", "").lower()
 
     puan = 0
-    haberler = []
     negatif_haber = False
 
     for kaynak in RSS_KAYNAKLARI:
@@ -122,7 +135,6 @@ def haber_puani(symbol):
 
                 if coin in baslik:
                     puan += 8
-                    haberler.append(cevir_tr(item.title))
 
                     for kelime in POZITIF:
                         if kelime in baslik:
@@ -141,7 +153,8 @@ def haber_puani(symbol):
     if negatif_haber and puan < 10:
         puan = 0
 
-    return puan, haberler[:2]
+    return puan
+
 
 def hedef_stop_kontrol():
     kapanacaklar = []
@@ -167,8 +180,11 @@ def hedef_stop_kontrol():
                 f"Sonuç: %{round(kazanc, 2)}\n"
                 f"Süre: {gecen_sure}"
             )
+
             telegram_gonder(mesaj)
             print(mesaj)
+
+            s["stop_bildi"] = True
             kapanacaklar.append(symbol)
             continue
 
@@ -183,8 +199,10 @@ def hedef_stop_kontrol():
                 f"Kazanç: %{round(kazanc, 2)}\n"
                 f"Süre: {gecen_sure}"
             )
+
             telegram_gonder(mesaj)
             print(mesaj)
+
             s["hedef1_bildi"] = True
 
         if not s["hedef2_bildi"] and fiyat >= s["hedef2"]:
@@ -198,12 +216,16 @@ def hedef_stop_kontrol():
                 f"Kazanç: %{round(kazanc, 2)}\n"
                 f"Süre: {gecen_sure}"
             )
+
             telegram_gonder(mesaj)
             print(mesaj)
+
+            s["hedef2_bildi"] = True
             kapanacaklar.append(symbol)
 
     for symbol in kapanacaklar:
         aktif_sinyaller.pop(symbol, None)
+
 
 while True:
 
@@ -267,7 +289,7 @@ while True:
                     and degisim1 < 0
                 )
 
-                haber_skoru, haberler = haber_puani(symbol)
+                haber_skoru = haber_puani(symbol)
 
                 hacim_skoru = min(hacim_kat * 2, 10)
                 momentum_skoru = max(0, degisim3 * 2)
@@ -351,11 +373,6 @@ while True:
         else:
             adaylar = sorted(adaylar, key=lambda x: x["skor"], reverse=True)
 
-            mesaj = (
-                f"🚀 AKILLI PARA RADARI\n"
-                f"BTC 3s: %{round(btc, 2)}\n\n"
-            )
-
             simdi = time.time()
             gosterilecekler = []
 
@@ -364,41 +381,31 @@ while True:
                 durum = a["durum"]
 
                 eski_durum = son_durumlar.get(symbol)
-                durum_degisti = eski_durum is not None and eski_durum != durum
-                
-                durum_seviyesi = {
-                    "📈 İZLEME ADAYI": 1,
-                    "🔥 GÜÇLÜ ADAY": 2,
-                    "🚀 ROKET ADAYI": 3,
-                    "💎 SÜPER ROKET": 4
-                } 
 
-                if (
+                durum_degisti = (
                     eski_durum is not None
-                    and eski_durum in durum_seviyesi
-                    and durum in durum_seviyesi
-                    and durum_seviyesi[durum] > durum_seviyesi[eski_durum]
-                ):
-    
-                    	mesaj_yukselis = (
-                        f"⬆️ DURUM YÜKSELDİ\n\n"
-                        f"{symbol}\n\n"
-                        f"{eski_durum}\n"
-                        f"⬆️\n"
-                        f"{durum}\n\n"
-                        f"Skor: {round(a['skor'], 2)}"
-                    ) 
+                    and eski_durum != durum
+                )
 
-                    	telegram_gonder(mesaj_yukselis)
-                    	print(mesaj_yukselis)
- 
-                if eski_durum == durum:
-                    if symbol in gonderilenler:
-                        if simdi - gonderilenler[symbol] < TEKRAR_SURESI:
-                            continue
+                durum_yukseldi = (
+                    eski_durum is not None
+                    and eski_durum in DURUM_SEVIYESI
+                    and durum in DURUM_SEVIYESI
+                    and DURUM_SEVIYESI[durum] > DURUM_SEVIYESI[eski_durum]
+                )
+
+                tekrar_doldu = (
+                    symbol not in gonderilenler
+                    or simdi - gonderilenler[symbol] >= TEKRAR_SURESI
+                )
+
+                if not tekrar_doldu and not durum_degisti:
+                    continue
 
                 a["eski_durum"] = eski_durum
                 a["durum_degisti"] = durum_degisti
+                a["durum_yukseldi"] = durum_yukseldi
+
                 gosterilecekler.append(a)
 
                 if len(gosterilecekler) >= 5:
@@ -408,6 +415,11 @@ while True:
                 print("Yeni gönderilecek aday yok.")
 
             else:
+                mesaj = (
+                    f"🚀 AKILLI PARA RADARI\n"
+                    f"BTC 3s: %{round(btc, 2)}\n\n"
+                )
+
                 for sira, a in enumerate(gosterilecekler, start=1):
                     symbol = a["symbol"]
 
@@ -428,6 +440,19 @@ while True:
                         }
                     else:
                         aktif_sinyaller[symbol]["durum"] = a["durum"]
+
+                    if a["durum_yukseldi"]:
+                        mesaj_yukselis = (
+                            f"⬆️ DURUM YÜKSELDİ\n\n"
+                            f"{symbol}\n\n"
+                            f"{a['eski_durum']}\n"
+                            f"⬆️\n"
+                            f"{a['durum']}\n\n"
+                            f"Skor: {round(a['skor'], 2)}"
+                        )
+
+                        telegram_gonder(mesaj_yukselis)
+                        print(mesaj_yukselis)
 
                     satir = (
                         f"{sira}. {a['symbol']}\n"
