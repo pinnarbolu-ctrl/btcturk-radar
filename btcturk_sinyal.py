@@ -1,28 +1,8 @@
 
-
-def hacim_kalite_bonusu(hacim_kat):
-    """
-    V4.1 kalite skoru hacim bonusu.
-    Çok yüksek hacimler kalite puanına kontrollü bonus verir.
-    """
-    if hacim_kat >= 100:
-        return 3.0
-    if hacim_kat >= 50:
-        return 2.0
-    if hacim_kat >= 20:
-        return 1.0
-    if hacim_kat >= 10:
-        return 0.5
-    return 0.0
-
-
 import os
 import time
 import requests
 import feedparser
-
-
-
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -821,7 +801,3 @@ while True:
     except Exception as e:
         print("Bot genel hata:", e)
         time.sleep(30)
-
-
-
-
