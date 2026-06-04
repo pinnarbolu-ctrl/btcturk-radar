@@ -1,3 +1,4 @@
+
 import os
 import time
 import requests
@@ -32,6 +33,7 @@ guc_bildirimleri = {}
 lider_bildirimleri = {}
 pump_bildirimleri = {}
 son_lider = None
+yildiz_adaylari = {}
 
 haftalik_kayitlar = []
 son_haftalik_rapor = time.time()
@@ -331,28 +333,49 @@ def hedef_stop_kontrol():
         aktif_sinyaller.pop(symbol, None)
 
 
-def siradisi_hacim_kontrol(symbol, hacim_kat, degisim1, degisim3, degisim24, fiyat):
+def siradisi_hacim_kontrol(
+    symbol,
+    hacim_kat,
+    degisim1,
+    degisim3,
+    degisim24,
+    fiyat,
+    son_mum_yesil,
+    satis_baskisi
+):
     simdi = time.time()
     son_gonderim = siradisi_hacim_gonderilen.get(symbol, 0)
 
     if simdi - son_gonderim < SIRADISI_HACIM_SURESI:
         return
 
+    # METRY gibi hem günlük hem 3 saatlik düşüşte hacim patlıyorsa
+    # bunu "birikim" değil satış hacmi kabul ediyoruz ve mesaj atmıyoruz.
+    if degisim24 < -8 and degisim3 < -2:
+        return
+
+    # Satış baskısı varsa mesaj atmıyoruz.
+    if satis_baskisi:
+        return
+
+    # Sıradışı hacim artık sadece "birikim ihtimali" taşıyorsa gelsin.
     if (
         hacim_kat >= 8
-        and degisim3 < 4
+        and degisim3 > -1
         and degisim24 < 15
         and degisim1 < 6
+        and son_mum_yesil
     ):
         mesaj = (
-            f"🚨 SIRADIŞI HACİM\n\n"
-            f"{symbol}\n\n"
-            f"Hacim: {round(hacim_kat, 2)}x\n"
-            f"1s: %{round(degisim1, 2)}\n"
-            f"3s: %{round(degisim3, 2)}\n"
-            f"24s: %{round(degisim24, 2)}\n"
-            f"Fiyat: {round(fiyat, 4)}\n\n"
-            f"Not: Hacim çok yüksek ama fiyat henüz tam gitmemiş olabilir."
+            f"🚨 SIRADIŞI HACİM\\n\\n"
+            f"{symbol}\\n\\n"
+            f"Tür: Birikim ihtimali\\n"
+            f"Hacim: {round(hacim_kat, 2)}x\\n"
+            f"1s: %{round(degisim1, 2)}\\n"
+            f"3s: %{round(degisim3, 2)}\\n"
+            f"24s: %{round(degisim24, 2)}\\n"
+            f"Fiyat: {round(fiyat, 4)}\\n\\n"
+            f"Not: Hacim yüksek, satış baskısı yok, son mum yeşil."
         )
 
         telegram_gonder(mesaj)
@@ -361,35 +384,71 @@ def siradisi_hacim_kontrol(symbol, hacim_kat, degisim1, degisim3, degisim24, fiy
         siradisi_hacim_gonderilen[symbol] = simdi
 
 
-def kategori_belirle(genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, degisim1, degisim3, degisim24):
+def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, degisim1, degisim3, degisim24):
     gec_pump = degisim1 > 8 or degisim3 > 12 or degisim24 > 20
 
     if gec_pump and hacim_kat >= 4 and btcden_guclu:
         return "⚠️ Geç Pump", "Geç hareket"
 
-    if (
-        haber_skoru >= 15
-        and genel_skor >= 30
-        and kalite_skoru >= 13
+    yildiz_sarti = (
+        genel_skor >= 28
+        and kalite_skoru >= 15
         and hacim_kat >= 5
-        and degisim3 >= 2
         and btcden_guclu
-    ):
-        return "⭐ Yıldız", "Öne çıkan aday"
+    )
+
+    # Yıldız tek taramada verilmez.
+    # İlk yakalanışta aday hafızaya alınır ve Elit Roket olarak gösterilir.
+    # Sonraki taramada skor ve hacim düşmemişse Yıldız olur.
+    if yildiz_sarti:
+        onceki_yildiz = yildiz_adaylari.get(symbol)
+
+        if onceki_yildiz is not None:
+            skor_dusmedi = genel_skor >= onceki_yildiz["skor"]
+            hacim_dusmedi = hacim_kat >= onceki_yildiz["hacim"] * 0.90
+
+            if skor_dusmedi and hacim_dusmedi:
+                return "⭐ Yıldız", "Doğrulanmış güçlü aday"
+
+        yildiz_adaylari[symbol] = {
+            "skor": genel_skor,
+            "hacim": hacim_kat,
+            "zaman": time.time()
+        }
+
+        return "🔥 Elit Roket", "Yıldız adayı, doğrulama bekliyor"
+
+    # Yıldız şartını kaybederse hafızadan çıkar.
+    if symbol in yildiz_adaylari:
+        yildiz_adaylari.pop(symbol, None)
 
     if (
-        genel_skor >= 22
-        and kalite_skoru >= 11
+        genel_skor >= 20
+        and kalite_skoru >= 10
         and hacim_kat >= 4
-        and degisim3 >= 1.5
+        and degisim3 >= 1
         and btcden_guclu
     ):
         return "🔥 Elit Roket", "Yüksek kalite aday"
 
-    if haber_skoru > 0 and genel_skor >= 12 and hacim_kat >= 3 and degisim3 > 0 and btcden_guclu:
+    if (
+        haber_skoru > 0
+        and genel_skor >= 12
+        and kalite_skoru >= 8
+        and hacim_kat >= 3
+        and degisim3 > 0
+        and btcden_guclu
+    ):
         return "🚀 Roket Adayı", "Haberli"
 
-    if haber_skoru == 0 and genel_skor >= 13 and hacim_kat >= 4 and degisim3 > 0.5 and btcden_guclu:
+    if (
+        haber_skoru == 0
+        and genel_skor >= 13
+        and kalite_skoru >= 8
+        and hacim_kat >= 4
+        and degisim3 > 0.5
+        and btcden_guclu
+    ):
         return "🚀 Roket Adayı", "Sessiz"
 
     if genel_skor >= 12 and hacim_kat >= 4 and btcden_guclu:
@@ -528,10 +587,13 @@ while True:
                     degisim1,
                     degisim3,
                     degisim24,
-                    fiyat
+                    fiyat,
+                    son_mum_yesil,
+                    satis_baskisi
                 )
 
                 durum, alt_durum = kategori_belirle(
+                    symbol,
                     genel_skor,
                     kalite_skoru,
                     hacim_kat,
