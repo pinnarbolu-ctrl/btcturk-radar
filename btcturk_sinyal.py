@@ -1,8 +1,28 @@
 
+
+def hacim_kalite_bonusu(hacim_kat):
+    """
+    V4.1 kalite skoru hacim bonusu.
+    Çok yüksek hacimler kalite puanına kontrollü bonus verir.
+    """
+    if hacim_kat >= 100:
+        return 3.0
+    if hacim_kat >= 50:
+        return 2.0
+    if hacim_kat >= 20:
+        return 1.0
+    if hacim_kat >= 10:
+        return 0.5
+    return 0.0
+
+
 import os
 import time
 import requests
 import feedparser
+
+
+
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -45,12 +65,11 @@ STABLE_COINLER = [
 
 DURUM_SEVIYESI = {
     "📈 İzleme": 1,
-    "⚡ Güçlü Hacim": 2,
-    "🔥 Güçlü": 2,
-    "🚨 Sıradışı Hacim": 3,
-    "🚀 Roket Adayı": 3,
-    "🔥 Elit Roket": 4,
-    "⭐ Yıldız": 5,
+    "⚡ GÜÇLÜ HACİM": 2,
+    "🚨 SIRADIŞI HACİM": 3,
+    "🚀 Roket Adayı": 4,
+    "🔥 Elit Roket": 5,
+    "⭐ Yıldız": 6,
     "⚠️ Geç Pump": 0
 }
 
@@ -380,6 +399,9 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
             hacim_dusmedi = hacim_kat >= onceki_yildiz["hacim"] * 0.90
 
             if skor_dusmedi and hacim_dusmedi:
+                # V4: Yıldız için haber desteği zorunlu
+                if haber_skoru <= 0:
+                    return "🔥 Elit Roket", "Haber desteği olmadığı için yıldız verilmedi."
                 return "⭐ Yıldız", "Doğrulanmış güçlü aday"
 
         yildiz_adaylari[symbol] = {
@@ -403,18 +425,18 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
     ):
         return "🔥 Elit Roket", "Yüksek kalite aday"
 
-    # V4.1 güncel hacim sistemi
+    # V4.7 güncel hacim sistemi
     # <5x: elenir
-    # 5x-8x: arka planda izlenir
-    # 8x+: ⚡ Güçlü Hacim olarak Telegram'a gönderilir
-    # 10x+ + BTC gücü + 1s/3s pozitif: 🚨 Sıradışı Hacim olarak Telegram'a gönderilir
-    if hacim_kat >= 10 and btcden_guclu and degisim1 > 0 and degisim3 > 0:
-        return "🚨 Sıradışı Hacim", "10x+ hacim, BTC güçlü, fiyat teyitli"
+    # 5x-12x: arka planda izlenir
+    # 12x+: ⚡ GÜÇLÜ HACİM olarak arka planda kalır, Telegram'a gönderilmez
+    # 15x+ + BTC gücü + 1s/3s pozitif: 🚨 SIRADIŞI HACİM olarak Telegram'a gönderilir
+    if hacim_kat >= 15 and btcden_guclu and degisim1 > 0 and degisim3 > 0:
+        return "🚨 SIRADIŞI HACİM", "Hacim çok yüksek ve fiyat hareketi destekliyor."
 
-    if hacim_kat >= 8 and btcden_guclu and not (degisim1 < 0 and degisim3 < 0):
-        return "⚡ Güçlü Hacim", "8x+ hacim"
+    if hacim_kat >= 12 and btcden_guclu and not (degisim1 < 0 and degisim3 < 0):
+        return "⚡ GÜÇLÜ HACİM", "Hacim güçlü ve fiyat destekliyor."
 
-    if genel_skor >= 8.5 and 5 <= hacim_kat < 8 and degisim3 > 1 and btcden_guclu:
+    if genel_skor >= 8.5 and 5 <= hacim_kat < 12 and degisim3 > 1 and btcden_guclu:
         return "📈 İzleme", "Arka plan"
 
     if (
@@ -669,6 +691,10 @@ while True:
                     print(f"Arka plan izleme: {symbol}")
                     continue
 
+                if durum == "⚡ GÜÇLÜ HACİM":
+                    print(f"Arka plan güçlü hacim: {symbol} | Hacim: {round(a['hacim'], 2)}x")
+                    continue
+
                 son_gonderim = gonderilenler.get(symbol)
                 tekrar_doldu = son_gonderim is None or simdi - son_gonderim >= TEKRAR_SURESI
 
@@ -739,7 +765,7 @@ while True:
 
                         mesaj_yukselis += f"3s: %{round(a['degisim3'], 2)}"
 
-                        telegram_gonder(mesaj_yukselis)
+                        print("Seviye atladı ama Telegram'a gönderilmedi:")
                         print(mesaj_yukselis)
 
                     satir = (
@@ -748,13 +774,13 @@ while True:
                     )
 
                     if a["durum"] == "🚀 Roket Adayı":
-                        satir += f"Tür: {a['alt_durum']}\n"
+                        satir += f"Not: {a['alt_durum']}\n"
 
-                    if a["durum"] == "⚡ Güçlü Hacim":
-                        satir += f"Tür: {a['alt_durum']}\n"
+                    if a["durum"] == "⚡ GÜÇLÜ HACİM":
+                        satir += f"Not: {a['alt_durum']}\n"
 
-                    if a["durum"] == "🚨 Sıradışı Hacim":
-                        satir += f"Tür: {a['alt_durum']}\n"
+                    if a["durum"] == "🚨 SIRADIŞI HACİM":
+                        satir += f"Not: {a['alt_durum']}\n"
 
                     if a["durum"] == "🔥 Elit Roket":
                         satir += f"Not: {a['alt_durum']}\n"
@@ -795,3 +821,7 @@ while True:
     except Exception as e:
         print("Bot genel hata:", e)
         time.sleep(30)
+
+
+
+
