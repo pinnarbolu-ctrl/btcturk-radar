@@ -27,7 +27,7 @@ DURUM_SEVIYESI = {
     "📈 İzleme": 1,
     "🔥 Güçlü": 2,
     "🚀 Roket Adayı": 3,
-    "💎 Süper Roket": 4,
+    "⭐ Yıldız": 4,
     "⚠️ Geç Pump": 0
 }
 
@@ -244,8 +244,14 @@ def kategori_belirle(genel_skor, hacim_kat, haber_skoru, btcden_guclu, degisim1,
     if gec_pump and hacim_kat >= 4 and btcden_guclu:
         return "⚠️ Geç Pump", "Geç hareket"
 
-    if haber_skoru >= 15 and genel_skor >= 18 and hacim_kat >= 5 and btcden_guclu:
-        return "💎 Süper Roket", "En güçlü aday"
+    if (
+        haber_skoru >= 15
+        and genel_skor >= 22
+        and hacim_kat >= 5
+        and degisim3 >= 2
+        and btcden_guclu
+    ):
+        return "⭐ Yıldız", "Öne çıkan aday"
 
     if haber_skoru > 0 and genel_skor >= 12 and hacim_kat >= 3 and degisim3 > 0 and btcden_guclu:
     	return "🚀 Roket Adayı", "Haberli"
@@ -265,7 +271,7 @@ def kategori_belirle(genel_skor, hacim_kat, haber_skoru, btcden_guclu, degisim1,
 while True:
     try:
         print()
-        print("AKILLI PARA RADARI V3")
+        print("AKILLI PARA RADARI V4")
         print("--------------------------------")
 
         hedef_stop_kontrol()
@@ -476,7 +482,7 @@ while True:
 
             else:
                 mesaj = (
-                    f"🚀 AKILLI PARA RADARI V3\n"
+                    f"🚀 AKILLI PARA RADARI V4\n"
                     f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
@@ -535,7 +541,7 @@ while True:
                     if a["durum"] == "🚀 Roket Adayı":
                         satir += f"Tür: {a['alt_durum']}\n"
 
-                    if a["durum"] == "💎 Süper Roket":
+                    if a["durum"] == "⭐ Yıldız":
                         satir += f"Not: {a['alt_durum']}\n"
 
                     if a["durum"] == "⚠️ Geç Pump":
