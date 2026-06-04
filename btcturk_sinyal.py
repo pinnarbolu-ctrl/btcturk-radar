@@ -2,7 +2,6 @@ import os
 import time
 import requests
 import feedparser
-from deep_translator import GoogleTranslator
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -14,6 +13,11 @@ CHAT_IDS = [
 TEKRAR_SURESI = 3 * 60 * 60
 TARAMA_SURESI = 5 * 60
 STOP_RAPOR_SURESI = 2 * 60 * 60
+SIRADISI_HACIM_SURESI = 6 * 60 * 60
+LIDER_TAKIP_SURESI = 30 * 60
+GUC_TAKIP_SURESI = 30 * 60
+PUMP_TAKIP_SURESI = 30 * 60
+HAFTALIK_RAPOR_SURESI = 7 * 24 * 60 * 60
 
 gonderilenler = {}
 son_durumlar = {}
@@ -22,12 +26,27 @@ ilk_tespitler = {}
 onceki_veriler = {}
 stop_raporlari = []
 son_stop_raporu = time.time()
+siradisi_hacim_gonderilen = {}
+lider_gecmisi = {}
+guc_bildirimleri = {}
+lider_bildirimleri = {}
+pump_bildirimleri = {}
+son_lider = None
+
+haftalik_kayitlar = []
+son_haftalik_rapor = time.time()
+
+STABLE_COINLER = [
+    "USDT", "USDC", "FDUSD", "TUSD", "DAI", "USDP"
+]
+
 
 DURUM_SEVIYESI = {
     "📈 İzleme": 1,
     "🔥 Güçlü": 2,
     "🚀 Roket Adayı": 3,
-    "⭐ Yıldız": 4,
+    "🔥 Elit Roket": 4,
+    "⭐ Yıldız": 5,
     "⚠️ Geç Pump": 0
 }
 
@@ -113,6 +132,11 @@ def sure_yaz(saniye):
     return f"{dakika} dk"
 
 
+def stable_coin_mi(symbol):
+    coin = symbol.replace("TRY", "")
+    return coin in STABLE_COINLER
+
+
 def haber_puani(symbol):
     coin = symbol.replace("TRY", "").lower()
     puan = 0
@@ -174,6 +198,75 @@ def stop_raporu_gonder():
 
     stop_raporlari = []
     son_stop_raporu = simdi
+
+
+def haftalik_kayit_ekle(symbol, durum, skor, kalite_skoru, haber_skoru, hacim, degisim3):
+    haftalik_kayitlar.append({
+        "zaman": time.time(),
+        "symbol": symbol,
+        "durum": durum,
+        "skor": skor,
+        "kalite_skoru": kalite_skoru,
+        "haber_skoru": haber_skoru,
+        "hacim": hacim,
+        "degisim3": degisim3
+    })
+
+
+def haftalik_rapor_gonder():
+    global son_haftalik_rapor
+    global haftalik_kayitlar
+
+    simdi = time.time()
+
+    if simdi - son_haftalik_rapor < HAFTALIK_RAPOR_SURESI:
+        return
+
+    if len(haftalik_kayitlar) == 0:
+        son_haftalik_rapor = simdi
+        return
+
+    kategori_sayilari = {}
+    en_yuksek_skor = {}
+    en_yuksek_hacim = None
+
+    for k in haftalik_kayitlar:
+        kategori_sayilari[k["durum"]] = kategori_sayilari.get(k["durum"], 0) + 1
+
+        s = k["symbol"]
+        if s not in en_yuksek_skor or k["skor"] > en_yuksek_skor[s]["skor"]:
+            en_yuksek_skor[s] = k
+
+        if en_yuksek_hacim is None or k["hacim"] > en_yuksek_hacim["hacim"]:
+            en_yuksek_hacim = k
+
+    en_iyi = sorted(en_yuksek_skor.values(), key=lambda x: x["skor"], reverse=True)[:5]
+
+    mesaj = "📊 HAFTALIK V4 RAPORU\n\n"
+    mesaj += f"Toplam kayıt: {len(haftalik_kayitlar)}\n\n"
+
+    mesaj += "Kategori Dağılımı:\n"
+    for durum, adet in sorted(kategori_sayilari.items(), key=lambda x: x[1], reverse=True):
+        mesaj += f"{durum}: {adet}\n"
+
+    mesaj += "\n🏆 En Yüksek Skorlar:\n"
+    for i, k in enumerate(en_iyi, start=1):
+        mesaj += (
+            f"{i}. {k['symbol']} | {k['durum']}\n"
+            f"Skor: {round(k['skor'], 2)} | Kalite: {round(k['kalite_skoru'], 2)} | Haber: {k['haber_skoru']}\n"
+        )
+
+    if en_yuksek_hacim is not None:
+        mesaj += (
+            f"\n🚨 En Büyük Hacim:\n"
+            f"{en_yuksek_hacim['symbol']} | {round(en_yuksek_hacim['hacim'], 2)}x\n"
+        )
+
+    telegram_gonder(mesaj)
+    print(mesaj)
+
+    haftalik_kayitlar = []
+    son_haftalik_rapor = simdi
 
 
 def hedef_stop_kontrol():
@@ -238,7 +331,37 @@ def hedef_stop_kontrol():
         aktif_sinyaller.pop(symbol, None)
 
 
-def kategori_belirle(genel_skor, hacim_kat, haber_skoru, btcden_guclu, degisim1, degisim3, degisim24):
+def siradisi_hacim_kontrol(symbol, hacim_kat, degisim1, degisim3, degisim24, fiyat):
+    simdi = time.time()
+    son_gonderim = siradisi_hacim_gonderilen.get(symbol, 0)
+
+    if simdi - son_gonderim < SIRADISI_HACIM_SURESI:
+        return
+
+    if (
+        hacim_kat >= 8
+        and degisim3 < 4
+        and degisim24 < 15
+        and degisim1 < 6
+    ):
+        mesaj = (
+            f"🚨 SIRADIŞI HACİM\n\n"
+            f"{symbol}\n\n"
+            f"Hacim: {round(hacim_kat, 2)}x\n"
+            f"1s: %{round(degisim1, 2)}\n"
+            f"3s: %{round(degisim3, 2)}\n"
+            f"24s: %{round(degisim24, 2)}\n"
+            f"Fiyat: {round(fiyat, 4)}\n\n"
+            f"Not: Hacim çok yüksek ama fiyat henüz tam gitmemiş olabilir."
+        )
+
+        telegram_gonder(mesaj)
+        print(mesaj)
+
+        siradisi_hacim_gonderilen[symbol] = simdi
+
+
+def kategori_belirle(genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, degisim1, degisim3, degisim24):
     gec_pump = degisim1 > 8 or degisim3 > 12 or degisim24 > 20
 
     if gec_pump and hacim_kat >= 4 and btcden_guclu:
@@ -246,18 +369,28 @@ def kategori_belirle(genel_skor, hacim_kat, haber_skoru, btcden_guclu, degisim1,
 
     if (
         haber_skoru >= 15
-        and genel_skor >= 22
+        and genel_skor >= 30
+        and kalite_skoru >= 13
         and hacim_kat >= 5
         and degisim3 >= 2
         and btcden_guclu
     ):
         return "⭐ Yıldız", "Öne çıkan aday"
 
+    if (
+        genel_skor >= 22
+        and kalite_skoru >= 11
+        and hacim_kat >= 4
+        and degisim3 >= 1.5
+        and btcden_guclu
+    ):
+        return "🔥 Elit Roket", "Yüksek kalite aday"
+
     if haber_skoru > 0 and genel_skor >= 12 and hacim_kat >= 3 and degisim3 > 0 and btcden_guclu:
-    	return "🚀 Roket Adayı", "Haberli"
+        return "🚀 Roket Adayı", "Haberli"
 
     if haber_skoru == 0 and genel_skor >= 13 and hacim_kat >= 4 and degisim3 > 0.5 and btcden_guclu:
-    	return "🚀 Roket Adayı", "Sessiz"
+        return "🚀 Roket Adayı", "Sessiz"
 
     if genel_skor >= 12 and hacim_kat >= 4 and btcden_guclu:
         return "🔥 Güçlü", "Güçlü İzleme"
@@ -294,6 +427,9 @@ while True:
                     continue
 
                 if symbol == "BTCTRY":
+                    continue
+
+                if stable_coin_mi(symbol):
                     continue
 
                 if len(symbol) > 15:
@@ -345,6 +481,14 @@ while True:
                     + zirve_skoru
                 )
 
+                kalite_skoru = (
+                    hacim_skoru * 0.55
+                    + momentum_skoru * 0.30
+                    + btc_skoru * 0.10
+                    + mum_skoru
+                    + zirve_skoru
+                )
+
                 if hacim_kat >= 5:
                     genel_skor += 4
 
@@ -378,8 +522,18 @@ while True:
                 if satis_baskisi:
                     genel_skor -= 5
 
+                siradisi_hacim_kontrol(
+                    symbol,
+                    hacim_kat,
+                    degisim1,
+                    degisim3,
+                    degisim24,
+                    fiyat
+                )
+
                 durum, alt_durum = kategori_belirle(
                     genel_skor,
+                    kalite_skoru,
                     hacim_kat,
                     haber_skoru,
                     btcden_guclu,
@@ -390,6 +544,16 @@ while True:
 
                 if durum is None:
                     continue
+
+                haftalik_kayit_ekle(
+                    symbol,
+                    durum,
+                    genel_skor,
+                    kalite_skoru,
+                    haber_skoru,
+                    hacim_kat,
+                    degisim3
+                )
 
                 stop = fiyat * 0.985
                 hedef1 = fiyat * 1.03
@@ -525,6 +689,7 @@ while True:
                         else:
                             mesaj_yukselis += (
                                 f"Skor: {round(a['skor'], 2)}\n"
+                        f"Kalite: {round(a['kalite_skoru'], 2)}\n"
                                 f"Hacim: {round(a['hacim'], 2)}x\n"
                             )
 
@@ -541,6 +706,9 @@ while True:
                     if a["durum"] == "🚀 Roket Adayı":
                         satir += f"Tür: {a['alt_durum']}\n"
 
+                    if a["durum"] == "🔥 Elit Roket":
+                        satir += f"Not: {a['alt_durum']}\n"
+
                     if a["durum"] == "⭐ Yıldız":
                         satir += f"Not: {a['alt_durum']}\n"
 
@@ -552,6 +720,7 @@ while True:
 
                     satir += (
                         f"Skor: {round(a['skor'], 2)}\n"
+                        f"Kalite: {round(a['kalite_skoru'], 2)}\n"
                         f"Hacim: {round(a['hacim'], 2)} kat\n"
                         f"1s: %{round(a['degisim1'], 2)} | "
                         f"3s: %{round(a['degisim3'], 2)} | "
