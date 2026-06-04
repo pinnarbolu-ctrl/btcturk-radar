@@ -1,8 +1,8 @@
-
 import os
 import time
 import requests
 import feedparser
+
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -356,21 +356,31 @@ def siradisi_hacim_kontrol(
     return
 
 def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, degisim1, degisim3, degisim24):
+    """
+    V4.8 düzeltilmiş kategori sırası.
+
+    Önemli:
+    Hacim kategorileri roket/elit/yıldız kontrollerinden sonra gelir.
+    Böylece roket adayı olabilecek coinler önce hacim sinyaline düşüp kaybolmaz.
+    """
+
     gec_pump = degisim1 > 8 or degisim3 > 12 or degisim24 > 20
 
     if gec_pump and hacim_kat >= 4 and btcden_guclu:
         return "⚠️ Geç Pump", "Geç hareket"
 
+    # 1) ⭐ YILDIZ - en üst seviye
+    # Haber + BTC + momentum + yüksek skor/kalite + önceki doğrulama şartı.
     yildiz_sarti = (
         genel_skor >= 28
         and kalite_skoru >= 15
         and hacim_kat >= 5
         and btcden_guclu
+        and degisim1 > 0
+        and degisim3 > 0
+        and haber_skoru > 0
     )
 
-    # Yıldız tek taramada verilmez.
-    # İlk yakalanışta aday hafızaya alınır ve Elit Roket olarak gösterilir.
-    # Sonraki taramada skor ve hacim düşmemişse Yıldız olur.
     if yildiz_sarti:
         onceki_yildiz = yildiz_adaylari.get(symbol)
 
@@ -379,9 +389,6 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
             hacim_dusmedi = hacim_kat >= onceki_yildiz["hacim"] * 0.90
 
             if skor_dusmedi and hacim_dusmedi:
-                # V4: Yıldız için haber desteği zorunlu
-                if haber_skoru <= 0:
-                    return "🔥 Elit Roket", "Haber desteği olmadığı için yıldız verilmedi."
                 return "⭐ Yıldız", "Doğrulanmış güçlü aday"
 
         yildiz_adaylari[symbol] = {
@@ -396,48 +403,58 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
     if symbol in yildiz_adaylari:
         yildiz_adaylari.pop(symbol, None)
 
+    # 2) 🔥 ELİT ROKET
+    # En güçlü roket katmanı. BTC + momentum + yüksek kalite şartı korunur.
+    # Lider takip bu dosyada ayrı net üretilmiyorsa zorunlu yapmıyoruz; aksi halde sinyal tamamen boğulur.
     if (
         genel_skor >= 20
         and kalite_skoru >= 10
         and hacim_kat >= 4
+        and degisim1 > 0
         and degisim3 >= 1
         and btcden_guclu
     ):
         return "🔥 Elit Roket", "Yüksek kalite aday"
 
-    # V4.7 güncel hacim sistemi
-    # <5x: elenir
-    # 5x-12x: arka planda izlenir
-    # 12x+: ⚡ GÜÇLÜ HACİM olarak arka planda kalır, Telegram'a gönderilmez
-    # 15x+ + BTC gücü + 1s/3s pozitif: 🚨 SIRADIŞI HACİM olarak Telegram'a gönderilir
-    if hacim_kat >= 15 and btcden_guclu and degisim1 > 0 and degisim3 > 0:
-        return "🚨 SIRADIŞI HACİM", "Hacim çok yüksek ve fiyat hareketi destekliyor."
-
-    if hacim_kat >= 12 and btcden_guclu and not (degisim1 < 0 and degisim3 < 0):
-        return "⚡ GÜÇLÜ HACİM", "Hacim güçlü ve fiyat destekliyor."
-
-    if genel_skor >= 8.5 and 5 <= hacim_kat < 12 and degisim3 > 1 and btcden_guclu:
-        return "📈 İzleme", "Arka plan"
-
+    # 3) 🚀 ROKET ADAYI - haberli
+    # Hacimden önce gelir. Böylece haberli/kaliteli coin sıradışı hacme takılıp roketi kaçırmaz.
     if (
         haber_skoru > 0
         and genel_skor >= 12
         and kalite_skoru >= 8
         and hacim_kat >= 3
+        and degisim1 > 0
         and degisim3 > 0
         and btcden_guclu
     ):
         return "🚀 Roket Adayı", "Haberli"
 
+    # 4) 🚀 ROKET ADAYI - sessiz
+    # Haber yoksa şartlar biraz daha güçlü kalır.
     if (
         haber_skoru == 0
         and genel_skor >= 13
         and kalite_skoru >= 8
         and hacim_kat >= 4
+        and degisim1 > 0
         and degisim3 > 0.5
         and btcden_guclu
     ):
         return "🚀 Roket Adayı", "Sessiz"
+
+    # 5) 🚨 SIRADIŞI HACİM
+    # Sadece hacim sinyali. Roket/elit/yıldızdan sonra çalışır.
+    if hacim_kat >= 15 and btcden_guclu and degisim1 > 0 and degisim3 > 0:
+        return "🚨 SIRADIŞI HACİM", "Hacim çok yüksek ve fiyat hareketi destekliyor."
+
+    # 6) ⚡ GÜÇLÜ HACİM
+    # Arka planda kalır, Telegram'a gönderilmez.
+    if hacim_kat >= 12 and btcden_guclu and not (degisim1 < 0 and degisim3 < 0):
+        return "⚡ GÜÇLÜ HACİM", "Hacim güçlü ve fiyat destekliyor."
+
+    # 7) 📈 İZLEME
+    if genel_skor >= 8.5 and 5 <= hacim_kat < 12 and degisim3 > 1 and btcden_guclu:
+        return "📈 İzleme", "Arka plan"
 
     return None, None
 
