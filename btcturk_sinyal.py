@@ -341,7 +341,8 @@ def siradisi_hacim_kontrol(
     degisim24,
     fiyat,
     son_mum_yesil,
-    satis_baskisi
+    satis_baskisi,
+    btcden_guclu
 ):
     simdi = time.time()
     son_gonderim = siradisi_hacim_gonderilen.get(symbol, 0)
@@ -349,33 +350,42 @@ def siradisi_hacim_kontrol(
     if simdi - son_gonderim < SIRADISI_HACIM_SURESI:
         return
 
-    # METRY gibi hem günlük hem 3 saatlik düşüşte hacim patlıyorsa
-    # bunu "birikim" değil satış hacmi kabul ediyoruz ve mesaj atmıyoruz.
-    if degisim24 < -8 and degisim3 < -2:
+    # Düşen coin istemiyoruz.
+    if degisim3 <= 0:
+        return
+
+    # BTC'den güçlü değilse sıradışı hacim saymıyoruz.
+    if not btcden_guclu:
+        return
+
+    # Son 24 saatte fazla ezilmiş coinlerde hacim genelde satış hacmi olabilir.
+    if degisim24 < -5:
         return
 
     # Satış baskısı varsa mesaj atmıyoruz.
     if satis_baskisi:
         return
 
-    # Sıradışı hacim artık sadece "birikim ihtimali" taşıyorsa gelsin.
+    # Son mum yeşil değilse hacim birikim gibi okunmaz.
+    if not son_mum_yesil:
+        return
+
     if (
-        hacim_kat >= 8
-        and degisim3 > -1
-        and degisim24 < 15
+        hacim_kat >= 7
         and degisim1 < 6
-        and son_mum_yesil
+        and degisim24 < 15
     ):
         mesaj = (
-            f"🚨 SIRADIŞI HACİM\\n\\n"
-            f"{symbol}\\n\\n"
-            f"Tür: Birikim ihtimali\\n"
-            f"Hacim: {round(hacim_kat, 2)}x\\n"
-            f"1s: %{round(degisim1, 2)}\\n"
-            f"3s: %{round(degisim3, 2)}\\n"
-            f"24s: %{round(degisim24, 2)}\\n"
-            f"Fiyat: {round(fiyat, 4)}\\n\\n"
-            f"Not: Hacim yüksek, satış baskısı yok, son mum yeşil."
+            f"🚨 SIRADIŞI HACİM\n\n"
+            f"{symbol}\n\n"
+            f"Tür: Birikim ihtimali\n"
+            f"Hacim: {round(hacim_kat, 2)}x\n"
+            f"1s: %{round(degisim1, 2)}\n"
+            f"3s: %{round(degisim3, 2)}\n"
+            f"24s: %{round(degisim24, 2)}\n"
+            f"BTC Gücü: {'✅' if btcden_guclu else '❌'}\n"
+            f"Fiyat: {round(fiyat, 4)}\n\n"
+            f"Not: Hacim güçlü ve fiyat destekliyor."
         )
 
         telegram_gonder(mesaj)
@@ -589,7 +599,8 @@ while True:
                     degisim24,
                     fiyat,
                     son_mum_yesil,
-                    satis_baskisi
+                    satis_baskisi,
+                    btcden_guclu
                 )
 
                 durum, alt_durum = kategori_belirle(
