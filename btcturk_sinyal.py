@@ -45,7 +45,9 @@ STABLE_COINLER = [
 
 DURUM_SEVIYESI = {
     "📈 İzleme": 1,
+    "⚡ Güçlü Hacim": 2,
     "🔥 Güçlü": 2,
+    "🚨 Sıradışı Hacim": 3,
     "🚀 Roket Adayı": 3,
     "🔥 Elit Roket": 4,
     "⭐ Yıldız": 5,
@@ -344,55 +346,15 @@ def siradisi_hacim_kontrol(
     satis_baskisi,
     btcden_guclu
 ):
-    simdi = time.time()
-    son_gonderim = siradisi_hacim_gonderilen.get(symbol, 0)
+    """
+    V4.1:
+    Sıradışı/Güçlü hacim Telegram mesajları artık kategori_belirle()
+    üzerinden tek mesaj halinde gönderiliyor.
 
-    if simdi - son_gonderim < SIRADISI_HACIM_SURESI:
-        return
-
-    # Düşen coin istemiyoruz.
-    if degisim3 <= 0:
-        return
-
-    # BTC'den güçlü değilse sıradışı hacim saymıyoruz.
-    if not btcden_guclu:
-        return
-
-    # Son 24 saatte fazla ezilmiş coinlerde hacim genelde satış hacmi olabilir.
-    if degisim24 < -5:
-        return
-
-    # Satış baskısı varsa mesaj atmıyoruz.
-    if satis_baskisi:
-        return
-
-    # Son mum yeşil değilse hacim birikim gibi okunmaz.
-    if not son_mum_yesil:
-        return
-
-    if (
-        hacim_kat >= 7
-        and degisim1 < 6
-        and degisim24 < 15
-    ):
-        mesaj = (
-            f"🚨 SIRADIŞI HACİM\n\n"
-            f"{symbol}\n\n"
-            f"Tür: Birikim ihtimali\n"
-            f"Hacim: {round(hacim_kat, 2)}x\n"
-            f"1s: %{round(degisim1, 2)}\n"
-            f"3s: %{round(degisim3, 2)}\n"
-            f"24s: %{round(degisim24, 2)}\n"
-            f"BTC Gücü: {'✅' if btcden_guclu else '❌'}\n"
-            f"Fiyat: {round(fiyat, 4)}\n\n"
-            f"Not: Hacim güçlü ve fiyat destekliyor."
-        )
-
-        telegram_gonder(mesaj)
-        print(mesaj)
-
-        siradisi_hacim_gonderilen[symbol] = simdi
-
+    Bu fonksiyon eski 7x "birikim ihtimali" mesajını kapatır.
+    Böylece 5x-8x arası sadece arka planda kalır, Telegram'ı doldurmaz.
+    """
+    return
 
 def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, degisim1, degisim3, degisim24):
     gec_pump = degisim1 > 8 or degisim3 > 12 or degisim24 > 20
@@ -441,6 +403,20 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
     ):
         return "🔥 Elit Roket", "Yüksek kalite aday"
 
+    # V4.1 güncel hacim sistemi
+    # <5x: elenir
+    # 5x-8x: arka planda izlenir
+    # 8x+: ⚡ Güçlü Hacim olarak Telegram'a gönderilir
+    # 10x+ + BTC gücü + 1s/3s pozitif: 🚨 Sıradışı Hacim olarak Telegram'a gönderilir
+    if hacim_kat >= 10 and btcden_guclu and degisim1 > 0 and degisim3 > 0:
+        return "🚨 Sıradışı Hacim", "10x+ hacim, BTC güçlü, fiyat teyitli"
+
+    if hacim_kat >= 8 and btcden_guclu and not (degisim1 < 0 and degisim3 < 0):
+        return "⚡ Güçlü Hacim", "8x+ hacim"
+
+    if genel_skor >= 8.5 and 5 <= hacim_kat < 8 and degisim3 > 1 and btcden_guclu:
+        return "📈 İzleme", "Arka plan"
+
     if (
         haber_skoru > 0
         and genel_skor >= 12
@@ -460,12 +436,6 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         and btcden_guclu
     ):
         return "🚀 Roket Adayı", "Sessiz"
-
-    if genel_skor >= 12 and hacim_kat >= 4 and btcden_guclu:
-        return "🔥 Güçlü", "Güçlü İzleme"
-
-    if genel_skor >= 8.5 and hacim_kat >= 3.5 and degisim3 > 1 and btcden_guclu:
-        return "📈 İzleme", "Arka plan"
 
     return None, None
 
@@ -635,6 +605,7 @@ while True:
                 adaylar.append({
                     "symbol": symbol,
                     "skor": genel_skor,
+                    "kalite_skoru": kalite_skoru,
                     "durum": durum,
                     "alt_durum": alt_durum,
                     "fiyat": fiyat,
@@ -777,6 +748,12 @@ while True:
                     )
 
                     if a["durum"] == "🚀 Roket Adayı":
+                        satir += f"Tür: {a['alt_durum']}\n"
+
+                    if a["durum"] == "⚡ Güçlü Hacim":
+                        satir += f"Tür: {a['alt_durum']}\n"
+
+                    if a["durum"] == "🚨 Sıradışı Hacim":
                         satir += f"Tür: {a['alt_durum']}\n"
 
                     if a["durum"] == "🔥 Elit Roket":
