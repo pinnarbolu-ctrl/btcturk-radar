@@ -444,8 +444,12 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
 
     # 5) 🚨 SIRADIŞI HACİM
     # Sadece hacim sinyali. Roket/elit/yıldızdan sonra çalışır.
-    if hacim_kat >= 15 and btcden_guclu and degisim1 > 0 and degisim3 > 0:
-        return "🚨 SIRADIŞI HACİM", "Hacim çok yüksek ve fiyat hareketi destekliyor."
+    if (
+        hacim_kat >= 15
+        and btcden_guclu
+        and (degisim1 >= 0.2 or degisim3 >= 1)
+    ):
+        return "🚨 SIRADIŞI HACİM", "Hacim çok yüksek ve momentum destekliyor."
 
     # 6) ⚡ GÜÇLÜ HACİM
     # Arka planda kalır, Telegram'a gönderilmez.
