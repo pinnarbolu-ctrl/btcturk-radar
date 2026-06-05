@@ -3,8 +3,8 @@ import requests
 import time
 from datetime import datetime
 
-BOT_TOKEN = "BURAYA_YENI_BIST_BOT_TOKEN"
-CHAT_IDS = [BURAYA_CHAT_ID]
+BOT_TOKEN = "8855467313:AAHYdR1ts-liJ0hMwxxPGpgmrPne6ydFOpI"
+CHAT_IDS = [2097448038]
 
 HISSELER = [
     "ASELS.IS", "THYAO.IS", "TUPRS.IS", "KCHOL.IS", "SAHOL.IS",
