@@ -1,3 +1,4 @@
+print("BIST BOT V2 AKTIF")
 import yfinance as yf
 import requests
 import time
