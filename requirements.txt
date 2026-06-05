@@ -1,5 +1,6 @@
 requests
 feedparser
-deep-translatoryfinance
+deep-translator
+yfinance
 pandas
 numpy
