@@ -355,7 +355,7 @@ def siradisi_hacim_kontrol(
     """
     return
 
-def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, degisim1, degisim3, degisim24):
+def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, degisim1, degisim3, degisim24, zirve_yakin):
     """
     V4.8 düzeltilmiş kategori sırası.
 
@@ -448,8 +448,9 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         hacim_kat >= 15
         and btcden_guclu
         and (degisim1 >= 0.2 or degisim3 >= 1)
+        and zirve_yakin
     ):
-        return "🚨 SIRADIŞI HACİM", "Hacim çok yüksek ve momentum destekliyor."
+        return "🚨 SIRADIŞI HACİM", "Hacim çok yüksek, momentum destekliyor ve zirveye yakın."
 
     # 6) ⚡ GÜÇLÜ HACİM
     # Arka planda kalır, Telegram'a gönderilmez.
@@ -605,7 +606,8 @@ while True:
                     btcden_guclu,
                     degisim1,
                     degisim3,
-                    degisim24
+                    degisim24,
+                    zirve_yakin
                 )
 
                 if durum is None:
