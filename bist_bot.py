@@ -1,4 +1,4 @@
-print("BIST BOT V2 AKTIF")
+print("BIST BOT V2 AKTIF - YENİ KOD")
 import yfinance as yf
 import requests
 import time
