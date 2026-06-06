@@ -1,7 +1,9 @@
-print("BIST BOT V2.2 AKTIF - ERKEN HAREKET + GEC KALMIS FILTRESI")
+
+print("BIST BOT V2.4 AKTIF - AZ MESAJ + GUNLUK TEKRAR FILTRESI")
 
 import time
 from datetime import datetime
+from pathlib import Path
 
 import requests
 import yfinance as yf
@@ -41,12 +43,38 @@ ENDEKS = "XU100.IS"
 
 TARAMA_SURESI = 15 * 60
 TEKRAR_SURESI = 24 * 60 * 60
-MAX_SINYAL = 8
+MAX_SINYAL = 3
 
 KAP_API_URL = "https://www.kap.org.tr/tr/api/disclosures"
 
 gonderilenler = {}
 son_kap_cache = {"zaman": 0, "veri": {}}
+GONDERILEN_DOSYA = "gonderilen_bist_sinyalleri.txt"
+
+
+def bugun_key():
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def gunluk_gonderildi_mi(hisse):
+    """Railway yeniden başlasa bile aynı hisse gün içinde tekrar gitmesin."""
+    try:
+        key = bugun_key() + "_" + hisse
+        p = Path(GONDERILEN_DOSYA)
+        if not p.exists():
+            return False
+        return key in p.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return False
+
+
+def gunluk_kaydet(hisse):
+    try:
+        key = bugun_key() + "_" + hisse
+        with open(GONDERILEN_DOSYA, "a", encoding="utf-8") as f:
+            f.write(key + "\n")
+    except Exception as e:
+        print("Günlük kayıt hatası:", e)
 
 
 def sayi_al(deger):
@@ -385,7 +413,7 @@ def hisse_analiz(hisse, endeks_data, kap_skorlari):
         if 1.1 <= hacim_orani <= 2.5:
             hazir_skor += 2
         if hacim_artiyor:
-            hazir_skor += 2
+            hazir_skor += 3
         if 0 <= gunluk <= 3.5:
             hazir_skor += 2
         if zirve_uzaklik >= 5:
@@ -397,11 +425,11 @@ def hisse_analiz(hisse, endeks_data, kap_skorlari):
         if rsi is not None and 48 <= rsi <= 65:
             hazir_skor += 2
         if kap_puan > 0:
-            hazir_skor += min(3, kap_puan)
+            hazir_skor += min(5, kap_puan + 2)
 
         hazir_skor -= min(4, gec_kalma_cezasi)
 
-        if hazir_skor >= 8 and gunluk <= 4 and (rsi is None or rsi <= 68):
+        if hazir_skor >= 8 and gunluk <= 4 and hacim_orani >= 0.8 and sikisma_araligi <= 35 and (rsi is None or rsi <= 68):
             kategori = "🏆 PATLAMAYA HAZIRLANIYOR"
             skor = hazir_skor
             nedenler = [
@@ -418,7 +446,7 @@ def hisse_analiz(hisse, endeks_data, kap_skorlari):
         if 1.2 <= hacim_orani <= 3:
             erken_skor += 2
         if hacim_artiyor:
-            erken_skor += 2
+            erken_skor += 3
         if 1 <= gunluk <= 5:
             erken_skor += 2
         if endekse_gore_guc >= 1.5:
@@ -430,11 +458,11 @@ def hisse_analiz(hisse, endeks_data, kap_skorlari):
         if rsi is not None and 50 <= rsi <= 66:
             erken_skor += 2
         if kap_puan > 0:
-            erken_skor += min(4, kap_puan)
+            erken_skor += min(6, kap_puan + 2)
 
         erken_skor -= min(5, gec_kalma_cezasi)
 
-        if erken_skor >= 9 and erken_skor > skor and gunluk <= 6:
+        if erken_skor >= 9 and erken_skor > skor and gunluk <= 6 and hacim_orani >= 1.0 and sikisma_araligi <= 35 and endekse_gore_guc >= 1.5:
             kategori = "🚀 ERKEN HAREKET"
             skor = erken_skor
             nedenler = [
@@ -463,11 +491,11 @@ def hisse_analiz(hisse, endeks_data, kap_skorlari):
         if rsi is not None and 50 <= rsi <= 68:
             guclu_skor += 1
         if kap_puan > 0:
-            guclu_skor += min(3, kap_puan)
+            guclu_skor += min(5, kap_puan + 2)
 
         guclu_skor -= gec_kalma_cezasi
 
-        if guclu_skor >= 8 and guclu_skor > skor and hacim_orani >= 1.2:
+        if False and guclu_skor >= 8 and guclu_skor > skor and hacim_orani >= 1.3 and endekse_gore_guc >= 1.5:
             kategori = "🔥 GÜÇLÜ HİSSE"
             skor = guclu_skor
             nedenler = [
@@ -496,7 +524,7 @@ def hisse_analiz(hisse, endeks_data, kap_skorlari):
 
         elit_skor -= max(0, gec_kalma_cezasi - 2)
 
-        if elit_skor >= 11 and elit_skor > skor:
+        if elit_skor >= 13 and elit_skor > skor and hacim_orani >= 1.8 and endekse_gore_guc >= 3:
             if kap_puan >= 3:
                 kategori = "⭐ KAP DESTEKLİ ELİT HİSSE"
             else:
@@ -579,7 +607,7 @@ def mesaj_olustur(s):
 
 
 def alarm_kontrol():
-    print("BİST V2.2 taraması başladı:", datetime.now())
+    print("BİST V2.4 taraması başladı:", datetime.now())
 
     endeks_data = veri_cek(ENDEKS)
     if endeks_data is None:
@@ -597,13 +625,26 @@ def alarm_kontrol():
     sonuclar = sorted(sonuclar, key=lambda x: x["skor"], reverse=True)
 
     if not sonuclar:
-        print("Şu an uygun BİST V2.2 adayı yok.")
+        print("Şu an uygun BİST V2.4 adayı yok.")
         return
 
     sayac = 0
+    izinli_kategoriler = [
+        "⭐ KAP DESTEKLİ ELİT HİSSE",
+        "💎 ELİT HİSSE",
+        "🚀 ERKEN HAREKET",
+        "🏆 PATLAMAYA HAZIRLANIYOR",
+    ]
+
     for s in sonuclar:
         if sayac >= MAX_SINYAL:
             break
+
+        if s["kategori"] not in izinli_kategoriler:
+            continue
+
+        if gunluk_gonderildi_mi(s["hisse"]):
+            continue
 
         anahtar = s["hisse"] + "_" + s["kategori"]
         simdi = time.time()
@@ -613,12 +654,13 @@ def alarm_kontrol():
 
         telegram_gonder(mesaj_olustur(s))
         gonderilenler[anahtar] = simdi
+        gunluk_kaydet(s["hisse"])
         sayac += 1
 
     print("Gönderilen sinyal sayısı:", sayac)
 
 
-telegram_gonder("✅ BIST BOT V2.2 BAŞLADI\nErken hareket + geç kalmış filtreleri aktif.")
+# telegram_gonder("✅ BIST BOT V2.4 BAŞLADI\nAz mesaj + günlük tekrar filtresi aktif.")
 
 while True:
     try:
