@@ -1,3 +1,4 @@
+
 import os
 import time
 import requests
@@ -36,6 +37,9 @@ son_lider = None
 yildiz_adaylari = {}
 
 haftalik_kayitlar = []
+h1_kayitlari = []
+h2_kayitlari = []
+kategori_istatistikleri = {}
 son_haftalik_rapor = time.time()
 
 STABLE_COINLER = [
@@ -204,6 +208,9 @@ def stop_raporu_gonder():
 
 
 def haftalik_kayit_ekle(symbol, durum, skor, kalite_skoru, haber_skoru, hacim, degisim3):
+    kategori_istatistikleri.setdefault(durum, {"toplam":0,"h1":0,"h2":0})
+    kategori_istatistikleri[durum]["toplam"] += 1
+
     haftalik_kayitlar.append({
         "zaman": time.time(),
         "symbol": symbol,
@@ -265,10 +272,30 @@ def haftalik_rapor_gonder():
             f"{en_yuksek_hacim['symbol']} | {round(en_yuksek_hacim['hacim'], 2)}x\n"
         )
 
+    
+    if h1_kayitlari:
+        mesaj += "\n🏆 EN HIZLI H1\n"
+        for i,k in enumerate(sorted(h1_kayitlari,key=lambda x:x["sure"])[:5],1):
+            mesaj += f"{i}. {k['symbol']} | {sure_yaz(k['sure'])}\n"
+
+    mesaj += "\n🎯 KATEGORİ BAŞARI ORANI\n"
+    for kat,veri in kategori_istatistikleri.items():
+        toplam=max(veri["toplam"],1)
+        h1_oran=round(veri["h1"]*100/toplam,1)
+        h2_oran=round(veri["h2"]*100/toplam,1)
+        mesaj += f"\n{kat}\nToplam:{veri['toplam']} | H1:%{h1_oran} | H2:%{h2_oran}\n"
+
+    if h2_kayitlari:
+        mesaj += "\n🏆 EN HIZLI H2\n"
+        for i,k in enumerate(sorted(h2_kayitlari,key=lambda x:x["sure"])[:5],1):
+            mesaj += f"{i}. {k['symbol']} | {sure_yaz(k['sure'])}\n"
+
     telegram_gonder(mesaj)
     print(mesaj)
 
     haftalik_kayitlar = []
+    h1_kayitlari.clear()
+    h2_kayitlari.clear()
     son_haftalik_rapor = simdi
 
 
@@ -300,6 +327,13 @@ def hedef_stop_kontrol():
             continue
 
         if not s["hedef1_bildi"] and fiyat >= s["hedef1"]:
+            # V4.11: Hedef 1 sonrası otomatik çıkış yerine zirve takibi başlar.
+            # Yükseliş devam ederse erken kesmez, zirveden %1.5 dönüşte uyarır.
+            s["hedef1_bildi"] = True
+            s["zirve_fiyat"] = max(fiyat, s.get("zirve_fiyat") or fiyat)
+            s["guc_kaybi_bildi"] = False
+            s["momentum_cokusu_bildi"] = False
+
             mesaj = (
                 f"✅ HEDEF 1 GELDİ\n\n"
                 f"Coin: {symbol}\n"
@@ -308,11 +342,76 @@ def hedef_stop_kontrol():
                 f"Hedef 1: {round(s['hedef1'], 4)}\n"
                 f"Anlık: {round(fiyat, 4)}\n"
                 f"Kazanç: %{round(kazanc, 2)}\n"
-                f"Süre: {gecen_sure}"
+                f"Süre: {gecen_sure}\n\n"
+                f"📌 H1 sonrası zirve takibi başladı."
             )
             telegram_gonder(mesaj)
             print(mesaj)
-            s["hedef1_bildi"] = True
+
+            kategori_istatistikleri.setdefault(s["durum"], {"toplam":0,"h1":0,"h2":0})
+            kategori_istatistikleri[s["durum"]]["h1"] += 1
+
+            h1_kayitlari.append({
+                "symbol": symbol,
+                "sure": time.time() - s["zaman"]
+            })
+
+        # V4.11: H1 sonrası güç kaybı takibi.
+        # H1 geldikten sonra en yüksek fiyat izlenir.
+        # Fiyat zirveden %1.5 geri çekilirse Telegram uyarısı gönderilir.
+        if s.get("hedef1_bildi") and not s.get("guc_kaybi_bildi", False):
+            onceki_zirve = s.get("zirve_fiyat") or fiyat
+
+            if fiyat > onceki_zirve:
+                s["zirve_fiyat"] = fiyat
+                onceki_zirve = fiyat
+
+            geri_cekilme = ((fiyat - onceki_zirve) / onceki_zirve) * 100 if onceki_zirve else 0
+
+            if fiyat <= onceki_zirve * 0.985:
+                mesaj = (
+                    f"⚠️ GÜÇ KAYBEDİYOR\n\n"
+                    f"Coin: {symbol}\n"
+                    f"Kategori: {s['durum']}\n"
+                    f"Giriş: {round(giris, 4)}\n"
+                    f"H1: {round(s['hedef1'], 4)}\n"
+                    f"Zirve: {round(onceki_zirve, 4)}\n"
+                    f"Anlık: {round(fiyat, 4)}\n"
+                    f"Zirveden geri çekilme: %{round(abs(geri_cekilme), 2)}\n"
+                    f"Süre: {gecen_sure}\n\n"
+                    f"Not: H1 sonrası momentum zayıflıyor olabilir."
+                )
+                telegram_gonder(mesaj)
+                print(mesaj)
+                s["guc_kaybi_bildi"] = True
+
+        # V4.12: H1 sonrası daha sert zayıflama kontrolü.
+        # Fiyat zirveden %3 geri çekilirse ikinci seviye uyarı gönderilir.
+        if s.get("hedef1_bildi") and not s.get("momentum_cokusu_bildi", False):
+            onceki_zirve = s.get("zirve_fiyat") or fiyat
+
+            if fiyat > onceki_zirve:
+                s["zirve_fiyat"] = fiyat
+                onceki_zirve = fiyat
+
+            geri_cekilme = ((fiyat - onceki_zirve) / onceki_zirve) * 100 if onceki_zirve else 0
+
+            if fiyat <= onceki_zirve * 0.97:
+                mesaj = (
+                    f"🚨 MOMENTUM ÇÖKÜYOR\n\n"
+                    f"Coin: {symbol}\n"
+                    f"Kategori: {s['durum']}\n"
+                    f"Giriş: {round(giris, 4)}\n"
+                    f"H1: {round(s['hedef1'], 4)}\n"
+                    f"Zirve: {round(onceki_zirve, 4)}\n"
+                    f"Anlık: {round(fiyat, 4)}\n"
+                    f"Zirveden geri çekilme: %{round(abs(geri_cekilme), 2)}\n"
+                    f"Süre: {gecen_sure}\n\n"
+                    f"Not: H1 sonrası güç kaybı derinleşti."
+                )
+                telegram_gonder(mesaj)
+                print(mesaj)
+                s["momentum_cokusu_bildi"] = True
 
         if not s["hedef2_bildi"] and fiyat >= s["hedef2"]:
             mesaj = (
@@ -327,6 +426,15 @@ def hedef_stop_kontrol():
             )
             telegram_gonder(mesaj)
             print(mesaj)
+
+            kategori_istatistikleri.setdefault(s["durum"], {"toplam":0,"h1":0,"h2":0})
+            kategori_istatistikleri[s["durum"]]["h2"] += 1
+
+            h2_kayitlari.append({
+                "symbol": symbol,
+                "sure": time.time() - s["zaman"]
+            })
+
             s["hedef2_bildi"] = True
             kapanacaklar.append(symbol)
 
@@ -738,7 +846,10 @@ while True:
                             "zaman": simdi,
                             "hedef1_bildi": False,
                             "hedef2_bildi": False,
-                            "stop_bildi": False
+                            "stop_bildi": False,
+                            "zirve_fiyat": None,
+                            "guc_kaybi_bildi": False,
+                            "momentum_cokusu_bildi": False
                         }
                     elif symbol in aktif_sinyaller:
                         aktif_sinyaller[symbol]["durum"] = a["durum"]
