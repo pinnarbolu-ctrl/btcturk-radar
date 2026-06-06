@@ -1,4 +1,5 @@
 
+
 import os
 import time
 import requests
@@ -51,9 +52,10 @@ DURUM_SEVIYESI = {
     "📈 İzleme": 1,
     "⚡ GÜÇLÜ HACİM": 2,
     "🚨 SIRADIŞI HACİM": 3,
-    "🚀 Roket Adayı": 4,
-    "🔥 Elit Roket": 5,
-    "⭐ Yıldız": 6,
+    "📈 GÜÇLENİYOR": 4,
+    "🚀 Roket Adayı": 5,
+    "🔥 Elit Roket": 6,
+    "⭐ Yıldız": 7,
     "⚠️ Geç Pump": 0
 }
 
@@ -326,13 +328,50 @@ def hedef_stop_kontrol():
             kapanacaklar.append(symbol)
             continue
 
+        # V4.15: Sinyal oluştuğu andan itibaren zirve takibi.
+        # H1 beklemez. Fiyat yükseldikçe zirve güncellenir.
+        onceki_zirve = s.get("zirve_fiyat") or giris
+
+        if fiyat > onceki_zirve:
+            s["zirve_fiyat"] = fiyat
+            onceki_zirve = fiyat
+
+        geri_cekilme = ((fiyat - onceki_zirve) / onceki_zirve) * 100 if onceki_zirve else 0
+
+        if not s.get("guc_kaybi_bildi", False) and fiyat <= onceki_zirve * 0.985:
+            mesaj = (
+                f"⚠️ GÜÇ KAYBEDİYOR\n\n"
+                f"Coin: {symbol}\n"
+                f"Kategori: {s['durum']}\n"
+                f"Giriş: {round(giris, 4)}\n"
+                f"Zirve: {round(onceki_zirve, 4)}\n"
+                f"Anlık: {round(fiyat, 4)}\n"
+                f"Zirveden geri çekilme: %{round(abs(geri_cekilme), 2)}\n"
+                f"Süre: {gecen_sure}\n\n"
+                f"Not: Sinyal sonrası güç zayıflıyor olabilir."
+            )
+            telegram_gonder(mesaj)
+            print(mesaj)
+            s["guc_kaybi_bildi"] = True
+
+        if not s.get("momentum_cokusu_bildi", False) and fiyat <= onceki_zirve * 0.97:
+            mesaj = (
+                f"🚨 MOMENTUM ÇÖKÜYOR\n\n"
+                f"Coin: {symbol}\n"
+                f"Kategori: {s['durum']}\n"
+                f"Giriş: {round(giris, 4)}\n"
+                f"Zirve: {round(onceki_zirve, 4)}\n"
+                f"Anlık: {round(fiyat, 4)}\n"
+                f"Zirveden geri çekilme: %{round(abs(geri_cekilme), 2)}\n"
+                f"Süre: {gecen_sure}\n\n"
+                f"Not: Sinyal sonrası güç kaybı derinleşti."
+            )
+            telegram_gonder(mesaj)
+            print(mesaj)
+            s["momentum_cokusu_bildi"] = True
+
         if not s["hedef1_bildi"] and fiyat >= s["hedef1"]:
-            # V4.11: Hedef 1 sonrası otomatik çıkış yerine zirve takibi başlar.
-            # Yükseliş devam ederse erken kesmez, zirveden %1.5 dönüşte uyarır.
             s["hedef1_bildi"] = True
-            s["zirve_fiyat"] = max(fiyat, s.get("zirve_fiyat") or fiyat)
-            s["guc_kaybi_bildi"] = False
-            s["momentum_cokusu_bildi"] = False
 
             mesaj = (
                 f"✅ HEDEF 1 GELDİ\n\n"
@@ -342,8 +381,7 @@ def hedef_stop_kontrol():
                 f"Hedef 1: {round(s['hedef1'], 4)}\n"
                 f"Anlık: {round(fiyat, 4)}\n"
                 f"Kazanç: %{round(kazanc, 2)}\n"
-                f"Süre: {gecen_sure}\n\n"
-                f"📌 H1 sonrası zirve takibi başladı."
+                f"Süre: {gecen_sure}"
             )
             telegram_gonder(mesaj)
             print(mesaj)
@@ -356,62 +394,6 @@ def hedef_stop_kontrol():
                 "sure": time.time() - s["zaman"]
             })
 
-        # V4.11: H1 sonrası güç kaybı takibi.
-        # H1 geldikten sonra en yüksek fiyat izlenir.
-        # Fiyat zirveden %1.5 geri çekilirse Telegram uyarısı gönderilir.
-        if s.get("hedef1_bildi") and not s.get("guc_kaybi_bildi", False):
-            onceki_zirve = s.get("zirve_fiyat") or fiyat
-
-            if fiyat > onceki_zirve:
-                s["zirve_fiyat"] = fiyat
-                onceki_zirve = fiyat
-
-            geri_cekilme = ((fiyat - onceki_zirve) / onceki_zirve) * 100 if onceki_zirve else 0
-
-            if fiyat <= onceki_zirve * 0.985:
-                mesaj = (
-                    f"⚠️ GÜÇ KAYBEDİYOR\n\n"
-                    f"Coin: {symbol}\n"
-                    f"Kategori: {s['durum']}\n"
-                    f"Giriş: {round(giris, 4)}\n"
-                    f"H1: {round(s['hedef1'], 4)}\n"
-                    f"Zirve: {round(onceki_zirve, 4)}\n"
-                    f"Anlık: {round(fiyat, 4)}\n"
-                    f"Zirveden geri çekilme: %{round(abs(geri_cekilme), 2)}\n"
-                    f"Süre: {gecen_sure}\n\n"
-                    f"Not: H1 sonrası momentum zayıflıyor olabilir."
-                )
-                telegram_gonder(mesaj)
-                print(mesaj)
-                s["guc_kaybi_bildi"] = True
-
-        # V4.12: H1 sonrası daha sert zayıflama kontrolü.
-        # Fiyat zirveden %3 geri çekilirse ikinci seviye uyarı gönderilir.
-        if s.get("hedef1_bildi") and not s.get("momentum_cokusu_bildi", False):
-            onceki_zirve = s.get("zirve_fiyat") or fiyat
-
-            if fiyat > onceki_zirve:
-                s["zirve_fiyat"] = fiyat
-                onceki_zirve = fiyat
-
-            geri_cekilme = ((fiyat - onceki_zirve) / onceki_zirve) * 100 if onceki_zirve else 0
-
-            if fiyat <= onceki_zirve * 0.97:
-                mesaj = (
-                    f"🚨 MOMENTUM ÇÖKÜYOR\n\n"
-                    f"Coin: {symbol}\n"
-                    f"Kategori: {s['durum']}\n"
-                    f"Giriş: {round(giris, 4)}\n"
-                    f"H1: {round(s['hedef1'], 4)}\n"
-                    f"Zirve: {round(onceki_zirve, 4)}\n"
-                    f"Anlık: {round(fiyat, 4)}\n"
-                    f"Zirveden geri çekilme: %{round(abs(geri_cekilme), 2)}\n"
-                    f"Süre: {gecen_sure}\n\n"
-                    f"Not: H1 sonrası güç kaybı derinleşti."
-                )
-                telegram_gonder(mesaj)
-                print(mesaj)
-                s["momentum_cokusu_bildi"] = True
 
         if not s["hedef2_bildi"] and fiyat >= s["hedef2"]:
             mesaj = (
@@ -465,11 +447,10 @@ def siradisi_hacim_kontrol(
 
 def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, degisim1, degisim3, degisim24, zirve_yakin):
     """
-    V4.8 düzeltilmiş kategori sırası.
+    V4.20 son kategori mantığı.
 
-    Önemli:
-    Hacim kategorileri roket/elit/yıldız kontrollerinden sonra gelir.
-    Böylece roket adayı olabilecek coinler önce hacim sinyaline düşüp kaybolmaz.
+    Sıradışı Hacim = pump/hacim alarmı.
+    Roket/Elit/Yıldız = kalite kategorileri.
     """
 
     gec_pump = degisim1 > 8 or degisim3 > 12 or degisim24 > 20
@@ -477,45 +458,22 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
     if gec_pump and hacim_kat >= 4 and btcden_guclu:
         return "⚠️ Geç Pump", "Geç hareket"
 
-    # 1) ⭐ YILDIZ - en üst seviye
-    # Haber + BTC + momentum + yüksek skor/kalite + önceki doğrulama şartı.
-    yildiz_sarti = (
-        genel_skor >= 28
-        and kalite_skoru >= 15
-        and hacim_kat >= 5
+    # 1) ⭐ YILDIZ - en üst seviye, sıkı filtre
+    if (
+        genel_skor >= 30
+        and kalite_skoru >= 14
+        and hacim_kat >= 6
         and btcden_guclu
-        and degisim1 > 0
-        and degisim3 > 0
         and haber_skoru > 0
-    )
-
-    if yildiz_sarti:
-        onceki_yildiz = yildiz_adaylari.get(symbol)
-
-        if onceki_yildiz is not None:
-            skor_dusmedi = genel_skor >= onceki_yildiz["skor"]
-            hacim_dusmedi = hacim_kat >= onceki_yildiz["hacim"] * 0.90
-
-            if skor_dusmedi and hacim_dusmedi:
-                return "⭐ Yıldız", "Doğrulanmış güçlü aday"
-
-        yildiz_adaylari[symbol] = {
-            "skor": genel_skor,
-            "hacim": hacim_kat,
-            "zaman": time.time()
-        }
-
-        return "🔥 Elit Roket", "Yıldız adayı, doğrulama bekliyor"
-
-    # Yıldız şartını kaybederse hafızadan çıkar.
-    if symbol in yildiz_adaylari:
-        yildiz_adaylari.pop(symbol, None)
+        and degisim1 > 2
+        and degisim3 > 2
+        and zirve_yakin
+    ):
+        return "⭐ Yıldız", "En güçlü doğrulanmış aday"
 
     # 2) 🔥 ELİT ROKET
-    # En güçlü roket katmanı. BTC + momentum + yüksek kalite şartı korunur.
-    # Lider takip bu dosyada ayrı net üretilmiyorsa zorunlu yapmıyoruz; aksi halde sinyal tamamen boğulur.
     if (
-        genel_skor >= 20
+        genel_skor >= 22
         and kalite_skoru >= 10
         and hacim_kat >= 4
         and degisim1 > 0
@@ -525,7 +483,6 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         return "🔥 Elit Roket", "Yüksek kalite aday"
 
     # 3) 🚀 ROKET ADAYI - haberli
-    # Hacimden önce gelir. Böylece haberli/kaliteli coin sıradışı hacme takılıp roketi kaçırmaz.
     if (
         haber_skoru > 0
         and genel_skor >= 12
@@ -538,7 +495,6 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         return "🚀 Roket Adayı", "Haberli"
 
     # 4) 🚀 ROKET ADAYI - sessiz
-    # Haber yoksa şartlar biraz daha güçlü kalır.
     if (
         haber_skoru == 0
         and genel_skor >= 13
@@ -551,7 +507,6 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         return "🚀 Roket Adayı", "Sessiz"
 
     # 5) 🚨 SIRADIŞI HACİM
-    # Sadece hacim sinyali. Roket/elit/yıldızdan sonra çalışır.
     if (
         hacim_kat >= 15
         and btcden_guclu
@@ -560,12 +515,11 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
     ):
         return "🚨 SIRADIŞI HACİM", "Hacim çok yüksek, momentum destekliyor ve zirveye yakın."
 
-    # 6) ⚡ GÜÇLÜ HACİM
-    # Arka planda kalır, Telegram'a gönderilmez.
+    # 6) ⚡ GÜÇLÜ HACİM - arka plan
     if hacim_kat >= 12 and btcden_guclu and not (degisim1 < 0 and degisim3 < 0):
         return "⚡ GÜÇLÜ HACİM", "Hacim güçlü ve fiyat destekliyor."
 
-    # 7) 📈 İZLEME
+    # 7) 📈 İZLEME - arka plan
     if genel_skor >= 8.5 and 5 <= hacim_kat < 12 and degisim3 > 1 and btcden_guclu:
         return "📈 İzleme", "Arka plan"
 
@@ -791,6 +745,22 @@ while True:
                     and DURUM_SEVIYESI[durum] > DURUM_SEVIYESI[eski_durum]
                 )
 
+                # V4.16: Kategori geriye düşmesin.
+                # Roket -> Elit -> Yıldız çıkışı korunur.
+                # Elit olmuş coin sonraki taramada tekrar Roket'e düşerse eski yüksek seviye korunur.
+                if (
+                    eski_durum is not None
+                    and eski_durum in DURUM_SEVIYESI
+                    and durum in DURUM_SEVIYESI
+                    and DURUM_SEVIYESI[durum] < DURUM_SEVIYESI[eski_durum]
+                    and eski_durum != "⚠️ Geç Pump"
+                ):
+                    print(f"Kategori geriye düşmedi: {symbol} | {durum} yerine {eski_durum} korundu.")
+                    durum = eski_durum
+                    a["durum"] = eski_durum
+                    durum_degisti = False
+                    durum_yukseldi = False
+
                 son_durumlar[symbol] = durum
                 onceki_veriler[symbol] = {
                     "skor": a["skor"],
@@ -847,7 +817,7 @@ while True:
                             "hedef1_bildi": False,
                             "hedef2_bildi": False,
                             "stop_bildi": False,
-                            "zirve_fiyat": None,
+                            "zirve_fiyat": a["fiyat"],
                             "guc_kaybi_bildi": False,
                             "momentum_cokusu_bildi": False
                         }
@@ -935,3 +905,4 @@ while True:
     except Exception as e:
         print("Bot genel hata:", e)
         time.sleep(30)
+
