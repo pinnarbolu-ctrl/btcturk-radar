@@ -10,7 +10,7 @@ import yfinance as yf
 
 
 BOT_TOKEN = "8855467313:AAHYdR1ts-liJ0hMwxxPGpgmrPne6ydFOpI"
-CHAT_IDS = [2097448038]
+
 
 HISSELER = [
     "ADEL.IS", "AEFES.IS", "AGHOL.IS", "AHGAZ.IS", "AKBNK.IS",
