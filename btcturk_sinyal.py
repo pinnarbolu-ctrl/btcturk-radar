@@ -180,6 +180,38 @@ def haber_puani(symbol):
     return puan
 
 
+def guclenme_bonusu_hesapla(symbol, genel_skor, hacim_kat, degisim3):
+    """
+    V4.21 Güçlenme Bonusu V2.
+    İlk tespitten sonra skor, hacim veya 3s momentum artıyorsa bonus verir.
+    Amaç: tek seferlik yüksek skoru değil, güçlenmeye devam eden coini öne çıkarmak.
+    """
+    ilk = ilk_tespitler.get(symbol)
+
+    if ilk is None:
+        return 0, []
+
+    bonus = 0
+    notlar = []
+
+    ilk_skor = ilk.get("skor", genel_skor)
+    ilk_hacim = ilk.get("hacim", hacim_kat)
+    ilk_degisim3 = ilk.get("degisim3", degisim3)
+
+    if genel_skor - ilk_skor >= 2:
+        bonus += 2
+        notlar.append(f"Skor güçleniyor: {round(ilk_skor, 2)} → {round(genel_skor, 2)}")
+
+    if ilk_hacim > 0 and hacim_kat >= ilk_hacim * 1.30:
+        bonus += 2
+        notlar.append(f"Hacim güçleniyor: {round(ilk_hacim, 2)}x → {round(hacim_kat, 2)}x")
+
+    if degisim3 - ilk_degisim3 >= 1:
+        bonus += 2
+        notlar.append(f"3s momentum güçleniyor: %{round(ilk_degisim3, 2)} → %{round(degisim3, 2)}")
+
+    return bonus, notlar
+
 def stop_raporu_gonder():
     global stop_raporlari
     global son_stop_raporu
@@ -445,12 +477,13 @@ def siradisi_hacim_kontrol(
     """
     return
 
-def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, degisim1, degisim3, degisim24, zirve_yakin):
+def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0):
     """
-    V4.20 son kategori mantığı.
+    V4.21 kategori mantığı.
 
     Sıradışı Hacim = pump/hacim alarmı.
     Roket/Elit/Yıldız = kalite kategorileri.
+    Yıldız için güçlenme bonusu aranır; tek taramalık şişmiş skorlar elenir.
     """
 
     gec_pump = degisim1 > 8 or degisim3 > 12 or degisim24 > 20
@@ -468,6 +501,7 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         and degisim1 > 2
         and degisim3 > 2
         and zirve_yakin
+        and guclenme_bonus >= 2
     ):
         return "⭐ Yıldız", "En güçlü doğrulanmış aday"
 
@@ -659,6 +693,16 @@ while True:
                     btcden_guclu
                 )
 
+                guclenme_bonus, guclenme_notlari = guclenme_bonusu_hesapla(
+                    symbol,
+                    genel_skor,
+                    hacim_kat,
+                    degisim3
+                )
+
+                if guclenme_bonus > 0:
+                    genel_skor += guclenme_bonus
+
                 durum, alt_durum = kategori_belirle(
                     symbol,
                     genel_skor,
@@ -669,9 +713,9 @@ while True:
                     degisim1,
                     degisim3,
                     degisim24,
-                    zirve_yakin
+                    zirve_yakin,
+                    guclenme_bonus
                 )
-
                 if durum is None:
                     continue
 
@@ -702,6 +746,8 @@ while True:
                     "hacim": hacim_kat,
                     "btcden_guclu": btcden_guclu,
                     "haber_skoru": haber_skoru,
+                    "guclenme_bonus": guclenme_bonus,
+                    "guclenme_notlari": guclenme_notlari,
                     "stop": stop,
                     "hedef1": hedef1,
                     "hedef2": hedef2
@@ -731,7 +777,8 @@ while True:
                         "durum": durum,
                         "zaman": simdi,
                         "skor": a["skor"],
-                        "hacim": a["hacim"]
+                        "hacim": a["hacim"],
+                        "degisim3": a["degisim3"]
                     }
 
                 onceki_veri = onceki_veriler.get(symbol)
@@ -819,8 +866,7 @@ while True:
                             "stop_bildi": False,
                             "zirve_fiyat": a["fiyat"],
                             "guc_kaybi_bildi": False,
-                            "momentum_cokusu_bildi": False
-                        }
+                            "momentum_cokusu_bildi": False                        }
                     elif symbol in aktif_sinyaller:
                         aktif_sinyaller[symbol]["durum"] = a["durum"]
 
@@ -887,7 +933,9 @@ while True:
                         f"24s: %{round(a['degisim24'], 2)}\n"
                         f"BTC Gücü: {'✅' if a['btcden_guclu'] else '❌'}\n"
                         f"Haber: {a['haber_skoru']}\n"
-                        f"Fiyat: {round(a['fiyat'], 4)}\n"
+                        + (f"📈 Güçlenme Bonusu: +{a.get('guclenme_bonus', 0)}\n" if a.get("guclenme_bonus", 0) > 0 else "")
+                        + ("\n".join(a.get("guclenme_notlari", [])) + "\n" if a.get("guclenme_notlari") else "")
+                        + f"Fiyat: {round(a['fiyat'], 4)}\n"
                         f"Stop: {round(a['stop'], 4)}\n"
                         f"H1: {round(a['hedef1'], 4)}\n"
                         f"H2: {round(a['hedef2'], 4)}\n\n"
