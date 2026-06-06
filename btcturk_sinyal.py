@@ -1,6 +1,5 @@
 
 
-
 import os
 import time
 import requests
@@ -18,10 +17,6 @@ CHAT_IDS = [
 TEKRAR_SURESI = 3 * 60 * 60
 TARAMA_SURESI = 5 * 60
 STOP_RAPOR_SURESI = 2 * 60 * 60
-SIRADISI_HACIM_SURESI = 6 * 60 * 60
-LIDER_TAKIP_SURESI = 30 * 60
-GUC_TAKIP_SURESI = 30 * 60
-PUMP_TAKIP_SURESI = 30 * 60
 HAFTALIK_RAPOR_SURESI = 7 * 24 * 60 * 60
 
 gonderilenler = {}
@@ -31,13 +26,6 @@ ilk_tespitler = {}
 onceki_veriler = {}
 stop_raporlari = []
 son_stop_raporu = time.time()
-siradisi_hacim_gonderilen = {}
-lider_gecmisi = {}
-guc_bildirimleri = {}
-lider_bildirimleri = {}
-pump_bildirimleri = {}
-son_lider = None
-yildiz_adaylari = {}
 
 haftalik_kayitlar = []
 h1_kayitlari = []
@@ -53,7 +41,7 @@ STABLE_COINLER = [
 DURUM_SEVIYESI = {
     "📈 İzleme": 1,
     "⚡ GÜÇLÜ HACİM": 2,
-    "📊 TRADER SİNYALİ": 3,
+    "📊 TRADER HACİM": 3,
     "📈 GÜÇLENİYOR": 4,
     "🚀 Roket Adayı": 5,
     "🔥 Elit Roket": 6,
@@ -63,7 +51,7 @@ DURUM_SEVIYESI = {
 
 # V4.25: Telegram sadeleşti. Bu kategoriler dışındakiler sadece arka planda izlenir.
 TELEGRAM_KATEGORILERI = {
-    "📊 TRADER SİNYALİ",
+    "📊 TRADER HACİM",
     "🚀 Roket Adayı",
     "🔥 Elit Roket",
     "⭐ Yıldız"
@@ -202,19 +190,6 @@ def anlik_fiyat(symbol):
         return None
 
 
-def btc_gucu():
-    try:
-        d = veri_getir("BTCTRY", 6)
-        c = d["c"]
-
-        if len(c) < 4:
-            return 0
-
-        return ((c[-1] - c[-4]) / c[-4]) * 100
-    except:
-        return 0
-
-
 
 def btc_degisimleri():
     """
@@ -304,10 +279,24 @@ def lider_skoru_hesapla(hacim_kat, degisim1, degisim3, degisim24, btc_fark1, btc
     return min(puan, 10)
 
 
-def guc_skoru_hesapla(hacim_kat, degisim3, btc_guc_skoru, lider_skoru, haber_skoru, satis_baskisi, gec_pump):
+def guc_skoru_hesapla(
+    hacim_kat,
+    degisim3,
+    btc_guc_skoru,
+    lider_skoru,
+    haber_skoru,
+    satis_baskisi,
+    gec_pump,
+    btc_fark3=0,
+    zirve_yakin=False,
+    yeni_zirve=False
+):
     """
     V4.25 Güç Skoru: 100 üzerinden tek karar skoru.
-    Amaç: çok sayıda alt puan yerine okunabilir, seçici bir kalite puanı üretmek.
+    V4.25 commit ince ayarı:
+    - 10x / 15x / 20x hacim daha net ödüllendirilir.
+    - BTC farkı belirginse ekstra puan alır.
+    - Liderlik ve zirve teyidi trader mantığında skora yansır.
     """
     hacim_puan = min(hacim_kat / 15, 1) * 30
     momentum_puan = min(max(degisim3, 0) / 6, 1) * 25
@@ -316,6 +305,27 @@ def guc_skoru_hesapla(hacim_kat, degisim3, btc_guc_skoru, lider_skoru, haber_sko
     haber_puan = (min(haber_skoru, 20) / 20) * 10
 
     toplam = hacim_puan + momentum_puan + btc_puan + lider_puan + haber_puan
+
+    # Trader ince ayar bonusları: güçlü ama spam üretmeyen küçük ödüller.
+    if hacim_kat >= 20:
+        toplam += 3
+    elif hacim_kat >= 15:
+        toplam += 2
+    elif hacim_kat >= 10:
+        toplam += 1
+
+    if btc_fark3 >= 4:
+        toplam += 2
+    elif btc_fark3 >= 2:
+        toplam += 1
+
+    if lider_skoru >= 7:
+        toplam += 2
+    elif lider_skoru >= 5:
+        toplam += 1
+
+    if (zirve_yakin or yeni_zirve) and not gec_pump:
+        toplam += 1
 
     if satis_baskisi:
         toplam -= 12
@@ -363,6 +373,40 @@ def neden_secildi_olustur(a):
         notlar.append("Hacim, momentum ve BTC gücü birlikte yeterli")
 
     return notlar[:5]
+
+def ortak_sinyal_ozeti_olustur(a):
+    """
+    Mesaj içinde trader mantığını net gösterir:
+    hacim + BTC gücü + zirve/fiyat teyidi + liderlik + haber.
+    """
+    lider = a.get("lider_skoru", 0)
+
+    if lider >= 7:
+        lider_notu = "Lider hareketi ✅"
+    elif lider >= 5:
+        lider_notu = "Lider takibe yakın ✅"
+    else:
+        lider_notu = "Takipçi/erken izleme ⚪"
+
+    zirve_notu = "Yeni zirve ✅" if a.get("yeni_zirve") else ("Zirveye yakın ✅" if a.get("zirve_yakin") else "Zirve teyidi zayıf ⚪")
+
+    return (
+        "Ortak Sinyal:\n"
+        f"Hacim geliyor: {'✅' if a.get('hacim', 0) >= 3 else '❌'}\n"
+        f"BTC’den güçlü: {'✅' if a.get('btcden_guclu') else '❌'}\n"
+        f"Fiyat/zırve teyidi: {zirve_notu}\n"
+        f"Liderlik: {lider_notu}\n"
+        f"Haber desteği: {'✅' if a.get('haber_skoru', 0) > 0 else 'Yok ⚪'}"
+    )
+
+
+def lider_notu_olustur(a):
+    lider = a.get("lider_skoru", 0)
+    if lider >= 7:
+        return "Lider grubunda"
+    if lider >= 5:
+        return "Lider takibe yakın"
+    return "Henüz lider değil / takipçi olabilir"
 
 def sure_yaz(saniye):
     dakika = int(saniye // 60)
@@ -732,33 +776,12 @@ def hedef_stop_kontrol():
         aktif_sinyaller.pop(symbol, None)
 
 
-def siradisi_hacim_kontrol(
-    symbol,
-    hacim_kat,
-    degisim1,
-    degisim3,
-    degisim24,
-    fiyat,
-    son_mum_yesil,
-    satis_baskisi,
-    btcden_guclu
-):
-    """
-    V4.1:
-    Trader/Güçlü hacim Telegram mesajları artık kategori_belirle()
-    üzerinden tek mesaj halinde gönderiliyor.
-
-    Bu fonksiyon eski 7x "birikim ihtimali" mesajını kapatır.
-    Böylece 5x-8x arası sadece arka planda kalır, Telegram'ı doldurmaz.
-    """
-    return
-
 def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, btc_fark, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0, btc_guc_skoru=0, lider_skoru=0, guc_skoru=0, yeni_zirve=False):
     """
     V4.25 kategori mantığı.
 
     Telegram sadeleşti:
-    - 📊 TRADER SİNYALİ
+    - 📊 TRADER HACİM
     - 🚀 Roket Adayı
     - 🔥 Elit Roket
     - ⭐ Yıldız
@@ -779,7 +802,6 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         and btc_guc_skoru >= 7
         and kalite_skoru >= 14
         and hacim_kat >= 6
-        and haber_skoru > 0
         and degisim1 > 1
         and degisim3 > 2
         and zirve_yakin
@@ -814,7 +836,7 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
             return "🚀 Roket Adayı", "Haberli güçlü aday"
         return "🚀 Roket Adayı", "Sessiz güçlü aday"
 
-    # 4) 📊 TRADER SİNYALİ - erken hacim/fiyat hareketi
+    # 4) 📊 TRADER HACİM - erken hacim/fiyat hareketi
     if (
         guc_skoru >= 58
         and hacim_kat >= 15
@@ -824,7 +846,7 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         and (zirve_yakin or yeni_zirve)
         and not gec_pump
     ):
-        return "📊 TRADER SİNYALİ", "Trader hacim + BTC gücü + fiyat teyidi"
+        return "📊 TRADER HACİM", "Trader hacim + BTC gücü + fiyat teyidi"
 
     # Arka plan güçlü hacim
     if hacim_kat >= 12 and btcden_guclu and not (degisim1 < 0 and degisim3 < 0):
@@ -941,6 +963,16 @@ while True:
                 if hacim_kat >= 8:
                     genel_skor += 6
 
+                # V4.25 commit: çok yüksek trader hacmini daha net ödüllendir.
+                hacim_bonus = 0
+                if hacim_kat >= 20:
+                    hacim_bonus = 3
+                elif hacim_kat >= 15:
+                    hacim_bonus = 2
+                elif hacim_kat >= 10:
+                    hacim_bonus = 1
+                genel_skor += hacim_bonus
+
                 if haber_skoru >= 15:
                     genel_skor += 4
 
@@ -968,17 +1000,6 @@ while True:
                 if satis_baskisi:
                     genel_skor -= 5
 
-                siradisi_hacim_kontrol(
-                    symbol,
-                    hacim_kat,
-                    degisim1,
-                    degisim3,
-                    degisim24,
-                    fiyat,
-                    son_mum_yesil,
-                    satis_baskisi,
-                    btcden_guclu
-                )
 
                 guclenme_bonus, guclenme_notlari = guclenme_bonusu_hesapla(
                     symbol,
@@ -989,6 +1010,14 @@ while True:
 
                 if guclenme_bonus > 0:
                     genel_skor += guclenme_bonus
+
+                # V4.25 commit: BTC farkı da sadece ✅ değil, puana dönüşsün.
+                btc_fark_bonus = 0
+                if btc_fark3 >= 4:
+                    btc_fark_bonus = 2
+                elif btc_fark3 >= 2:
+                    btc_fark_bonus = 1
+                genel_skor += btc_fark_bonus
 
                 lider_skoru = lider_skoru_hesapla(
                     hacim_kat,
@@ -1002,7 +1031,18 @@ while True:
                     yeni_zirve
                 )
 
+                # V4.25 commit: liderlik ve zirve teyidi genel skorda da görünür olsun.
+                lider_bonus = 0
+                if lider_skoru >= 7:
+                    lider_bonus = 2
+                elif lider_skoru >= 5:
+                    lider_bonus = 1
+                genel_skor += lider_bonus
+
                 gec_pump = degisim1 > 8 or degisim3 > 12 or degisim24 > 20
+                zirve_bonus = 1 if (zirve_yakin or yeni_zirve) and not gec_pump else 0
+                genel_skor += zirve_bonus
+
                 guc_skoru = guc_skoru_hesapla(
                     hacim_kat,
                     degisim3,
@@ -1010,7 +1050,10 @@ while True:
                     lider_skoru,
                     haber_skoru,
                     satis_baskisi,
-                    gec_pump
+                    gec_pump,
+                    btc_fark3,
+                    zirve_yakin,
+                    yeni_zirve
                 )
 
                 durum, alt_durum = kategori_belirle(
@@ -1071,6 +1114,10 @@ while True:
                     "yeni_zirve": yeni_zirve,
                     "haber_skoru": haber_skoru,
                     "guclenme_bonus": guclenme_bonus,
+                    "hacim_bonus": hacim_bonus,
+                    "btc_fark_bonus": btc_fark_bonus,
+                    "lider_bonus": lider_bonus,
+                    "zirve_bonus": zirve_bonus,
                     "guclenme_notlari": guclenme_notlari,
                     "stop": stop,
                     "hedef1": hedef1,
@@ -1164,7 +1211,7 @@ while True:
 
             else:
                 mesaj = (
-                    f"🚀 AKILLI PARA RADARI V4\n"
+                    f"🚀 AKILLI PARA RADARI V4.25\n"
                     f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
@@ -1186,7 +1233,8 @@ while True:
                             "stop_bildi": False,
                             "zirve_fiyat": a["fiyat"],
                             "guc_kaybi_bildi": False,
-                            "momentum_cokusu_bildi": False                        }
+                            "momentum_cokusu_bildi": False
+                        }
                         basari_kayitlari.append(basari_kaydi_olustur(symbol, a, simdi))
                         basari_db_kaydet(basari_kayitlari)
 
@@ -1226,23 +1274,16 @@ while True:
                         f"{a['durum']}\n"
                     )
 
-                    if a["durum"] == "🚀 Roket Adayı":
-                        satir += f"Not: {a['alt_durum']}\n"
+                    satir += f"Not: {a['alt_durum']}\n"
+                    satir += f"Lider Notu: {lider_notu_olustur(a)}\n"
 
-                    if a["durum"] == "⚡ GÜÇLÜ HACİM":
-                        satir += f"Not: {a['alt_durum']}\n"
+                    secilme_notlari = neden_secildi_olustur(a)
+                    if secilme_notlari:
+                        satir += "Neden Seçildi:\n"
+                        for not_satiri in secilme_notlari:
+                            satir += f"- {not_satiri}\n"
 
-                    if a["durum"] == "📊 TRADER SİNYALİ":
-                        satir += f"Not: {a['alt_durum']}\n"
-
-                    if a["durum"] == "🔥 Elit Roket":
-                        satir += f"Not: {a['alt_durum']}\n"
-
-                    if a["durum"] == "⭐ Yıldız":
-                        satir += f"Not: {a['alt_durum']}\n"
-
-                    if a["durum"] == "⚠️ Geç Pump":
-                        satir += "Not: Hareketin önemli kısmı olmuş olabilir\n"
+                    satir += ortak_sinyal_ozeti_olustur(a) + "\n"
 
                     if a["durum_degisti"]:
                         satir += f"Geçiş: {a['eski_durum']} → {a['durum']}\n"
@@ -1257,6 +1298,10 @@ while True:
                         f"BTC Gücü: {'✅' if a['btcden_guclu'] else '❌'}\n"
                         f"BTC Farkı: %{round(a.get('btc_fark', 0), 2)}\n"
                         f"Haber: {a['haber_skoru']}\n"
+                        + (
+                            f"Bonuslar: Hacim +{a.get('hacim_bonus', 0)} | BTC +{a.get('btc_fark_bonus', 0)} | Lider +{a.get('lider_bonus', 0)} | Zirve +{a.get('zirve_bonus', 0)}\n"
+                            if (a.get('hacim_bonus', 0) + a.get('btc_fark_bonus', 0) + a.get('lider_bonus', 0) + a.get('zirve_bonus', 0)) > 0 else ""
+                        )
                         + (f"📈 Güçlenme Bonusu: +{a.get('guclenme_bonus', 0)}\n" if a.get("guclenme_bonus", 0) > 0 else "")
                         + ("\n".join(a.get("guclenme_notlari", [])) + "\n" if a.get("guclenme_notlari") else "")
                         + f"Fiyat: {round(a['fiyat'], 4)}\n"
