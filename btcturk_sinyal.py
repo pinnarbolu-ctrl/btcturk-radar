@@ -1,5 +1,6 @@
 
 
+
 import os
 import time
 import requests
@@ -442,14 +443,17 @@ def zirve_teyidi_var_mi(a):
 def ortak_sinyal_ozeti_olustur(a):
     """
     Telegram mesajı için tek satırlık kısa DNA özeti.
-    Tekrar eden Lider Notu / Bonuslar satırlarını azaltır.
+    Haber yoksa Haber ❌ yazmaz; zaten Not: Sessiz güçlü aday satırı bunu anlatır.
+    Haber varsa Haber ✅ eklenir.
     """
-    btc = f"BTC %{round(a.get('btc_fark', 0), 2)}" if a.get("btcden_guclu") else "BTC ❌"
-    hacim = f"Hacim {round(a.get('hacim', 0), 2)}x"
-    lider = "Lider ✅" if lider_mi(a) else "Lider ❌"
-    zirve = "Zirve ✅" if zirve_teyidi_var_mi(a) else "Zirve ❌"
-    haber = "Haber ✅" if haber_var_mi(a) else "Haber ❌"
-    return f"Neden: {btc} • {hacim} • {lider} • {zirve} • {haber}"
+    parcalar = []
+    parcalar.append(f"BTC %{round(a.get('btc_fark', 0), 2)}" if a.get("btcden_guclu") else "BTC ❌")
+    parcalar.append(f"Hacim {round(a.get('hacim', 0), 2)}x")
+    parcalar.append("Lider ✅" if lider_mi(a) else "Lider ❌")
+    parcalar.append("Zirve ✅" if zirve_teyidi_var_mi(a) else "Zirve ❌")
+    if haber_var_mi(a):
+        parcalar.append("Haber ✅")
+    return "Neden: " + " • ".join(parcalar)
 
 
 def lider_notu_olustur(a):
@@ -697,6 +701,7 @@ def haftalik_rapor_gonder():
             mesaj += f"Hacim >10x: %{oran(h2_yapanlar, 'hacim_10x')}\n"
             mesaj += f"Zirveye Yakın: %{oran(h2_yapanlar, 'zirve_teyidi')}\n"
             mesaj += f"Haber Desteği: %{oran(h2_yapanlar, 'haber_var')}\n"
+            mesaj += f"Ort. Geç Pump Puanı: {ortalama(h2_yapanlar, 'gec_pump_puan')}\n"
 
         stop_olanlar = [k for k in son_kayitlar if k.get("stop") and not k.get("h1") and not k.get("h2")]
         if stop_olanlar:
@@ -706,6 +711,7 @@ def haftalik_rapor_gonder():
             mesaj += f"Hacim >10x: %{oran(stop_olanlar, 'hacim_10x')}\n"
             mesaj += f"Zirveye Yakın: %{oran(stop_olanlar, 'zirve_teyidi')}\n"
             mesaj += f"Haber Desteği: %{oran(stop_olanlar, 'haber_var')}\n"
+            mesaj += f"Ort. Geç Pump Puanı: {ortalama(stop_olanlar, 'gec_pump_puan')}\n"
 
         kombinasyonlar = {}
         for k in son_kayitlar:
