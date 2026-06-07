@@ -1,5 +1,6 @@
 
 
+
 import os
 import time
 import requests
@@ -441,18 +442,38 @@ def zirve_teyidi_var_mi(a):
 
 def ortak_sinyal_ozeti_olustur(a):
     """
-    Telegram mesajı için tek satırlık kısa DNA özeti.
-    Haber yoksa Haber ❌ yazmaz; zaten Not: Sessiz güçlü aday satırı bunu anlatır.
-    Haber varsa Haber ✅ eklenir.
+    V4.25.8 Telegram kısa özet.
+    Tek satırda sadece karar için en hızlı okunan sinyalleri gösterir.
+    Hacim ayrı satırda yazıldığı için burada tekrar edilmez.
     """
-    parcalar = []
-    parcalar.append(f"BTC %{round(a.get('btc_fark', 0), 2)}" if a.get("btcden_guclu") else "BTC ❌")
-    parcalar.append(f"Hacim {round(a.get('hacim', 0), 2)}x")
-    parcalar.append("Lider ✅" if lider_mi(a) else "Lider ❌")
-    parcalar.append("Zirve ✅" if zirve_teyidi_var_mi(a) else "Zirve ❌")
-    if haber_var_mi(a):
-        parcalar.append("Haber ✅")
-    return "Neden: " + " • ".join(parcalar)
+    btc_fark = round(a.get("btc_fark", 0), 2)
+    if a.get("btcden_guclu"):
+        btc_text = f"BTC'den %{btc_fark} güçlü"
+    else:
+        btc_text = "BTC gücü zayıf"
+
+    lider_text = "Lider ✅" if lider_mi(a) else "Lider ❌"
+    zirve_text = "Zirve ✅" if zirve_teyidi_var_mi(a) else "Zirve ❌"
+
+    return f"{btc_text} • {lider_text} • {zirve_text}"
+
+
+def guclenme_mesaji_olustur(a):
+    """
+    Mesajda sadece karar için anlamlı güçlenme notları kalsın:
+    - Hacim güçleniyor
+    - Momentum güçleniyor
+    Skor güçleniyor ve bonus satırları Telegram'da gösterilmez.
+    """
+    satirlar = []
+    for not_text in a.get("guclenme_notlari", []) or []:
+        if "Hacim güçleniyor" in not_text:
+            satirlar.append("📈 " + not_text)
+        elif "momentum güçleniyor" in not_text.lower():
+            temiz = not_text.replace("3s momentum güçleniyor", "Momentum güçleniyor")
+            temiz = temiz.replace("3S momentum güçleniyor", "Momentum güçleniyor")
+            satirlar.append("⚡ " + temiz)
+    return "\n".join(satirlar)
 
 
 def lider_notu_olustur(a):
@@ -618,7 +639,7 @@ def haftalik_rapor_gonder():
 
     en_iyi = sorted(en_yuksek_skor.values(), key=lambda x: x["skor"], reverse=True)[:5]
 
-    mesaj = "🧬 COIN RADAR DNA RAPORU V4.25.4\n\n"
+    mesaj = "🧬 COIN RADAR DNA RAPORU V4.25.8\n\n"
     mesaj += f"Toplam kayıt: {len(haftalik_kayitlar)}\n\n"
 
     mesaj += "Kategori Dağılımı:\n"
@@ -1344,7 +1365,7 @@ while True:
 
             else:
                 mesaj = (
-                    f"🚀 COIN RADAR V4.25.4\n"
+                    f"🚀 COIN RADAR V4.25.8\n"
                     f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
@@ -1404,28 +1425,29 @@ while True:
 
                     satir = (
                         f"{sira}. {a['symbol']}\n"
-                        f"{a['durum']}\n"
+                        f"{a['durum']}\n\n"
+                        f"{ortak_sinyal_ozeti_olustur(a)}\n\n"
                     )
 
-                    satir += f"Not: {a['alt_durum']}\n"
-                    satir += ortak_sinyal_ozeti_olustur(a) + "\n"
-
                     if a["durum_degisti"]:
-                        satir += f"Geçiş: {a['eski_durum']} → {a['durum']}\n"
+                        satir += f"Geçiş: {a['eski_durum']} → {a['durum']}\n\n"
+
+                    guclenme_mesaji = guclenme_mesaji_olustur(a)
 
                     satir += (
                         f"Skor: {round(a['skor'], 2)}\n"
                         f"Kalite: {round(a['kalite_skoru'], 2)}\n"
-                        f"Hacim: {round(a['hacim'], 2)} kat\n"
-                        f"1s: %{round(a['degisim1'], 2)} | "
+                        f"Hacim: {round(a['hacim'], 2)}x\n"
+                    )
+
+                    if guclenme_mesaji:
+                        satir += f"\n{guclenme_mesaji}\n"
+
+                    satir += (
+                        f"\n1s: %{round(a['degisim1'], 2)} | "
                         f"3s: %{round(a['degisim3'], 2)} | "
-                        f"24s: %{round(a['degisim24'], 2)}\n"
-                        f"BTC Gücü: {'✅' if a['btcden_guclu'] else '❌'}\n"
-                        f"BTC Farkı: %{round(a.get('btc_fark', 0), 2)}\n"
-                        f"Haber: {a['haber_skoru']}\n"
-                        + (f"📈 Güçlenme Bonusu: +{a.get('guclenme_bonus', 0)}\n" if a.get("guclenme_bonus", 0) > 0 else "")
-                        + ("\n".join(a.get("guclenme_notlari", [])) + "\n" if a.get("guclenme_notlari") else "")
-                        + f"Fiyat: {round(a['fiyat'], 4)}\n"
+                        f"24s: %{round(a['degisim24'], 2)}\n\n"
+                        f"Fiyat: {round(a['fiyat'], 4)}\n"
                         f"Stop: {round(a['stop'], 4)}\n"
                         f"H1: {round(a['hedef1'], 4)}\n"
                         f"H2: {round(a['hedef2'], 4)}\n\n"
