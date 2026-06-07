@@ -1,6 +1,7 @@
 
 
 
+
 import os
 import time
 import requests
@@ -535,33 +536,40 @@ def haber_puani(symbol):
 
 def guclenme_bonusu_hesapla(symbol, genel_skor, hacim_kat, degisim3):
     """
-    V4.21 Güçlenme Bonusu V2.
-    İlk tespitten sonra skor, hacim veya 3s momentum artıyorsa bonus verir.
-    Amaç: tek seferlik yüksek skoru değil, güçlenmeye devam eden coini öne çıkarmak.
-    """
-    ilk = ilk_tespitler.get(symbol)
+    V4.25.8 Final.
+    Mesajda görünmesini istediğimiz canlı güçlenme satırlarını üretir:
+    - Hacim güçleniyor
+    - Momentum güçleniyor
 
-    if ilk is None:
+    Önce son taramadaki veriye bakar. Yoksa ilk tespite döner.
+    Böylece sadece ilk tespitten değil, son taramadan bu yana güçlenen coinler de mesajda görünür.
+    """
+    referans = onceki_veriler.get(symbol) or ilk_tespitler.get(symbol)
+
+    if referans is None:
         return 0, []
 
     bonus = 0
     notlar = []
 
-    ilk_skor = ilk.get("skor", genel_skor)
-    ilk_hacim = ilk.get("hacim", hacim_kat)
-    ilk_degisim3 = ilk.get("degisim3", degisim3)
+    eski_skor = referans.get("skor", genel_skor)
+    eski_hacim = referans.get("hacim", hacim_kat)
+    eski_degisim3 = referans.get("degisim3", degisim3)
 
-    if genel_skor - ilk_skor >= 2:
+    # Skor bonusu arka planda kalsın; Telegram mesajında gösterilmeyecek.
+    if genel_skor - eski_skor >= 2:
         bonus += 2
-        notlar.append(f"Skor güçleniyor: {round(ilk_skor, 2)} → {round(genel_skor, 2)}")
+        notlar.append(f"Skor güçleniyor: {round(eski_skor, 2)} → {round(genel_skor, 2)}")
 
-    if ilk_hacim > 0 and hacim_kat >= ilk_hacim * 1.30:
+    # Telegram'da gösterilecek.
+    if eski_hacim > 0 and hacim_kat >= eski_hacim * 1.20:
         bonus += 2
-        notlar.append(f"Hacim güçleniyor: {round(ilk_hacim, 2)}x → {round(hacim_kat, 2)}x")
+        notlar.append(f"Hacim güçleniyor: {round(eski_hacim, 2)}x → {round(hacim_kat, 2)}x")
 
-    if degisim3 - ilk_degisim3 >= 1:
+    # Telegram'da gösterilecek.
+    if degisim3 - eski_degisim3 >= 0.5:
         bonus += 2
-        notlar.append(f"3s momentum güçleniyor: %{round(ilk_degisim3, 2)} → %{round(degisim3, 2)}")
+        notlar.append(f"3s momentum güçleniyor: %{round(eski_degisim3, 2)} → %{round(degisim3, 2)}")
 
     return bonus, notlar
 
@@ -1337,6 +1345,7 @@ while True:
                 onceki_veriler[symbol] = {
                     "skor": a["skor"],
                     "hacim": a["hacim"],
+                    "degisim3": a["degisim3"],
                     "durum": durum
                 }
 
