@@ -1,7 +1,4 @@
 
-
-
-
 import os
 import time
 import requests
@@ -47,8 +44,7 @@ DURUM_SEVIYESI = {
     "📈 GÜÇLENİYOR": 4,
     "🚀 Roket Adayı": 5,
     "🔥 Elit Roket": 6,
-    "⭐ Yıldız": 7,
-    "⚠️ Geç Pump": 0
+    "⭐ Yıldız": 7
 }
 
 # V4.25: Telegram sadeleşti. Bu kategoriler dışındakiler sadece arka planda izlenir.
@@ -379,14 +375,12 @@ def guc_skoru_hesapla(
     elif lider_skoru >= 5:
         toplam += 1
 
-    if (zirve_yakin or yeni_zirve) and not gec_pump:
+    # Geç Pump artık skor/bonus kesmez; sadece DNA raporunda risk verisi olarak tutulur.
+    if zirve_yakin or yeni_zirve:
         toplam += 1
 
     if satis_baskisi:
         toplam -= 12
-
-    if gec_pump:
-        toplam -= 15
 
     return round(max(min(toplam, 100), 0), 2)
 
@@ -464,9 +458,12 @@ def guclenme_mesaji_olustur(a):
     Mesajda sadece karar için anlamlı güçlenme notları kalsın:
     - Hacim güçleniyor
     - Momentum güçleniyor
-    Skor güçleniyor ve bonus satırları Telegram'da gösterilmez.
+
+    Not: Bazı coinlerde guclenme_notlari boş gelebiliyor.
+    Bu yüzden gönderim anında onceki_veri üzerinden de kontrol yapıyoruz.
     """
     satirlar = []
+
     for not_text in a.get("guclenme_notlari", []) or []:
         if "Hacim güçleniyor" in not_text:
             satirlar.append("📈 " + not_text)
@@ -474,6 +471,33 @@ def guclenme_mesaji_olustur(a):
             temiz = not_text.replace("3s momentum güçleniyor", "Momentum güçleniyor")
             temiz = temiz.replace("3S momentum güçleniyor", "Momentum güçleniyor")
             satirlar.append("⚡ " + temiz)
+
+    # Güçlenme notları boşsa veya eksikse, son tarama verisine göre tekrar üret.
+    onceki = a.get("onceki_veri")
+    if onceki:
+        eski_hacim = onceki.get("hacim", a.get("hacim", 0))
+        yeni_hacim = a.get("hacim", 0)
+
+        if (
+            eski_hacim
+            and yeni_hacim >= eski_hacim * 1.20
+            and not any("Hacim güçleniyor" in s for s in satirlar)
+        ):
+            satirlar.append(
+                f"📈 Hacim güçleniyor: {round(eski_hacim, 2)}x → {round(yeni_hacim, 2)}x"
+            )
+
+        eski_momentum = onceki.get("degisim3", a.get("degisim3", 0))
+        yeni_momentum = a.get("degisim3", 0)
+
+        if (
+            yeni_momentum - eski_momentum >= 0.5
+            and not any("Momentum güçleniyor" in s for s in satirlar)
+        ):
+            satirlar.append(
+                f"⚡ Momentum güçleniyor: %{round(eski_momentum, 2)} → %{round(yeni_momentum, 2)}"
+            )
+
     return "\n".join(satirlar)
 
 
@@ -946,14 +970,9 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
     - 🔥 Elit Roket
     - ⭐ Yıldız
 
-    İzleme, Güçlü Hacim ve Geç Pump arka planda kalır; Telegram'a gönderilmez.
+    İzleme ve Güçlü Hacim arka planda kalır; Telegram'a gönderilmez.
+    Geç Pump kategori değildir; yalnızca DNA raporunda risk puanı olarak tutulur.
     """
-
-    gec_pump = gec_pump_mi(degisim1, degisim3, degisim24, hacim_kat, btcden_guclu, lider_skoru)
-
-    # Geç pump logda kalır, aktif sinyal olarak gönderilmez.
-    if gec_pump and hacim_kat >= 4 and btcden_guclu:
-        return "⚠️ Geç Pump", "Geç hareket - sadece arka plan"
 
     # 1) ⭐ YILDIZ - en seçici seviye
     if (
@@ -1004,7 +1023,6 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         and btc_guc_skoru >= 4
         and (degisim1 >= 0.2 or degisim3 >= 1)
         and (zirve_yakin or yeni_zirve)
-        and not gec_pump
     ):
         return "📊 TRADER HACİM", "Trader hacim + BTC gücü + fiyat teyidi"
 
@@ -1199,9 +1217,10 @@ while True:
                     lider_bonus = 1
                 genel_skor += lider_bonus
 
+                # Geç Pump artık eleme/ceza değil; yalnızca DNA raporunda risk puanı olarak saklanır.
                 gec_pump_puan = gec_pump_puani_hesapla(degisim1, degisim3, degisim24, hacim_kat, btcden_guclu, lider_skoru)
-                gec_pump = gec_pump_puan >= 3
-                zirve_bonus = 1 if (zirve_yakin or yeni_zirve) and not gec_pump else 0
+                gec_pump = False
+                zirve_bonus = 1 if (zirve_yakin or yeni_zirve) else 0
                 genel_skor += zirve_bonus
 
                 guc_skoru = guc_skoru_hesapla(
@@ -1333,7 +1352,6 @@ while True:
                     and eski_durum in DURUM_SEVIYESI
                     and durum in DURUM_SEVIYESI
                     and DURUM_SEVIYESI[durum] < DURUM_SEVIYESI[eski_durum]
-                    and eski_durum != "⚠️ Geç Pump"
                 ):
                     print(f"Kategori geriye düşmedi: {symbol} | {durum} yerine {eski_durum} korundu.")
                     durum = eski_durum
@@ -1374,7 +1392,7 @@ while True:
 
             else:
                 mesaj = (
-                    f"🚀 COIN RADAR V4.25.8\n"
+                    f"🚀 COIN RADAR V4.25.9\n"
                     f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
@@ -1383,7 +1401,7 @@ while True:
 
                     gonderilenler[symbol] = simdi
 
-                    if symbol not in aktif_sinyaller and a["durum"] != "⚠️ Geç Pump":
+                    if symbol not in aktif_sinyaller:
                         aktif_sinyaller[symbol] = {
                             "giris": a["fiyat"],
                             "stop": a["stop"],
