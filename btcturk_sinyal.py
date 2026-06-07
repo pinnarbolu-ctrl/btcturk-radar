@@ -115,6 +115,22 @@ def basari_kaydi_olustur(symbol, a, simdi):
         "degisim3": round(a["degisim3"], 4),
         "degisim24": round(a["degisim24"], 4),
         "guclenme_bonus": a.get("guclenme_bonus", 0),
+
+        # V4.25.1 DNA alanları: Telegram'da kalabalık yapmadan raporda analiz edilir.
+        "haber_var": bool(a.get("haber_skoru", 0) > 0),
+        "lider_mi": bool(a.get("lider_skoru", 0) >= 5),
+        "lider_guclu": bool(a.get("lider_skoru", 0) >= 7),
+        "zirve_yakin": bool(a.get("zirve_yakin", False)),
+        "yeni_zirve": bool(a.get("yeni_zirve", False)),
+        "zirve_teyidi": bool(a.get("zirve_yakin", False) or a.get("yeni_zirve", False)),
+        "hacim_10x": bool(a.get("hacim", 0) >= 10),
+        "hacim_15x": bool(a.get("hacim", 0) >= 15),
+        "btc_bonus": int(a.get("btc_fark_bonus", 0)),
+        "lider_bonus": int(a.get("lider_bonus", 0)),
+        "zirve_bonus": int(a.get("zirve_bonus", 0)),
+        "hacim_bonus": int(a.get("hacim_bonus", 0)),
+        "gec_pump_puan": int(a.get("gec_pump_puan", 0)),
+
         "h1": False,
         "h2": False,
         "stop": False,
@@ -279,6 +295,43 @@ def lider_skoru_hesapla(hacim_kat, degisim1, degisim3, degisim24, btc_fark1, btc
     return min(puan, 10)
 
 
+
+def gec_pump_puani_hesapla(degisim1, degisim3, degisim24, hacim_kat, btcden_guclu, lider_skoru):
+    """
+    V4.25.4 Geç Pump puanı.
+    Tek başına 24s yükselişiyle iyi trendleri elemez; geç kalma riskini çoklu teyitle ölçer.
+    AIOZ gibi BTC'den güçlü ve lider hareketleri yanlışlıkla kaçırmamak için BTC/lider/hacim koruması verir.
+    """
+    puan = 0
+
+    if degisim24 > 8:
+        puan += 1
+    if degisim24 > 12:
+        puan += 1
+    if degisim24 > 15:
+        puan += 1
+
+    if degisim3 > 5:
+        puan += 1
+    if degisim1 > 3:
+        puan += 1
+
+    # Güçlü devam sinyalleri varsa direkt geç pump sayma.
+    if btcden_guclu:
+        puan -= 1
+    if lider_skoru >= 5:
+        puan -= 1
+    if hacim_kat > 15:
+        puan -= 1
+
+    return max(puan, 0)
+
+
+def gec_pump_mi(degisim1, degisim3, degisim24, hacim_kat, btcden_guclu, lider_skoru):
+    return gec_pump_puani_hesapla(
+        degisim1, degisim3, degisim24, hacim_kat, btcden_guclu, lider_skoru
+    ) >= 3
+
 def guc_skoru_hesapla(
     hacim_kat,
     degisim3,
@@ -374,30 +427,29 @@ def neden_secildi_olustur(a):
 
     return notlar[:5]
 
+def haber_var_mi(a):
+    return a.get("haber_skoru", 0) > 0
+
+
+def lider_mi(a):
+    return a.get("lider_skoru", 0) >= 5
+
+
+def zirve_teyidi_var_mi(a):
+    return bool(a.get("zirve_yakin") or a.get("yeni_zirve"))
+
+
 def ortak_sinyal_ozeti_olustur(a):
     """
-    Mesaj içinde trader mantığını net gösterir:
-    hacim + BTC gücü + zirve/fiyat teyidi + liderlik + haber.
+    Telegram mesajı için tek satırlık kısa DNA özeti.
+    Tekrar eden Lider Notu / Bonuslar satırlarını azaltır.
     """
-    lider = a.get("lider_skoru", 0)
-
-    if lider >= 7:
-        lider_notu = "Lider hareketi ✅"
-    elif lider >= 5:
-        lider_notu = "Lider takibe yakın ✅"
-    else:
-        lider_notu = "Takipçi/erken izleme ⚪"
-
-    zirve_notu = "Yeni zirve ✅" if a.get("yeni_zirve") else ("Zirveye yakın ✅" if a.get("zirve_yakin") else "Zirve teyidi zayıf ⚪")
-
-    return (
-        "Ortak Sinyal:\n"
-        f"Hacim geliyor: {'✅' if a.get('hacim', 0) >= 3 else '❌'}\n"
-        f"BTC’den güçlü: {'✅' if a.get('btcden_guclu') else '❌'}\n"
-        f"Fiyat/zırve teyidi: {zirve_notu}\n"
-        f"Liderlik: {lider_notu}\n"
-        f"Haber desteği: {'✅' if a.get('haber_skoru', 0) > 0 else 'Yok ⚪'}"
-    )
+    btc = f"BTC %{round(a.get('btc_fark', 0), 2)}" if a.get("btcden_guclu") else "BTC ❌"
+    hacim = f"Hacim {round(a.get('hacim', 0), 2)}x"
+    lider = "Lider ✅" if lider_mi(a) else "Lider ❌"
+    zirve = "Zirve ✅" if zirve_teyidi_var_mi(a) else "Zirve ❌"
+    haber = "Haber ✅" if haber_var_mi(a) else "Haber ❌"
+    return f"Neden: {btc} • {hacim} • {lider} • {zirve} • {haber}"
 
 
 def lider_notu_olustur(a):
@@ -563,7 +615,7 @@ def haftalik_rapor_gonder():
 
     en_iyi = sorted(en_yuksek_skor.values(), key=lambda x: x["skor"], reverse=True)[:5]
 
-    mesaj = "📊 HAFTALIK V4.25 RAPORU\n\n"
+    mesaj = "🧬 COIN RADAR DNA RAPORU V4.25.4\n\n"
     mesaj += f"Toplam kayıt: {len(haftalik_kayitlar)}\n\n"
 
     mesaj += "Kategori Dağılımı:\n"
@@ -616,6 +668,80 @@ def haftalik_rapor_gonder():
                 f"Güçlenme: {ortalama(basarisizlar, 'guclenme_bonus')} | "
                 f"BTC Fark: %{ortalama(basarisizlar, 'btc_fark')}\n"
             )
+
+        def oran(liste, alan):
+            if not liste:
+                return 0
+            return round(sum(1 for k in liste if k.get(alan)) * 100 / len(liste), 1)
+
+        def kombinasyon_adi(k):
+            parcaciklar = []
+            if k.get("btc_guclu"):
+                parcaciklar.append("BTC Güçlü")
+            else:
+                parcaciklar.append("BTC Zayıf")
+            parcaciklar.append("Lider" if k.get("lider_mi") else "Lider Yok")
+            parcaciklar.append("Hacim >10x" if k.get("hacim_10x") else "Hacim <10x")
+            parcaciklar.append("Zirve Yakın" if k.get("zirve_teyidi") else "Zirve Zayıf")
+            parcaciklar.append("Haber Var" if k.get("haber_var") else "Haber Yok")
+            return " + ".join(parcaciklar)
+
+        def basarili_mi(k):
+            return bool(k.get("h1") or k.get("h2") or k.get("max_kazanc", 0) >= 3)
+
+        h2_yapanlar = [k for k in son_kayitlar if k.get("h2")]
+        if h2_yapanlar:
+            mesaj += "\n🥇 H2 YAPANLARIN ORTAK ÖZELLİKLERİ\n"
+            mesaj += f"BTC Güçlü: %{oran(h2_yapanlar, 'btc_guclu')}\n"
+            mesaj += f"Lider: %{oran(h2_yapanlar, 'lider_mi')}\n"
+            mesaj += f"Hacim >10x: %{oran(h2_yapanlar, 'hacim_10x')}\n"
+            mesaj += f"Zirveye Yakın: %{oran(h2_yapanlar, 'zirve_teyidi')}\n"
+            mesaj += f"Haber Desteği: %{oran(h2_yapanlar, 'haber_var')}\n"
+
+        stop_olanlar = [k for k in son_kayitlar if k.get("stop") and not k.get("h1") and not k.get("h2")]
+        if stop_olanlar:
+            mesaj += "\n🚫 STOP OLANLARIN ORTAK ÖZELLİKLERİ\n"
+            mesaj += f"BTC Güçlü: %{oran(stop_olanlar, 'btc_guclu')}\n"
+            mesaj += f"Lider: %{oran(stop_olanlar, 'lider_mi')}\n"
+            mesaj += f"Hacim >10x: %{oran(stop_olanlar, 'hacim_10x')}\n"
+            mesaj += f"Zirveye Yakın: %{oran(stop_olanlar, 'zirve_teyidi')}\n"
+            mesaj += f"Haber Desteği: %{oran(stop_olanlar, 'haber_var')}\n"
+
+        kombinasyonlar = {}
+        for k in son_kayitlar:
+            ad = kombinasyon_adi(k)
+            if ad not in kombinasyonlar:
+                kombinasyonlar[ad] = {"toplam": 0, "basarili": 0, "h2": 0}
+            kombinasyonlar[ad]["toplam"] += 1
+            if basarili_mi(k):
+                kombinasyonlar[ad]["basarili"] += 1
+            if k.get("h2"):
+                kombinasyonlar[ad]["h2"] += 1
+
+        anlamli_kombinasyonlar = [
+            (ad, v) for ad, v in kombinasyonlar.items()
+            if v["toplam"] >= 3
+        ]
+        if anlamli_kombinasyonlar:
+            en_iyi_ad, en_iyi_v = max(
+                anlamli_kombinasyonlar,
+                key=lambda item: (item[1]["basarili"] / max(item[1]["toplam"], 1), item[1]["h2"], item[1]["toplam"])
+            )
+            basari_orani = round(en_iyi_v["basarili"] * 100 / max(en_iyi_v["toplam"], 1), 1)
+            h2_orani = round(en_iyi_v["h2"] * 100 / max(en_iyi_v["toplam"], 1), 1)
+            mesaj += "\n🏆 EN BAŞARILI KOMBİNASYON\n"
+            mesaj += f"{en_iyi_ad}\n"
+            mesaj += f"Başarı Oranı: %{basari_orani} | H2: %{h2_orani}\n"
+            mesaj += f"Örnek Sayısı: {en_iyi_v['toplam']}\n"
+
+            en_kotu_ad, en_kotu_v = min(
+                anlamli_kombinasyonlar,
+                key=lambda item: (item[1]["basarili"] / max(item[1]["toplam"], 1), -item[1]["toplam"])
+            )
+            kotu_oran = round(en_kotu_v["basarili"] * 100 / max(en_kotu_v["toplam"], 1), 1)
+            mesaj += "\n⚠️ EN ZAYIF KOMBİNASYON\n"
+            mesaj += f"{en_kotu_ad}\n"
+            mesaj += f"Başarı Oranı: %{kotu_oran} | Örnek: {en_kotu_v['toplam']}\n"
 
 
     if h1_kayitlari:
@@ -789,7 +915,7 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
     İzleme, Güçlü Hacim ve Geç Pump arka planda kalır; Telegram'a gönderilmez.
     """
 
-    gec_pump = degisim1 > 8 or degisim3 > 12 or degisim24 > 20
+    gec_pump = gec_pump_mi(degisim1, degisim3, degisim24, hacim_kat, btcden_guclu, lider_skoru)
 
     # Geç pump logda kalır, aktif sinyal olarak gönderilmez.
     if gec_pump and hacim_kat >= 4 and btcden_guclu:
@@ -808,13 +934,13 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
     ):
         return "⭐ Yıldız", "En güçlü lider aday"
 
-    # 2) 🔥 ELİT ROKET
+    # 2) 🔥 ELİT ROKET - Roket Adayı'ndan daha güçlü hacim teyidi ister
     if (
         guc_skoru >= 74
         and lider_skoru >= 5
         and btc_guc_skoru >= 5
         and kalite_skoru >= 10
-        and hacim_kat >= 4
+        and hacim_kat >= 8
         and degisim1 > 0
         and degisim3 >= 1
         and btcden_guclu
@@ -825,7 +951,7 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
     if (
         guc_skoru >= 62
         and kalite_skoru >= 8
-        and hacim_kat >= 3
+        and hacim_kat >= 5
         and degisim1 > 0
         and degisim3 > 0.5
         and btcden_guclu
@@ -862,7 +988,7 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
 while True:
     try:
         print()
-        print("AKILLI PARA RADARI V4.25")
+        print("COIN RADAR V4.25.4")
         print("--------------------------------")
 
         hedef_stop_kontrol()
@@ -1039,7 +1165,8 @@ while True:
                     lider_bonus = 1
                 genel_skor += lider_bonus
 
-                gec_pump = degisim1 > 8 or degisim3 > 12 or degisim24 > 20
+                gec_pump_puan = gec_pump_puani_hesapla(degisim1, degisim3, degisim24, hacim_kat, btcden_guclu, lider_skoru)
+                gec_pump = gec_pump_puan >= 3
                 zirve_bonus = 1 if (zirve_yakin or yeni_zirve) and not gec_pump else 0
                 genel_skor += zirve_bonus
 
@@ -1118,6 +1245,7 @@ while True:
                     "btc_fark_bonus": btc_fark_bonus,
                     "lider_bonus": lider_bonus,
                     "zirve_bonus": zirve_bonus,
+                    "gec_pump_puan": gec_pump_puan,
                     "guclenme_notlari": guclenme_notlari,
                     "stop": stop,
                     "hedef1": hedef1,
@@ -1203,7 +1331,7 @@ while True:
 
                 gosterilecekler.append(a)
 
-                if len(gosterilecekler) >= 5:
+                if len(gosterilecekler) >= 3:
                     break
 
             if len(gosterilecekler) == 0:
@@ -1211,7 +1339,7 @@ while True:
 
             else:
                 mesaj = (
-                    f"🚀 AKILLI PARA RADARI V4.25\n"
+                    f"🚀 COIN RADAR V4.25.4\n"
                     f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
@@ -1275,14 +1403,6 @@ while True:
                     )
 
                     satir += f"Not: {a['alt_durum']}\n"
-                    satir += f"Lider Notu: {lider_notu_olustur(a)}\n"
-
-                    secilme_notlari = neden_secildi_olustur(a)
-                    if secilme_notlari:
-                        satir += "Neden Seçildi:\n"
-                        for not_satiri in secilme_notlari:
-                            satir += f"- {not_satiri}\n"
-
                     satir += ortak_sinyal_ozeti_olustur(a) + "\n"
 
                     if a["durum_degisti"]:
@@ -1298,10 +1418,6 @@ while True:
                         f"BTC Gücü: {'✅' if a['btcden_guclu'] else '❌'}\n"
                         f"BTC Farkı: %{round(a.get('btc_fark', 0), 2)}\n"
                         f"Haber: {a['haber_skoru']}\n"
-                        + (
-                            f"Bonuslar: Hacim +{a.get('hacim_bonus', 0)} | BTC +{a.get('btc_fark_bonus', 0)} | Lider +{a.get('lider_bonus', 0)} | Zirve +{a.get('zirve_bonus', 0)}\n"
-                            if (a.get('hacim_bonus', 0) + a.get('btc_fark_bonus', 0) + a.get('lider_bonus', 0) + a.get('zirve_bonus', 0)) > 0 else ""
-                        )
                         + (f"📈 Güçlenme Bonusu: +{a.get('guclenme_bonus', 0)}\n" if a.get("guclenme_bonus", 0) > 0 else "")
                         + ("\n".join(a.get("guclenme_notlari", [])) + "\n" if a.get("guclenme_notlari") else "")
                         + f"Fiyat: {round(a['fiyat'], 4)}\n"
