@@ -1,5 +1,6 @@
 
 
+
 import os
 import time
 import requests
@@ -781,7 +782,7 @@ def stop_raporu_gonder():
 
 
 def haftalik_kayit_ekle(symbol, durum, skor, kalite_skoru, haber_skoru, hacim, degisim3):
-    kategori_istatistikleri.setdefault(durum, {"toplam":0,"h1":0,"h2":0})
+    kategori_istatistikleri.setdefault(durum, {"toplam":0,"h1":0,"h2":0,"stop":0})
     kategori_istatistikleri[durum]["toplam"] += 1
 
     haftalik_kayitlar.append({
@@ -794,6 +795,94 @@ def haftalik_kayit_ekle(symbol, durum, skor, kalite_skoru, haber_skoru, hacim, d
         "hacim": hacim,
         "degisim3": degisim3
     })
+
+
+
+def kategori_performans_raporu_olustur(kayitlar, gun=7):
+    """Kategori bazlı H1/H2/Stop ve ortalama kazanç raporu üretir.
+
+    Not:
+    - Başarı DB'deki ilk sinyal kategorisini baz alır.
+    - Son 7 gün varsayılan kullanılır; kayıt yoksa son 100 kayıtla devam eder.
+    - H1/H2 sonrası stop görse bile başarı korunur; stop oranı ayrıca gösterilir.
+    """
+    if not kayitlar:
+        return ""
+
+    simdi = time.time()
+    baslangic = simdi - gun * 24 * 60 * 60
+    secilenler = [k for k in kayitlar if float(k.get("zaman", 0)) >= baslangic]
+
+    # Bot yeni başladıysa veya DB'de zaman alanı eskiyse rapor boş kalmasın.
+    if not secilenler:
+        secilenler = kayitlar[-100:]
+
+    kategoriler = {}
+
+    for k in secilenler:
+        kat = k.get("kategori") or k.get("durum") or "Bilinmeyen"
+        if kat not in kategoriler:
+            kategoriler[kat] = {
+                "toplam": 0,
+                "h1": 0,
+                "h2": 0,
+                "stop": 0,
+                "aktif": 0,
+                "kazanc_toplam": 0.0,
+                "skor_toplam": 0.0,
+                "kalite_toplam": 0.0,
+                "hacim_toplam": 0.0,
+            }
+
+        v = kategoriler[kat]
+        v["toplam"] += 1
+
+        if k.get("h1"):
+            v["h1"] += 1
+        if k.get("h2"):
+            v["h2"] += 1
+        if k.get("stop") and not k.get("h1") and not k.get("h2"):
+            v["stop"] += 1
+        if k.get("sonuc") == "aktif":
+            v["aktif"] += 1
+
+        v["kazanc_toplam"] += float(k.get("max_kazanc", 0) or 0)
+        v["skor_toplam"] += float(k.get("skor", 0) or 0)
+        v["kalite_toplam"] += float(k.get("kalite", 0) or 0)
+        v["hacim_toplam"] += float(k.get("hacim", 0) or 0)
+
+    def yuzde(adet, toplam):
+        return round(adet * 100 / max(toplam, 1), 1)
+
+    sirali = sorted(
+        kategoriler.items(),
+        key=lambda item: (
+            yuzde(item[1]["h2"], item[1]["toplam"]),
+            yuzde(item[1]["h1"], item[1]["toplam"]),
+            item[1]["toplam"],
+        ),
+        reverse=True,
+    )
+
+    mesaj = f"\n🎯 KATEGORİ PERFORMANS RAPORU ({gun} Gün)\n"
+
+    for kat, v in sirali:
+        toplam = max(v["toplam"], 1)
+        mesaj += f"\n{kat}\n"
+        mesaj += (
+            f"Toplam: {v['toplam']} | "
+            f"H1: {v['h1']} (%{yuzde(v['h1'], toplam)}) | "
+            f"H2: {v['h2']} (%{yuzde(v['h2'], toplam)}) | "
+            f"Stop: {v['stop']} (%{yuzde(v['stop'], toplam)})\n"
+        )
+        mesaj += (
+            f"Ort. Kazanç: %{round(v['kazanc_toplam'] / toplam, 2)} | "
+            f"Ort. Skor: {round(v['skor_toplam'] / toplam, 2)} | "
+            f"Ort. Kalite: {round(v['kalite_toplam'] / toplam, 2)} | "
+            f"Ort. Hacim: {round(v['hacim_toplam'] / toplam, 2)}x\n"
+        )
+
+    return mesaj
 
 
 def haftalik_rapor_gonder():
@@ -983,12 +1072,7 @@ def haftalik_rapor_gonder():
         for i,k in enumerate(sorted(h1_kayitlari,key=lambda x:x["sure"])[:5],1):
             mesaj += f"{i}. {k['symbol']} | {sure_yaz(k['sure'])}\n"
 
-    mesaj += "\n🎯 KATEGORİ BAŞARI ORANI\n"
-    for kat,veri in kategori_istatistikleri.items():
-        toplam=max(veri["toplam"],1)
-        h1_oran=round(veri["h1"]*100/toplam,1)
-        h2_oran=round(veri["h2"]*100/toplam,1)
-        mesaj += f"\n{kat}\nToplam:{veri['toplam']} | H1:%{h1_oran} | H2:%{h2_oran}\n"
+    mesaj += kategori_performans_raporu_olustur(basari_kayitlari, gun=7)
 
     if h2_kayitlari:
         mesaj += "\n🏆 EN HIZLI H2\n"
@@ -1006,6 +1090,7 @@ def haftalik_rapor_gonder():
     haftalik_kayitlar = []
     h1_kayitlari.clear()
     h2_kayitlari.clear()
+    kategori_istatistikleri.clear()
     son_haftalik_rapor = simdi
 
 
@@ -1034,6 +1119,9 @@ def hedef_stop_kontrol():
             })
 
             print(f"STOP RAPORA EKLENDİ: {symbol} {round(kazanc, 2)}%")
+
+            kategori_istatistikleri.setdefault(s["durum"], {"toplam":0,"h1":0,"h2":0,"stop":0})
+            kategori_istatistikleri[s["durum"]]["stop"] = kategori_istatistikleri[s["durum"]].get("stop", 0) + 1
 
             basari_kaydi_guncelle(symbol, fiyat, stop=True)
 
@@ -1099,7 +1187,7 @@ def hedef_stop_kontrol():
             telegram_gonder(mesaj)
             print(mesaj)
 
-            kategori_istatistikleri.setdefault(s["durum"], {"toplam":0,"h1":0,"h2":0})
+            kategori_istatistikleri.setdefault(s["durum"], {"toplam":0,"h1":0,"h2":0,"stop":0})
             kategori_istatistikleri[s["durum"]]["h1"] += 1
 
             h1_kayitlari.append({
@@ -1124,7 +1212,7 @@ def hedef_stop_kontrol():
             telegram_gonder(mesaj)
             print(mesaj)
 
-            kategori_istatistikleri.setdefault(s["durum"], {"toplam":0,"h1":0,"h2":0})
+            kategori_istatistikleri.setdefault(s["durum"], {"toplam":0,"h1":0,"h2":0,"stop":0})
             kategori_istatistikleri[s["durum"]]["h2"] += 1
 
             h2_kayitlari.append({
