@@ -1,4 +1,5 @@
 
+
 import os
 import time
 import requests
@@ -76,6 +77,159 @@ NEGATIF = [
 
 
 BASARI_DB_DOSYA = "basari_veritabani.json"
+
+PIYASA_DB_DOSYA = "piyasa_veritabani.json"
+PIYASA_RAPOR_GUN = 3
+PIYASA_KAZANAN_ESIK = 10
+
+
+def piyasa_db_yukle():
+    try:
+        with open(PIYASA_DB_DOSYA, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def piyasa_db_kaydet(veriler):
+    """Tüm coin piyasa özetini saklar. Sadece sinyal alanları değil, kaçanları da analiz eder."""
+    try:
+        simdi = time.time()
+        # Dosya şişmesin: 7 günlük kayıt yeterli.
+        temiz = [k for k in veriler if simdi - float(k.get("zaman", simdi)) <= 7 * 24 * 60 * 60]
+        with open(PIYASA_DB_DOSYA, "w", encoding="utf-8") as f:
+            json.dump(temiz[-5000:], f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("Piyasa veritabanı kaydedilemedi:", e)
+
+
+piyasa_kayitlari = piyasa_db_yukle()
+
+
+def piyasa_kaydi_ekle(symbol, veri):
+    """Her taramada tüm coinleri kaydeder; sinyal gelmeyen ama sonradan gidenleri yakalamak için."""
+    try:
+        kayit = {
+            "zaman": time.time(),
+            "symbol": symbol,
+            "fiyat": round(float(veri.get("fiyat", 0)), 8),
+            "degisim1": round(float(veri.get("degisim1", 0)), 4),
+            "degisim3": round(float(veri.get("degisim3", 0)), 4),
+            "degisim24": round(float(veri.get("degisim24", 0)), 4),
+            "hacim": round(float(veri.get("hacim", 0)), 4),
+            "btc_guclu": bool(veri.get("btc_guclu", False)),
+            "btc_fark": round(float(veri.get("btc_fark", 0)), 4),
+            "lider_mi": bool(veri.get("lider_mi", False)),
+            "lider_skoru": round(float(veri.get("lider_skoru", 0)), 4),
+            "zirve_teyidi": bool(veri.get("zirve_teyidi", False)),
+            "zirve_yakin": bool(veri.get("zirve_yakin", False)),
+            "yeni_zirve": bool(veri.get("yeni_zirve", False)),
+            "haber_var": bool(veri.get("haber_var", False)),
+            "sinyal_var": bool(veri.get("sinyal_var", False)),
+            "durum": veri.get("durum"),
+            "guc_skoru": round(float(veri.get("guc_skoru", 0)), 4),
+            "gec_pump_puan": int(veri.get("gec_pump_puan", 0)),
+        }
+        piyasa_kayitlari.append(kayit)
+
+        # Her kayıtta dosyaya yazmak güvenli ama pahalı olabilir; yine de Railway yeniden başlarsa veri kaybolmasın.
+        if len(piyasa_kayitlari) % 20 == 0:
+            piyasa_db_kaydet(piyasa_kayitlari)
+    except Exception as e:
+        print("Piyasa kaydı eklenemedi:", symbol, e)
+
+
+def piyasa_kacirilan_raporu_olustur(gun=PIYASA_RAPOR_GUN, esik=PIYASA_KAZANAN_ESIK):
+    """Son X günde %10+ yapan tüm coinleri ve botun kaçırdıklarını özetler."""
+    simdi = time.time()
+    baslangic = simdi - gun * 24 * 60 * 60
+    kayitlar = [k for k in piyasa_kayitlari if float(k.get("zaman", 0)) >= baslangic]
+
+    if not kayitlar:
+        return "\n🎯 PİYASA ANALİZİ (3 Gün)\nYeterli piyasa kaydı yok.\n"
+
+    # Her coin için son 3 günün en yüksek 24s performanslı kaydını al.
+    coin_ozet = {}
+    for k in kayitlar:
+        s = k.get("symbol")
+        if not s:
+            continue
+        if s not in coin_ozet or float(k.get("degisim24", 0)) > float(coin_ozet[s].get("degisim24", 0)):
+            coin_ozet[s] = k
+
+    kazananlar = [k for k in coin_ozet.values() if float(k.get("degisim24", 0)) >= esik]
+    kazananlar = sorted(kazananlar, key=lambda x: float(x.get("degisim24", 0)), reverse=True)
+
+    if not kazananlar:
+        return f"\n🎯 PİYASA ANALİZİ ({gun} Gün)\n%{esik}+ yapan coin bulunamadı.\n"
+
+    # Aynı dönemde botun sinyal verdiği coinler.
+    yakalanan_symbol = set()
+    for k in basari_kayitlari:
+        if float(k.get("zaman", 0)) >= baslangic:
+            yakalanan_symbol.add(k.get("symbol"))
+
+    yakalananlar = [k for k in kazananlar if k.get("symbol") in yakalanan_symbol]
+    kacirilanlar = [k for k in kazananlar if k.get("symbol") not in yakalanan_symbol]
+
+    def oran(liste, alan):
+        if not liste:
+            return 0
+        return round(sum(1 for k in liste if k.get(alan)) * 100 / len(liste), 1)
+
+    def ort(liste, alan):
+        if not liste:
+            return 0
+        return round(sum(float(k.get(alan, 0)) for k in liste) / len(liste), 2)
+
+    yakalama_orani = round(len(yakalananlar) * 100 / max(len(kazananlar), 1), 1)
+
+    mesaj = f"\n🎯 PİYASA ANALİZİ ({gun} Gün)\n"
+    mesaj += f"%{esik}+ yapan coin: {len(kazananlar)}\n"
+    mesaj += f"Bot yakaladı: {len(yakalananlar)}\n"
+    mesaj += f"Bot kaçırdı: {len(kacirilanlar)}\n"
+    mesaj += f"Yakalama Oranı: %{yakalama_orani}\n"
+
+    if kacirilanlar:
+        mesaj += "\n🚀 EN BÜYÜK KAÇIRILANLAR\n"
+        for k in kacirilanlar[:5]:
+            mesaj += f"{k.get('symbol')} | 24s: %{round(float(k.get('degisim24', 0)), 2)} | Hacim: {round(float(k.get('hacim', 0)), 2)}x\n"
+
+        mesaj += "\n🔍 KAÇIRILANLARIN ORTAK ÖZELLİĞİ\n"
+        mesaj += f"BTC Güçlü: %{oran(kacirilanlar, 'btc_guclu')}\n"
+        mesaj += f"Lider: %{oran(kacirilanlar, 'lider_mi')}\n"
+        mesaj += f"Zirve: %{oran(kacirilanlar, 'zirve_teyidi')}\n"
+        mesaj += f"Haber: %{oran(kacirilanlar, 'haber_var')}\n"
+        mesaj += f"Hacim >10x: %{round(sum(1 for k in kacirilanlar if float(k.get('hacim', 0)) >= 10) * 100 / max(len(kacirilanlar), 1), 1)}\n"
+        mesaj += f"Ort. Hacim: {ort(kacirilanlar, 'hacim')}x | Ort. BTC Fark: %{ort(kacirilanlar, 'btc_fark')}\n"
+        mesaj += f"Ort. 1s: %{ort(kacirilanlar, 'degisim1')} | Ort. 3s: %{ort(kacirilanlar, 'degisim3')} | Ort. 24s: %{ort(kacirilanlar, 'degisim24')}\n"
+
+        sebepler = []
+        if oran(kacirilanlar, 'btc_guclu') >= 70:
+            sebepler.append("BTC güçlüydü ama kriterlerden kaçtı")
+        if oran(kacirilanlar, 'lider_mi') < 40:
+            sebepler.append("Lider oranı düşük")
+        if sum(1 for k in kacirilanlar if float(k.get('hacim', 0)) >= 5) * 100 / max(len(kacirilanlar), 1) < 50:
+            sebepler.append("Hacim eşiği altında kaldılar")
+        if oran(kacirilanlar, 'zirve_teyidi') < 40:
+            sebepler.append("Zirve teyidi zayıf")
+
+        if sebepler:
+            mesaj += "En Sık Sebep: " + " • ".join(sebepler[:2]) + "\n"
+
+    if yakalananlar:
+        mesaj += "\n✅ YAKALANAN %10+ COINLER\n"
+        for k in yakalananlar[:5]:
+            mesaj += f"{k.get('symbol')} | 24s: %{round(float(k.get('degisim24', 0)), 2)}\n"
+        mesaj += (
+            "Yakalanan ort.: "
+            f"1s %{ort(yakalananlar, 'degisim1')} | "
+            f"3s %{ort(yakalananlar, 'degisim3')} | "
+            f"24s %{ort(yakalananlar, 'degisim24')} | "
+            f"Hacim {ort(yakalananlar, 'hacim')}x\n"
+        )
+
+    return mesaj
 
 
 def basari_db_yukle():
@@ -671,7 +825,7 @@ def haftalik_rapor_gonder():
 
     en_iyi = sorted(en_yuksek_skor.values(), key=lambda x: x["skor"], reverse=True)[:5]
 
-    mesaj = "🧬 COIN RADAR DNA RAPORU V4.25.8\n\n"
+    mesaj = "🧬 COIN RADAR DNA RAPORU V4.26.1\n\n"
     mesaj += f"Toplam kayıt: {len(haftalik_kayitlar)}\n\n"
 
     mesaj += "Kategori Dağılımı:\n"
@@ -765,6 +919,28 @@ def haftalik_rapor_gonder():
             mesaj += f"Haber Desteği: %{oran(stop_olanlar, 'haber_var')}\n"
             mesaj += f"Ort. Geç Pump Puanı: {ortalama(stop_olanlar, 'gec_pump_puan')}\n"
 
+        # V4.26.1 - İlk yakalama analizi: Bot coinleri erken mi, geç mi yakalıyor?
+        # Bu bölüm ATM/FIDA gibi örneklerde, ilk mesaj anındaki 1s/3s/24s oranlarını karşılaştırır.
+        if h2_yapanlar or stop_olanlar:
+            mesaj += "\n⏱️ İLK YAKALAMA ANALİZİ\n"
+            if h2_yapanlar:
+                mesaj += (
+                    "H2 ilk sinyal ort.: "
+                    f"1s %{ortalama(h2_yapanlar, 'degisim1')} | "
+                    f"3s %{ortalama(h2_yapanlar, 'degisim3')} | "
+                    f"24s %{ortalama(h2_yapanlar, 'degisim24')} | "
+                    f"Hacim {ortalama(h2_yapanlar, 'hacim')}x\n"
+                )
+            if stop_olanlar:
+                mesaj += (
+                    "STOP ilk sinyal ort.: "
+                    f"1s %{ortalama(stop_olanlar, 'degisim1')} | "
+                    f"3s %{ortalama(stop_olanlar, 'degisim3')} | "
+                    f"24s %{ortalama(stop_olanlar, 'degisim24')} | "
+                    f"Hacim {ortalama(stop_olanlar, 'hacim')}x\n"
+                )
+            mesaj += "Amaç: H2 yapanlar erken mi yakalandı, stop olanlar geç mi geldi görmek.\n"
+
         kombinasyonlar = {}
         for k in son_kayitlar:
             ad = kombinasyon_adi(k)
@@ -819,8 +995,13 @@ def haftalik_rapor_gonder():
         for i,k in enumerate(sorted(h2_kayitlari,key=lambda x:x["sure"])[:5],1):
             mesaj += f"{i}. {k['symbol']} | {sure_yaz(k['sure'])}\n"
 
+    mesaj += piyasa_kacirilan_raporu_olustur()
+
     telegram_gonder(mesaj)
     print(mesaj)
+
+    # Piyasa verilerini rapordan sonra da sakla; son 7 gün korunur.
+    piyasa_db_kaydet(piyasa_kayitlari)
 
     haftalik_kayitlar = []
     h1_kayitlari.clear()
@@ -1040,7 +1221,7 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
 while True:
     try:
         print()
-        print("COIN RADAR V4.25.4")
+        print("COIN RADAR V4.26.1")
         print("--------------------------------")
 
         hedef_stop_kontrol()
@@ -1236,6 +1417,28 @@ while True:
                     yeni_zirve
                 )
 
+                # Piyasa analizi: Sinyal üretmese bile tüm coinlerin son durumunu kaydet.
+                # Böylece son 3 günde %10+ gidip botun kaçırdığı coinler raporda bulunabilir.
+                piyasa_kaydi_ekle(symbol, {
+                    "fiyat": fiyat,
+                    "degisim1": degisim1,
+                    "degisim3": degisim3,
+                    "degisim24": degisim24,
+                    "hacim": hacim_kat,
+                    "btc_guclu": btcden_guclu,
+                    "btc_fark": btc_fark,
+                    "lider_mi": lider_skoru >= 5,
+                    "lider_skoru": lider_skoru,
+                    "zirve_teyidi": zirve_yakin or yeni_zirve,
+                    "zirve_yakin": zirve_yakin,
+                    "yeni_zirve": yeni_zirve,
+                    "haber_var": haber_skoru > 0,
+                    "guc_skoru": guc_skoru,
+                    "gec_pump_puan": gec_pump_puan,
+                    "sinyal_var": False,
+                    "durum": None,
+                })
+
                 durum, alt_durum = kategori_belirle(
                     symbol,
                     genel_skor,
@@ -1256,6 +1459,14 @@ while True:
                 )
                 if durum is None:
                     continue
+
+                # Son eklenen piyasa kaydına sinyal durumunu işaretle.
+                try:
+                    if piyasa_kayitlari and piyasa_kayitlari[-1].get("symbol") == symbol:
+                        piyasa_kayitlari[-1]["sinyal_var"] = durum in TELEGRAM_KATEGORILERI
+                        piyasa_kayitlari[-1]["durum"] = durum
+                except Exception:
+                    pass
 
                 haftalik_kayit_ekle(
                     symbol,
@@ -1392,7 +1603,7 @@ while True:
 
             else:
                 mesaj = (
-                    f"🚀 COIN RADAR V4.25.9\n"
+                    f"🚀 COIN RADAR V4.26.1\n"
                     f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
