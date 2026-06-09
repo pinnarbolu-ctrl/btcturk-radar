@@ -1,6 +1,7 @@
 
 
 
+
 import os
 import time
 import requests
@@ -774,8 +775,7 @@ def stop_raporu_gonder():
             f"Süre: {s['sure']}\n\n"
         )
 
-    telegram_gonder(mesaj)
-    print(mesaj)
+    # STOP raporu telegrama gonderilmiyor, sadece veri tutuluyor
 
     stop_raporlari = []
     son_stop_raporu = simdi
@@ -1151,8 +1151,7 @@ def hedef_stop_kontrol():
                 f"Süre: {gecen_sure}\n\n"
                 f"Not: Sinyal sonrası güç zayıflıyor olabilir."
             )
-            telegram_gonder(mesaj)
-            print(mesaj)
+            # sessiz kayit
             s["guc_kaybi_bildi"] = True
 
         if not s.get("momentum_cokusu_bildi", False) and fiyat <= onceki_zirve * 0.97:
@@ -1167,8 +1166,7 @@ def hedef_stop_kontrol():
                 f"Süre: {gecen_sure}\n\n"
                 f"Not: Sinyal sonrası güç kaybı derinleşti."
             )
-            telegram_gonder(mesaj)
-            print(mesaj)
+            # sessiz kayit
             s["momentum_cokusu_bildi"] = True
 
         if not s["hedef1_bildi"] and fiyat >= s["hedef1"]:
