@@ -1,7 +1,6 @@
 
 
 
-
 import os
 import time
 import requests
@@ -268,6 +267,7 @@ def basari_kaydi_olustur(symbol, a, simdi):
         "degisim1": round(a["degisim1"], 4),
         "degisim3": round(a["degisim3"], 4),
         "degisim24": round(a["degisim24"], 4),
+        "yakalama_tipi": ("erken" if a.get("degisim1", 0) <= 2 else ("normal" if a.get("degisim1", 0) <= 6 else "gec")),
         "guclenme_bonus": a.get("guclenme_bonus", 0),
 
         # V4.25.1 DNA alanları: Telegram'da kalabalık yapmadan raporda analiz edilir.
@@ -885,6 +885,115 @@ def kategori_performans_raporu_olustur(kayitlar, gun=7):
     return mesaj
 
 
+
+def yildiz_oncesi_analiz_raporu_olustur(kayitlar, gun=7, yildiz_esik=30):
+    """%30+ gidenleri (Yıldız profili) ve gitmeyenlerle farklarını analiz eder.
+    Amaç: Yıldız olanı sonradan görmek değil, yıldız olmadan önceki ortak özellikleri bulmak.
+    """
+    if not kayitlar:
+        return ""
+
+    simdi = time.time()
+    pencere = gun * 24 * 60 * 60
+
+    # Zamanı olmayan eski kayıtlarda rapor boş kalmasın diye son 150 kayda düş.
+    gunluk = [k for k in kayitlar if not k.get("zaman") or simdi - float(k.get("zaman", simdi)) <= pencere]
+    if not gunluk:
+        gunluk = kayitlar[-150:]
+
+    yildizlar = [k for k in gunluk if float(k.get("max_kazanc", 0)) >= yildiz_esik]
+    yildiz_olmayanlar = [
+        k for k in gunluk
+        if float(k.get("max_kazanc", 0)) < yildiz_esik and (k.get("h1") or k.get("h2") or k.get("stop") or float(k.get("max_kazanc", 0)) >= 3)
+    ]
+
+    def ort(liste, alan):
+        if not liste:
+            return 0
+        return round(sum(float(k.get(alan, 0) or 0) for k in liste) / len(liste), 2)
+
+    def oran(liste, alan):
+        if not liste:
+            return 0
+        return round(sum(1 for k in liste if k.get(alan)) * 100 / len(liste), 1)
+
+    def oran_hacim(liste, esik):
+        if not liste:
+            return 0
+        return round(sum(1 for k in liste if float(k.get("hacim", 0) or 0) >= esik) * 100 / len(liste), 1)
+
+    def oran_guclenme(liste):
+        if not liste:
+            return 0
+        return round(sum(1 for k in liste if float(k.get("guclenme_bonus", 0) or 0) > 0) * 100 / len(liste), 1)
+
+    def yakalama_dagilimi(liste):
+        if not liste:
+            return "Erken %0 | Normal %0 | Geç %0"
+        erken = sum(1 for k in liste if k.get("yakalama_tipi") == "erken")
+        normal = sum(1 for k in liste if k.get("yakalama_tipi") == "normal")
+        gec = sum(1 for k in liste if k.get("yakalama_tipi") == "gec")
+        toplam = max(len(liste), 1)
+        return f"Erken %{round(erken*100/toplam,1)} | Normal %{round(normal*100/toplam,1)} | Geç %{round(gec*100/toplam,1)}"
+
+    mesaj = f"\n⭐ YILDIZ ÖNCESİ ANALİZ ({gun} Gün)\n"
+    mesaj += f"%{yildiz_esik}+ giden: {len(yildizlar)} | Karşılaştırma: {len(yildiz_olmayanlar)}\n"
+
+    if not yildizlar:
+        mesaj += "Henüz %30+ yıldız örneği yok. Veri biriktikçe analiz netleşecek.\n"
+        return mesaj
+
+    mesaj += "\nYıldızların ortak özellikleri:\n"
+    mesaj += f"BTC Güçlü: %{oran(yildizlar, 'btc_guclu')}\n"
+    mesaj += f"Lider: %{oran(yildizlar, 'lider_mi')}\n"
+    mesaj += f"Zirve: %{oran(yildizlar, 'zirve_teyidi')}\n"
+    mesaj += f"Haber: %{oran(yildizlar, 'haber_var')}\n"
+    mesaj += f"Hacim >10x: %{oran_hacim(yildizlar, 10)} | Hacim >15x: %{oran_hacim(yildizlar, 15)}\n"
+    mesaj += f"Güçlenme Bonusu Var: %{oran_guclenme(yildizlar)}\n"
+    mesaj += f"İlk Sinyal Ort.: 1s %{ort(yildizlar,'degisim1')} | 3s %{ort(yildizlar,'degisim3')} | 24s %{ort(yildizlar,'degisim24')} | Hacim {ort(yildizlar,'hacim')}x\n"
+    mesaj += f"Yakalama Tipi: {yakalama_dagilimi(yildizlar)}\n"
+
+    if yildiz_olmayanlar:
+        mesaj += "\nYıldız olmayanlarda aynı göstergeler:\n"
+        mesaj += f"BTC Güçlü: %{oran(yildiz_olmayanlar, 'btc_guclu')} | Lider: %{oran(yildiz_olmayanlar, 'lider_mi')} | Zirve: %{oran(yildiz_olmayanlar, 'zirve_teyidi')}\n"
+        mesaj += f"Hacim >10x: %{oran_hacim(yildiz_olmayanlar, 10)} | Güçlenme: %{oran_guclenme(yildiz_olmayanlar)}\n"
+        mesaj += f"İlk Sinyal Ort.: 1s %{ort(yildiz_olmayanlar,'degisim1')} | 3s %{ort(yildiz_olmayanlar,'degisim3')} | 24s %{ort(yildiz_olmayanlar,'degisim24')} | Hacim {ort(yildiz_olmayanlar,'hacim')}x\n"
+
+    # En güçlü yıldız kombinasyonunu sade şekilde çıkar.
+    def komb(k):
+        parca = []
+        parca.append("BTC Güçlü" if k.get("btc_guclu") else "BTC Zayıf")
+        parca.append("Lider" if k.get("lider_mi") else "Lider Yok")
+        parca.append("Zirve" if k.get("zirve_teyidi") else "Zirve Yok")
+        parca.append("Hacim>10x" if float(k.get("hacim", 0) or 0) >= 10 else "Hacim<10x")
+        parca.append("Güçleniyor" if float(k.get("guclenme_bonus", 0) or 0) > 0 else "Güçlenme Yok")
+        return " + ".join(parca)
+
+    kombinasyonlar = {}
+    for k in gunluk:
+        ad = komb(k)
+        if ad not in kombinasyonlar:
+            kombinasyonlar[ad] = {"toplam": 0, "yildiz": 0}
+        kombinasyonlar[ad]["toplam"] += 1
+        if float(k.get("max_kazanc", 0) or 0) >= yildiz_esik:
+            kombinasyonlar[ad]["yildiz"] += 1
+
+    anlamli = [(ad, v) for ad, v in kombinasyonlar.items() if v["toplam"] >= 3]
+    if anlamli:
+        en_iyi_ad, en_iyi_v = max(anlamli, key=lambda item: (item[1]["yildiz"] / max(item[1]["toplam"], 1), item[1]["yildiz"]))
+        oran_y = round(en_iyi_v["yildiz"] * 100 / max(en_iyi_v["toplam"], 1), 1)
+        mesaj += "\n🏆 Yıldız Kombinasyonu\n"
+        mesaj += f"{en_iyi_ad}\n"
+        mesaj += f"Yıldız Oranı: %{oran_y} | Örnek: {en_iyi_v['toplam']}\n"
+
+    en_buyuk = sorted(yildizlar, key=lambda k: float(k.get("max_kazanc", 0) or 0), reverse=True)[:5]
+    if en_buyuk:
+        mesaj += "\nEn büyük yıldızlar:\n"
+        for k in en_buyuk:
+            mesaj += f"{k.get('symbol')} +%{round(float(k.get('max_kazanc',0) or 0), 1)} | İlk 24s %{k.get('degisim24', 0)} | Hacim {k.get('hacim', 0)}x\n"
+
+    return mesaj
+
 def haftalik_rapor_gonder():
     global son_haftalik_rapor
     global haftalik_kayitlar
@@ -914,7 +1023,7 @@ def haftalik_rapor_gonder():
 
     en_iyi = sorted(en_yuksek_skor.values(), key=lambda x: x["skor"], reverse=True)[:5]
 
-    mesaj = "🧬 COIN RADAR DNA RAPORU V4.26.1\n\n"
+    mesaj = "🧬 COIN RADAR DNA RAPORU V4.27\n\n"
     mesaj += f"Toplam kayıt: {len(haftalik_kayitlar)}\n\n"
 
     mesaj += "Kategori Dağılımı:\n"
@@ -1071,6 +1180,8 @@ def haftalik_rapor_gonder():
         mesaj += "\n🏆 EN HIZLI H1\n"
         for i,k in enumerate(sorted(h1_kayitlari,key=lambda x:x["sure"])[:5],1):
             mesaj += f"{i}. {k['symbol']} | {sure_yaz(k['sure'])}\n"
+
+    mesaj += yildiz_oncesi_analiz_raporu_olustur(basari_kayitlari, gun=7, yildiz_esik=30)
 
     mesaj += kategori_performans_raporu_olustur(basari_kayitlari, gun=7)
 
