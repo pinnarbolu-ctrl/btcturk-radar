@@ -1,6 +1,7 @@
 
 
 
+
 import os
 import time
 import requests
@@ -82,6 +83,7 @@ BASARI_DB_DOSYA = "basari_veritabani.json"
 PIYASA_DB_DOSYA = "piyasa_veritabani.json"
 PIYASA_RAPOR_GUN = 3
 PIYASA_KAZANAN_ESIK = 10
+SINYALE_GORE_TAKIP_SAATI = 72
 
 
 def piyasa_db_yukle():
@@ -164,14 +166,43 @@ def piyasa_kacirilan_raporu_olustur(gun=PIYASA_RAPOR_GUN, esik=PIYASA_KAZANAN_ES
     if not kazananlar:
         return f"\n🎯 PİYASA ANALİZİ ({gun} Gün)\n%{esik}+ yapan coin bulunamadı.\n"
 
-    # Aynı dönemde botun sinyal verdiği coinler.
-    yakalanan_symbol = set()
-    for k in basari_kayitlari:
-        if float(k.get("zaman", 0)) >= baslangic:
-            yakalanan_symbol.add(k.get("symbol"))
+    # Aynı dönemde botun ÖNCEDEN sinyal verdiği coinler.
+    # Not: Sinyal, büyük hareket kaydından sonra geldiyse yakalanmış sayılmaz.
+    # Böylece geç gelen sinyaller yakalama oranını yapay yükseltmez.
+    sinyal_haritasi = {}
+    for b in basari_kayitlari:
+        s = b.get("symbol")
+        if not s:
+            continue
 
-    yakalananlar = [k for k in kazananlar if k.get("symbol") in yakalanan_symbol]
-    kacirilanlar = [k for k in kazananlar if k.get("symbol") not in yakalanan_symbol]
+        sinyal_zaman = float(b.get("zaman", 0) or 0)
+        if sinyal_zaman < baslangic:
+            continue
+
+        mevcut = sinyal_haritasi.get(s)
+        if mevcut is None or sinyal_zaman < mevcut.get("zaman", 0):
+            sinyal_haritasi[s] = {
+                "zaman": sinyal_zaman,
+                "kategori": b.get("kategori", "Bilinmiyor"),
+                "giris": b.get("giris"),
+            }
+
+    yakalananlar = []
+    kacirilanlar = []
+    for k in kazananlar:
+        s = k.get("symbol")
+        sinyal = sinyal_haritasi.get(s)
+        buyuk_hareket_zaman = float(k.get("zaman", 0) or 0)
+
+        if sinyal and sinyal.get("zaman", 0) <= buyuk_hareket_zaman:
+            k["yakalanan_kategori"] = sinyal.get("kategori", "Bilinmiyor")
+            try:
+                k["sinyalden_sonra_saat"] = round((buyuk_hareket_zaman - sinyal.get("zaman", buyuk_hareket_zaman)) / 3600, 2)
+            except Exception:
+                k["sinyalden_sonra_saat"] = 0
+            yakalananlar.append(k)
+        else:
+            kacirilanlar.append(k)
 
     def oran(liste, alan):
         if not liste:
@@ -221,7 +252,21 @@ def piyasa_kacirilan_raporu_olustur(gun=PIYASA_RAPOR_GUN, esik=PIYASA_KAZANAN_ES
     if yakalananlar:
         mesaj += "\n✅ YAKALANAN %10+ COINLER\n"
         for k in yakalananlar[:5]:
-            mesaj += f"{k.get('symbol')} | 24s: %{round(float(k.get('degisim24', 0)), 2)}\n"
+            mesaj += (
+                f"{k.get('symbol')} | {k.get('yakalanan_kategori', 'Bilinmiyor')} | "
+                f"24s: %{round(float(k.get('degisim24', 0)), 2)} | "
+                f"Sinyalden sonra: {k.get('sinyalden_sonra_saat', 0)}s\n"
+            )
+
+        kategori_sayilari = {}
+        for k in yakalananlar:
+            kat = k.get("yakalanan_kategori", "Bilinmiyor")
+            kategori_sayilari[kat] = kategori_sayilari.get(kat, 0) + 1
+
+        mesaj += "\n📌 YAKALAYAN KATEGORİLER\n"
+        for kat, adet in sorted(kategori_sayilari.items(), key=lambda x: x[1], reverse=True):
+            mesaj += f"{kat}: {adet}\n"
+
         mesaj += (
             "Yakalanan ort.: "
             f"1s %{ort(yakalananlar, 'degisim1')} | "
@@ -294,32 +339,53 @@ def basari_kaydi_olustur(symbol, a, simdi):
 
 
 def basari_kaydi_guncelle(symbol, fiyat, durum=None, h1=False, h2=False, stop=False):
+    """Başarı kaydını günceller.
+
+    V4.28 düzeltmesi:
+    - H1 sonrası kayıt kapanmaz; H2 gelirse aynı kayıt H2 olarak güncellenir.
+    - H1/H2/Stop süreleri saklanır.
+    - Stop, H1/H2 gelmeden olursa başarısız sayılır; H1 sonrası stop sadece risk notu olarak kalır.
+    """
+    simdi = time.time()
+
     for k in reversed(basari_kayitlari):
-        if k.get("symbol") == symbol and k.get("sonuc") == "aktif":
-            giris = k.get("giris", fiyat)
+        if k.get("symbol") != symbol:
+            continue
 
-            if giris:
-                kazanc = ((fiyat - giris) / giris) * 100
-                k["max_kazanc"] = round(max(k.get("max_kazanc", 0), kazanc), 4)
+        if k.get("sonuc") in ("h2", "stop"):
+            continue
 
-            if durum:
-                k["kategori"] = durum
+        giris = k.get("giris", fiyat)
 
-            if h1:
-                k["h1"] = True
-                k["sonuc"] = "h1"
+        if giris:
+            kazanc = ((fiyat - giris) / giris) * 100
+            k["max_kazanc"] = round(max(float(k.get("max_kazanc", 0) or 0), kazanc), 4)
+            k["son_kazanc"] = round(kazanc, 4)
 
-            if h2:
-                k["h2"] = True
-                k["sonuc"] = "h2"
+        if durum:
+            k["kategori_son"] = durum
 
-            if stop:
-                k["stop"] = True
-                if not k.get("h1") and not k.get("h2"):
-                    k["sonuc"] = "stop"
+        if h1 and not k.get("h1"):
+            k["h1"] = True
+            k["h1_zaman"] = simdi
+            k["h1_sure_saat"] = round((simdi - float(k.get("zaman", simdi))) / 3600, 2)
+            k["sonuc"] = "h1"
 
-            basari_db_kaydet(basari_kayitlari)
-            return
+        if h2 and not k.get("h2"):
+            k["h2"] = True
+            k["h2_zaman"] = simdi
+            k["h2_sure_saat"] = round((simdi - float(k.get("zaman", simdi))) / 3600, 2)
+            k["sonuc"] = "h2"
+
+        if stop and not k.get("stop"):
+            k["stop"] = True
+            k["stop_zaman"] = simdi
+            k["stop_sure_saat"] = round((simdi - float(k.get("zaman", simdi))) / 3600, 2)
+            if not k.get("h1") and not k.get("h2"):
+                k["sonuc"] = "stop"
+
+        basari_db_kaydet(basari_kayitlari)
+        return
 
 def telegram_gonder(mesaj):
     if not BOT_TOKEN:
@@ -832,6 +898,7 @@ def kategori_performans_raporu_olustur(kayitlar, gun=7):
                 "skor_toplam": 0.0,
                 "kalite_toplam": 0.0,
                 "hacim_toplam": 0.0,
+                "son_kazanc_toplam": 0.0,
             }
 
         v = kategoriler[kat]
@@ -850,6 +917,7 @@ def kategori_performans_raporu_olustur(kayitlar, gun=7):
         v["skor_toplam"] += float(k.get("skor", 0) or 0)
         v["kalite_toplam"] += float(k.get("kalite", 0) or 0)
         v["hacim_toplam"] += float(k.get("hacim", 0) or 0)
+        v["son_kazanc_toplam"] += float(k.get("son_kazanc", k.get("max_kazanc", 0)) or 0)
 
     def yuzde(adet, toplam):
         return round(adet * 100 / max(toplam, 1), 1)
@@ -876,7 +944,8 @@ def kategori_performans_raporu_olustur(kayitlar, gun=7):
             f"Stop: {v['stop']} (%{yuzde(v['stop'], toplam)})\n"
         )
         mesaj += (
-            f"Ort. Kazanç: %{round(v['kazanc_toplam'] / toplam, 2)} | "
+            f"Ort. Max Kazanç: %{round(v['kazanc_toplam'] / toplam, 2)} | "
+            f"Ort. Son Kazanç: %{round(v['son_kazanc_toplam'] / toplam, 2)} | "
             f"Ort. Skor: {round(v['skor_toplam'] / toplam, 2)} | "
             f"Ort. Kalite: {round(v['kalite_toplam'] / toplam, 2)} | "
             f"Ort. Hacim: {round(v['hacim_toplam'] / toplam, 2)}x\n"
@@ -1023,7 +1092,7 @@ def haftalik_rapor_gonder():
 
     en_iyi = sorted(en_yuksek_skor.values(), key=lambda x: x["skor"], reverse=True)[:5]
 
-    mesaj = "🧬 COIN RADAR DNA RAPORU V4.27\n\n"
+    mesaj = "🧬 COIN RADAR DNA RAPORU V4.28\n\n"
     mesaj += f"Toplam kayıt: {len(haftalik_kayitlar)}\n\n"
 
     mesaj += "Kategori Dağılımı:\n"
@@ -1333,6 +1402,22 @@ def hedef_stop_kontrol():
 
             s["hedef2_bildi"] = True
             kapanacaklar.append(symbol)
+
+        # V4.28: 72 saat sonunda hâlâ hedef/stop yoksa açık sinyali arka planda kapat.
+        if time.time() - s["zaman"] > SINYALE_GORE_TAKIP_SAATI * 3600:
+            mesaj = (
+                f"⏳ SİNYAL TAKİP KAPANDI\n\n"
+                f"Coin: {symbol}\n"
+                f"Kategori: {s['durum']}\n"
+                f"Giriş: {round(giris, 4)}\n"
+                f"Anlık: {round(fiyat, 4)}\n"
+                f"Sonuç: %{round(kazanc, 2)}\n"
+                f"Süre: {gecen_sure}\n\n"
+                f"Not: 72 saat içinde H1/H2/Stop netleşmedi. Rapor için max kazanç kaydedildi."
+            )
+            print(mesaj)
+            kapanacaklar.append(symbol)
+            continue
 
     for symbol in kapanacaklar:
         aktif_sinyaller.pop(symbol, None)
@@ -1800,7 +1885,7 @@ while True:
 
             else:
                 mesaj = (
-                    f"🚀 COIN RADAR V4.26.1\n"
+                    f"🚀 COIN RADAR V4.29\n"
                     f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
