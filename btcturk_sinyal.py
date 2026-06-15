@@ -57,6 +57,40 @@ TELEGRAM_KATEGORILERI = {
     "⭐ Yıldız"
 }
 
+
+def bildirim_basligi_olustur(gosterilecekler):
+    """
+    V4.29 bildirim sadeleştirme:
+    Kilit ekranında bot adı yerine sinyal seviyesi ilk satırda görünsün.
+
+    Emoji ayrımı:
+    - 🚀 Roket Adayı
+    - 🔥 Elit Roket
+    - ⭐ Yıldız
+    """
+    if not gosterilecekler:
+        return "COIN RADAR V4.29"
+
+    kategori_basliklari = {
+        "📊 TRADER HACİM": "📊 TRADER HACİM",
+        "🚀 Roket Adayı": "🚀 ROKET ADAYI",
+        "🔥 Elit Roket": "🔥 ELİT ROKET",
+        "⭐ Yıldız": "⭐ YILDIZ",
+    }
+
+    durumlar = [a.get("durum") for a in gosterilecekler]
+    en_yuksek = max(durumlar, key=lambda d: DURUM_SEVIYESI.get(d, 0))
+    baslik = kategori_basliklari.get(en_yuksek, en_yuksek or "COIN RADAR")
+
+    if len(gosterilecekler) == 1:
+        return baslik
+
+    if all(d == en_yuksek for d in durumlar):
+        return f"{baslik} ({len(gosterilecekler)})"
+
+    return f"{baslik} ÖNCELİKLİ ({len(gosterilecekler)} SİNYAL)"
+
+
 RSS_KAYNAKLARI = [
     "https://cointelegraph.com/rss",
     "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml"
@@ -1883,8 +1917,10 @@ while True:
                 print("Yeni gönderilecek aday yok.")
 
             else:
+                bildirim_basligi = bildirim_basligi_olustur(gosterilecekler)
                 mesaj = (
-                    f"🚀 COIN RADAR V4.29\n"
+                    f"{bildirim_basligi}\n"
+                    f"COIN RADAR V4.29\n"
                     f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
