@@ -1524,7 +1524,7 @@ while True:
         print("--------------------------------")
 
         hedef_stop_kontrol()
-        stop_raporu_gonder()
+        #stop_raporu_gonder()
         haftalik_rapor_gonder()
 
         btc_d = btc_degisimleri()
