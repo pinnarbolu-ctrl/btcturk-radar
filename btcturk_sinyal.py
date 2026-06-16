@@ -393,29 +393,16 @@ def telegram_gonder(mesaj):
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-    # Telegram sendMessage limiti 4096 karakter. Raporlar uzarsa sessizce düşmesin diye parçala.
-    parcalar = []
-    kalan = str(mesaj)
-    while len(kalan) > 3900:
-        bol = kalan.rfind("\n", 0, 3900)
-        if bol == -1:
-            bol = 3900
-        parcalar.append(kalan[:bol])
-        kalan = kalan[bol:].lstrip()
-    if kalan:
-        parcalar.append(kalan)
-
     for chat_id in CHAT_IDS:
-        for parca in parcalar:
-            try:
-                r = requests.get(
-                    url,
-                    params={"chat_id": chat_id, "text": parca},
-                    timeout=10
-                )
-                print(chat_id, r.text)
-            except Exception as e:
-                print(chat_id, e)
+        try:
+            r = requests.get(
+                url,
+                params={"chat_id": chat_id, "text": mesaj},
+                timeout=10
+            )
+            print(chat_id, r.text)
+        except Exception as e:
+            print(chat_id, e)
 
 
 def veri_getir(symbol, saat=24):
@@ -853,8 +840,7 @@ def stop_raporu_gonder():
             f"Süre: {s['sure']}\n\n"
         )
 
-    telegram_gonder(mesaj)
-    print(mesaj)
+    # STOP raporu telegrama gonderilmiyor, sadece veri tutuluyor
 
     stop_raporlari = []
     son_stop_raporu = simdi
@@ -1476,21 +1462,7 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
     ):
         return "🔥 Elit Roket", "Güç skoru yüksek aday"
 
-    # 3) 📊 TRADER HACİM - 15x+ hacim özel sinyali
-    # Not: Roket Adayı'ndan önce kontrol edilir; yoksa 15x+ hacimli adaylar
-    # çoğu zaman Roket Adayı olarak etiketlenip Trader Hacim hiç görünmez.
-    if (
-        guc_skoru >= 55
-        and hacim_kat >= 15
-        and btcden_guclu
-        and btc_guc_skoru >= 4
-        and (degisim1 >= 0 or degisim3 >= 0.5)
-    ):
-        if zirve_yakin or yeni_zirve:
-            return "📊 TRADER HACİM", "15x+ hacim + BTC gücü + zirve teyidi"
-        return "📊 TRADER HACİM", "15x+ hacim + BTC gücü"
-
-    # 4) 🚀 ROKET ADAYI - haberli veya sessiz güçlü aday
+    # 3) 🚀 ROKET ADAYI - haberli veya sessiz güçlü aday
     if (
         guc_skoru >= 62
         and kalite_skoru >= 8
@@ -1504,6 +1476,17 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         if haber_skoru > 0:
             return "🚀 Roket Adayı", "Haberli güçlü aday"
         return "🚀 Roket Adayı", "Sessiz güçlü aday"
+
+    # 4) 📊 TRADER HACİM - erken hacim/fiyat hareketi
+    if (
+        guc_skoru >= 58
+        and hacim_kat >= 15
+        and btcden_guclu
+        and btc_guc_skoru >= 4
+        and (degisim1 >= 0.2 or degisim3 >= 1)
+        and (zirve_yakin or yeni_zirve)
+    ):
+        return "📊 TRADER HACİM", "Trader hacim + BTC gücü + fiyat teyidi"
 
     # Arka plan güçlü hacim
     if hacim_kat >= 12 and btcden_guclu and not (degisim1 < 0 and degisim3 < 0):
@@ -1524,7 +1507,6 @@ while True:
 
         hedef_stop_kontrol()
         stop_raporu_gonder()
-        haftalik_rapor_gonder()
 
         btc_d = btc_degisimleri()
         btc = btc_d.get("3s", 0)
@@ -1910,7 +1892,6 @@ while True:
                 )[0].get("durum")
 
                 baslik_map = {
-                    "📊 TRADER HACİM": "📊 TRADER HACİM",
                     "🚀 Roket Adayı": "🚀 ROKET ADAYI",
                     "🔥 Elit Roket": "🔥 ELİT ROKET",
                     "⭐ Yıldız": "⭐ YILDIZ"
