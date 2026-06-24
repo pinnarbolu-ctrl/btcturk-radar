@@ -298,6 +298,23 @@ basari_kayitlari = basari_db_yukle()
 
 
 def basari_kaydi_olustur(symbol, a, simdi):
+    guclenme_notlari = a.get("guclenme_notlari", []) or []
+    hacim_gucleniyor = any("hacim güçleniyor" in str(n).lower() for n in guclenme_notlari)
+    momentum_gucleniyor = any("momentum güçleniyor" in str(n).lower() for n in guclenme_notlari)
+
+    # Güçlenme notu boşsa, gönderim anındaki son tarama verisinden de bayrak üret.
+    onceki = a.get("onceki_veri") or {}
+    if onceki:
+        eski_hacim = float(onceki.get("hacim", a.get("hacim", 0)) or 0)
+        yeni_hacim = float(a.get("hacim", 0) or 0)
+        if eski_hacim > 0 and yeni_hacim >= eski_hacim * 1.20:
+            hacim_gucleniyor = True
+
+        eski_momentum = float(onceki.get("degisim3", a.get("degisim3", 0)) or 0)
+        yeni_momentum = float(a.get("degisim3", 0) or 0)
+        if yeni_momentum - eski_momentum >= 0.5:
+            momentum_gucleniyor = True
+
     return {
         "symbol": symbol,
         "kategori": a["durum"],
@@ -314,6 +331,8 @@ def basari_kaydi_olustur(symbol, a, simdi):
         "degisim24": round(a["degisim24"], 4),
         "yakalama_tipi": ("erken" if a.get("degisim1", 0) <= 2 else ("normal" if a.get("degisim1", 0) <= 6 else "gec")),
         "guclenme_bonus": a.get("guclenme_bonus", 0),
+        "hacim_gucleniyor": bool(hacim_gucleniyor),
+        "momentum_gucleniyor": bool(momentum_gucleniyor),
 
         # V4.25.1 DNA alanları: Telegram'da kalabalık yapmadan raporda analiz edilir.
         "haber_var": bool(a.get("haber_skoru", 0) > 0),
@@ -336,7 +355,6 @@ def basari_kaydi_olustur(symbol, a, simdi):
         "max_kazanc": 0.0,
         "sonuc": "aktif"
     }
-
 
 def basari_kaydi_guncelle(symbol, fiyat, durum=None, h1=False, h2=False, stop=False):
     """Başarı kaydını günceller.
@@ -854,8 +872,9 @@ def stop_raporu_gonder():
             f"Süre: {s['sure']}\n\n"
         )
 
-    telegram_gonder(mesaj)
-    print(mesaj)
+    # V4.30: STOP RAPORU Telegram'a gönderilmez.
+    # Stop bilgileri basari_kayitlari içinde arka planda raporlar için tutulur.
+    print("STOP raporu arka planda kaydedildi, Telegram'a gönderilmedi.")
 
     stop_raporlari = []
     son_stop_raporu = simdi
@@ -1222,6 +1241,28 @@ def haftalik_rapor_gonder():
                 )
             mesaj += "Amaç: H2 yapanlar erken mi yakalandı, stop olanlar geç mi geldi görmek.\n"
 
+        # V4.30 - Özellik Başarı Tablosu:
+        # "H2 yapanların kaçı liderdi?" yerine "Lider olanların kaçı başarılı oldu?" sorusunu cevaplar.
+        def ozellik_basari_satiri(ad, filtre_fn):
+            ilgili = [k for k in son_kayitlar if filtre_fn(k)]
+            if not ilgili:
+                return f"{ad}: veri yok\n"
+            basarili = [k for k in ilgili if basarili_mi(k)]
+            h2_ler = [k for k in ilgili if k.get("h2")]
+            basari_orani = round(len(basarili) * 100 / max(len(ilgili), 1), 1)
+            h2_orani = round(len(h2_ler) * 100 / max(len(ilgili), 1), 1)
+            return f"{ad}: Başarı %{basari_orani} | H2 %{h2_orani} | Örnek {len(ilgili)}\n"
+
+        if son_kayitlar:
+            mesaj += "\n🏆 ÖZELLİK BAŞARI TABLOSU\n"
+            mesaj += ozellik_basari_satiri("BTC Güçlü", lambda k: bool(k.get("btc_guclu")))
+            mesaj += ozellik_basari_satiri("Lider", lambda k: bool(k.get("lider_mi")))
+            mesaj += ozellik_basari_satiri("Zirve", lambda k: bool(k.get("zirve_teyidi")))
+            mesaj += ozellik_basari_satiri("Hacim >10x", lambda k: bool(k.get("hacim_10x")))
+            mesaj += ozellik_basari_satiri("Hacim Güçleniyor", lambda k: bool(k.get("hacim_gucleniyor")))
+            mesaj += ozellik_basari_satiri("Momentum Güçleniyor", lambda k: bool(k.get("momentum_gucleniyor")))
+            mesaj += ozellik_basari_satiri("Haber Desteği", lambda k: bool(k.get("haber_var")))
+
         kombinasyonlar = {}
         for k in son_kayitlar:
             ad = kombinasyon_adi(k)
@@ -1520,7 +1561,7 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
 while True:
     try:
         print()
-        print("COIN RADAR V4.26.1")
+        print("COIN RADAR V4.30")
         print("--------------------------------")
 
         hedef_stop_kontrol()
@@ -1902,25 +1943,29 @@ while True:
                 print("Yeni gönderilecek aday yok.")
 
             else:
-                # Bildirim başlığı: kilit ekranında sinyal tipi ilk satırda görünsün.
-                # Birden fazla coin varsa en yüksek kategori başlığa yazılır.
-                en_ust_sinyal = sorted(
+                # V4.30: Kilit ekranında coin adı da görünsün.
+                # Örnek: 🔥 DASHTRY | ELİT ROKET
+                en_ust_aday = sorted(
                     gosterilecekler,
                     key=lambda x: DURUM_SEVIYESI.get(x.get("durum"), 0),
                     reverse=True
-                )[0].get("durum")
+                )[0]
+                en_ust_sinyal = en_ust_aday.get("durum")
+                en_ust_coin = en_ust_aday.get("symbol", "")
 
                 baslik_map = {
-                    "📊 TRADER HACİM": "📊 TRADER HACİM",
-                    "🚀 Roket Adayı": "🚀 ROKET ADAYI",
-                    "🔥 Elit Roket": "🔥 ELİT ROKET",
-                    "⭐ Yıldız": "⭐ YILDIZ"
+                    "📊 TRADER HACİM": "TRADER HACİM",
+                    "🚀 Roket Adayı": "ROKET ADAYI",
+                    "🔥 Elit Roket": "ELİT ROKET",
+                    "⭐ Yıldız": "YILDIZ"
                 }
-                bildirim_basligi = baslik_map.get(en_ust_sinyal, "COIN RADAR")
+                sinyal_basligi = baslik_map.get(en_ust_sinyal, "SİNYAL")
+                ikon = en_ust_sinyal.split()[0] if en_ust_sinyal else "🚀"
+                bildirim_basligi = f"{ikon} {en_ust_coin} | {sinyal_basligi}"
 
                 mesaj = (
                     f"{bildirim_basligi}\n"
-                    f"COIN RADAR V4.29\n"
+                    f"COIN RADAR V4.30\n"
                     f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
