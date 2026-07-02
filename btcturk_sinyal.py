@@ -1241,27 +1241,94 @@ def haftalik_rapor_gonder():
                 )
             mesaj += "Amaç: H2 yapanlar erken mi yakalandı, stop olanlar geç mi geldi görmek.\n"
 
-        # V4.30 - Özellik Başarı Tablosu:
-        # "H2 yapanların kaçı liderdi?" yerine "Lider olanların kaçı başarılı oldu?" sorusunu cevaplar.
-        def ozellik_basari_satiri(ad, filtre_fn):
+        # V4.31 - Özellik / Hacim / Momentum başarı analizleri:
+        # Amaç: Hangi özellik, hacim bandı ve momentum aralığı H2 başarısına daha çok katkı veriyor?
+        def ozellik_basari_hesapla(ad, filtre_fn):
             ilgili = [k for k in son_kayitlar if filtre_fn(k)]
             if not ilgili:
-                return f"{ad}: veri yok\n"
+                return {
+                    "ad": ad,
+                    "toplam": 0,
+                    "basari": 0,
+                    "h2": 0,
+                    "basari_orani": 0,
+                    "h2_orani": 0,
+                    "veri_yok": True,
+                }
             basarili = [k for k in ilgili if basarili_mi(k)]
             h2_ler = [k for k in ilgili if k.get("h2")]
-            basari_orani = round(len(basarili) * 100 / max(len(ilgili), 1), 1)
-            h2_orani = round(len(h2_ler) * 100 / max(len(ilgili), 1), 1)
-            return f"{ad}: Başarı %{basari_orani} | H2 %{h2_orani} | Örnek {len(ilgili)}\n"
+            return {
+                "ad": ad,
+                "toplam": len(ilgili),
+                "basari": len(basarili),
+                "h2": len(h2_ler),
+                "basari_orani": round(len(basarili) * 100 / max(len(ilgili), 1), 1),
+                "h2_orani": round(len(h2_ler) * 100 / max(len(ilgili), 1), 1),
+                "veri_yok": False,
+            }
+
+        def basari_satiri(sonuc):
+            if sonuc.get("veri_yok"):
+                return f"{sonuc['ad']}: veri yok\n"
+            return (
+                f"{sonuc['ad']}: Başarı %{sonuc['basari_orani']} | "
+                f"H2 %{sonuc['h2_orani']} | Örnek {sonuc['toplam']}\n"
+            )
+
+        def aralik_basari_hesapla(ad, filtre_fn):
+            return ozellik_basari_hesapla(ad, filtre_fn)
 
         if son_kayitlar:
+            ozellik_sonuclari = [
+                ozellik_basari_hesapla("BTC Güçlü", lambda k: bool(k.get("btc_guclu"))),
+                ozellik_basari_hesapla("Lider", lambda k: bool(k.get("lider_mi"))),
+                ozellik_basari_hesapla("Zirve", lambda k: bool(k.get("zirve_teyidi"))),
+                ozellik_basari_hesapla("Hacim >10x", lambda k: bool(k.get("hacim_10x"))),
+                ozellik_basari_hesapla("Hacim Güçleniyor", lambda k: bool(k.get("hacim_gucleniyor"))),
+                ozellik_basari_hesapla("Momentum Güçleniyor", lambda k: bool(k.get("momentum_gucleniyor"))),
+                ozellik_basari_hesapla("Haber Desteği", lambda k: bool(k.get("haber_var"))),
+            ]
+
             mesaj += "\n🏆 ÖZELLİK BAŞARI TABLOSU\n"
-            mesaj += ozellik_basari_satiri("BTC Güçlü", lambda k: bool(k.get("btc_guclu")))
-            mesaj += ozellik_basari_satiri("Lider", lambda k: bool(k.get("lider_mi")))
-            mesaj += ozellik_basari_satiri("Zirve", lambda k: bool(k.get("zirve_teyidi")))
-            mesaj += ozellik_basari_satiri("Hacim >10x", lambda k: bool(k.get("hacim_10x")))
-            mesaj += ozellik_basari_satiri("Hacim Güçleniyor", lambda k: bool(k.get("hacim_gucleniyor")))
-            mesaj += ozellik_basari_satiri("Momentum Güçleniyor", lambda k: bool(k.get("momentum_gucleniyor")))
-            mesaj += ozellik_basari_satiri("Haber Desteği", lambda k: bool(k.get("haber_var")))
+            for sonuc in ozellik_sonuclari:
+                mesaj += basari_satiri(sonuc)
+
+            # En başarılı özellikler: ikinci raporda hızlı yorum için H2 oranına göre sıralı özet.
+            anlamli_ozellikler = [s for s in ozellik_sonuclari if not s.get("veri_yok") and s.get("toplam", 0) >= 3]
+            if anlamli_ozellikler:
+                sirali_ozellikler = sorted(
+                    anlamli_ozellikler,
+                    key=lambda s: (s["h2_orani"], s["basari_orani"], s["toplam"]),
+                    reverse=True,
+                )
+                mesaj += "\n🥇 EN BAŞARILI ÖZELLİKLER\n"
+                for i, s in enumerate(sirali_ozellikler[:5], 1):
+                    mesaj += (
+                        f"{i}. {s['ad']} | H2 %{s['h2_orani']} | "
+                        f"Başarı %{s['basari_orani']} | Örnek {s['toplam']}\n"
+                    )
+
+            # Hacim bandı analizi: Roket/Elit eşiklerini veriyle ayarlamak için.
+            hacim_bantlari = [
+                ("0-2x", lambda k: 0 <= float(k.get("hacim", 0) or 0) < 2),
+                ("2-5x", lambda k: 2 <= float(k.get("hacim", 0) or 0) < 5),
+                ("5-10x", lambda k: 5 <= float(k.get("hacim", 0) or 0) < 10),
+                ("10x+", lambda k: float(k.get("hacim", 0) or 0) >= 10),
+            ]
+            mesaj += "\n📊 HACİM BAŞARI ANALİZİ\n"
+            for ad, fn in hacim_bantlari:
+                mesaj += basari_satiri(aralik_basari_hesapla(ad, fn))
+
+            # Momentum bandı analizi: 3s momentumun hangi aralıkta daha çok H2 ürettiğini görür.
+            momentum_bantlari = [
+                ("0-2%", lambda k: 0 <= float(k.get("degisim3", 0) or 0) < 2),
+                ("2-4%", lambda k: 2 <= float(k.get("degisim3", 0) or 0) < 4),
+                ("4-6%", lambda k: 4 <= float(k.get("degisim3", 0) or 0) < 6),
+                ("6%+", lambda k: float(k.get("degisim3", 0) or 0) >= 6),
+            ]
+            mesaj += "\n⚡ MOMENTUM BAŞARI ANALİZİ\n"
+            for ad, fn in momentum_bantlari:
+                mesaj += basari_satiri(aralik_basari_hesapla(ad, fn))
 
         kombinasyonlar = {}
         for k in son_kayitlar:
