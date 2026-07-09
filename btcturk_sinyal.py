@@ -2,6 +2,7 @@
 
 
 
+
 import os
 import time
 import requests
@@ -602,20 +603,27 @@ def guc_skoru_hesapla(
     - BTC farkı belirginse ekstra puan alır.
     - Liderlik ve zirve teyidi trader mantığında skora yansır.
     """
-    hacim_puan = min(hacim_kat / 15, 1) * 30
-    momentum_puan = min(max(degisim3, 0) / 6, 1) * 25
+    # V4.32 seçicilik ayarı:
+    # Son raporda 6%+ momentum en güçlü göstergeydi; 10x+ hacim ise tek başına zayıf kaldı.
+    # Bu yüzden hacim puanı azaltıldı, momentum ağırlığı artırıldı.
+    hacim_puan = min(hacim_kat / 10, 1) * 18
+    momentum_puan = min(max(degisim3, 0) / 6, 1) * 35
     btc_puan = (btc_guc_skoru / 10) * 20
-    lider_puan = (lider_skoru / 10) * 15
+    lider_puan = (lider_skoru / 10) * 17
     haber_puan = (min(haber_skoru, 20) / 20) * 10
 
     toplam = hacim_puan + momentum_puan + btc_puan + lider_puan + haber_puan
 
-    # Trader ince ayar bonusları: güçlü ama spam üretmeyen küçük ödüller.
-    if hacim_kat >= 20:
-        toplam += 3
-    elif hacim_kat >= 15:
+    # Momentum 6%+ olduğunda güçlü devam sinyali olarak ödüllendirilir.
+    if degisim3 >= 6:
+        toplam += 4
+    elif degisim3 >= 4:
         toplam += 2
-    elif hacim_kat >= 10:
+
+    # 10x+ hacim düşük momentumla gelirse geç/şişmiş sinyal olabilir; fazla ödüllendirilmez.
+    if hacim_kat >= 10 and degisim3 < 4:
+        toplam -= 3
+    elif hacim_kat >= 10 and degisim3 >= 4:
         toplam += 1
 
     if btc_fark3 >= 4:
@@ -1547,19 +1555,23 @@ def hedef_stop_kontrol():
 
 def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, btc_fark, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0, btc_guc_skoru=0, lider_skoru=0, guc_skoru=0, yeni_zirve=False):
     """
-    V4.25 kategori mantığı.
+    V4.32 seçicilik ayarı.
 
-    Telegram sadeleşti:
-    - 📊 TRADER HACİM
-    - 🚀 Roket Adayı
-    - 🔥 Elit Roket
-    - ⭐ Yıldız
+    Rapor bulgusu:
+    - 6%+ momentum en yüksek H2 oranını verdi.
+    - 10x+ hacim tek başına zayıf kaldı.
 
-    İzleme ve Güçlü Hacim arka planda kalır; Telegram'a gönderilmez.
-    Geç Pump kategori değildir; yalnızca DNA raporunda risk puanı olarak tutulur.
+    Bu yüzden:
+    - Momentum şartları güçlendirildi.
+    - 10x+ hacim düşük momentumla gelirse ana sinyale alınmaz, arka plana bırakılır.
+    - Sinyal motorunun ana yapısı korunur; sadece seçicilik artırılır.
     """
 
-    # 1) ⭐ YILDIZ - en seçici seviye
+    momentum_guclu = degisim3 >= 4
+    momentum_cok_guclu = degisim3 >= 6
+    hacim_yuksek_ama_momentum_zayif = hacim_kat >= 10 and degisim3 < 4
+
+    # 1) ⭐ YILDIZ - artık güçlü momentum da ister
     if (
         guc_skoru >= 88
         and lider_skoru >= 7
@@ -1567,12 +1579,12 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         and kalite_skoru >= 14
         and hacim_kat >= 6
         and degisim1 > 1
-        and degisim3 > 2
+        and momentum_guclu
         and zirve_yakin
     ):
-        return "⭐ Yıldız", "En güçlü lider aday"
+        return "⭐ Yıldız", "Lider + güçlü momentum adayı"
 
-    # 2) 🔥 ELİT ROKET - Roket Adayı'ndan daha güçlü hacim teyidi ister
+    # 2) 🔥 ELİT ROKET - 10x+ hacimde momentum şartı sıkılaştırıldı
     if (
         guc_skoru >= 74
         and lider_skoru >= 5
@@ -1580,41 +1592,42 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         and kalite_skoru >= 10
         and hacim_kat >= 8
         and degisim1 > 0
-        and degisim3 >= 1
+        and degisim3 >= 2
         and btcden_guclu
+        and not hacim_yuksek_ama_momentum_zayif
     ):
-        return "🔥 Elit Roket", "Güç skoru yüksek aday"
+        return "🔥 Elit Roket", "Güç skoru + momentum yüksek aday"
 
-    # 3) 📊 TRADER HACİM - 15x+ hacim özel sinyali
-    # Not: Roket Adayı'ndan önce kontrol edilir; yoksa 15x+ hacimli adaylar
-    # çoğu zaman Roket Adayı olarak etiketlenip Trader Hacim hiç görünmez.
+    # 3) 📊 TRADER HACİM - yüksek hacim artık güçlü momentum teyidi olmadan mesaj üretmez
     if (
         guc_skoru >= 55
         and hacim_kat >= 15
         and btcden_guclu
         and btc_guc_skoru >= 4
-        and (degisim1 >= 0 or degisim3 >= 0.5)
+        and momentum_guclu
+        and (zirve_yakin or yeni_zirve or lider_skoru >= 5)
     ):
-        if zirve_yakin or yeni_zirve:
-            return "📊 TRADER HACİM", "15x+ hacim + BTC gücü + zirve teyidi"
-        return "📊 TRADER HACİM", "15x+ hacim + BTC gücü"
+        if momentum_cok_guclu:
+            return "📊 TRADER HACİM", "15x+ hacim + 6%+ momentum"
+        return "📊 TRADER HACİM", "15x+ hacim + momentum teyidi"
 
-    # 4) 🚀 ROKET ADAYI - haberli veya sessiz güçlü aday
+    # 4) 🚀 ROKET ADAYI - düşük/orta hacimde momentum biraz güçlendirildi
     if (
         guc_skoru >= 62
         and kalite_skoru >= 8
         and hacim_kat >= 5
         and degisim1 > 0
-        and degisim3 > 0.5
+        and degisim3 >= 1.5
         and btcden_guclu
         and btc_guc_skoru >= 4
         and (haber_skoru > 0 or lider_skoru >= 5)
+        and not hacim_yuksek_ama_momentum_zayif
     ):
         if haber_skoru > 0:
             return "🚀 Roket Adayı", "Haberli güçlü aday"
-        return "🚀 Roket Adayı", "Sessiz güçlü aday"
+        return "🚀 Roket Adayı", "Sessiz momentum adayı"
 
-    # Arka plan güçlü hacim
+    # Arka plan güçlü hacim: 10x+ ama momentum zayıfsa Telegram'a çıkmaz, rapora veri olur.
     if hacim_kat >= 12 and btcden_guclu and not (degisim1 < 0 and degisim3 < 0):
         return "⚡ GÜÇLÜ HACİM", "Arka plan güçlü hacim"
 
