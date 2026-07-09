@@ -2503,6 +2503,39 @@ print(f"{V5_SURUM} aktif. DNA alanı: {len(V5_DNA_ALANLARI)}")
 # Sistem guvenligi: hicbiri ana sinyal uretimini bozmaz; hepsi try/except ve env flag ile korunur.
 
 V5_FINAL_SURUM = "V5.2 FINAL PRO + ML + KOMUT + BACKTEST + DIS VERI"
+
+
+# --- V5 startup compatibility helpers ---
+# Bazı V5.2 açılış fonksiyonları bu yardımcı isimleri çağırıyor.
+# Ana rapor motorundaki mevcut fonksiyonlara güvenli alias olarak eklenmiştir.
+def v5_load_records(gun=None):
+    """Başarı kayıtlarını güvenli şekilde döndürür. gun verilirse son X günle sınırlar."""
+    try:
+        records = list(basari_kayitlari or [])
+        if gun:
+            start = time.time() - float(gun) * 24 * 60 * 60
+            records = [k for k in records if v5_safe_float(k.get("zaman")) >= start]
+        return records
+    except Exception:
+        return []
+
+
+def v5_star_probability(k, weights=None):
+    """Eski V5.2 çağrıları için yıldız olasılığı alias'ı."""
+    try:
+        return v5_yildiz_probability(k, weights)
+    except Exception:
+        return 0
+
+
+def v5_parameter_suggestions(kayitlar=None):
+    """Eski V5.2 çağrıları için parametre önerisi alias'ı."""
+    try:
+        return v5_parameter_optimization(kayitlar or v5_load_records())
+    except Exception:
+        return []
+# --- /V5 startup compatibility helpers ---
+
 V5_ML_MODEL_JSON = "v5_ml_model.json"
 V5_EXTERNAL_JSON = "v5_external_market.json"
 V5_RUNTIME_PARAMS_JSON = "v5_runtime_params.json"
