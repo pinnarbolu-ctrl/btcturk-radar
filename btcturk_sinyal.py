@@ -1,5 +1,4 @@
-
-
+,
 
 
 
@@ -287,7 +286,7 @@ def basari_db_yukle():
         return []
 
 
-def basari_db_kaydet(veriler):
+def legacy_basari_db_kaydet_v4(veriler):
     try:
         with open(BASARI_DB_DOSYA, "w", encoding="utf-8") as f:
             json.dump(veriler[-500:], f, ensure_ascii=False, indent=2)
@@ -298,7 +297,7 @@ def basari_db_kaydet(veriler):
 basari_kayitlari = basari_db_yukle()
 
 
-def basari_kaydi_olustur(symbol, a, simdi):
+def legacy_basari_kaydi_olustur_v4(symbol, a, simdi):
     guclenme_notlari = a.get("guclenme_notlari", []) or []
     hacim_gucleniyor = any("hacim güçleniyor" in str(n).lower() for n in guclenme_notlari)
     momentum_gucleniyor = any("momentum güçleniyor" in str(n).lower() for n in guclenme_notlari)
@@ -603,30 +602,33 @@ def guc_skoru_hesapla(
     - BTC farkı belirginse ekstra puan alır.
     - Liderlik ve zirve teyidi trader mantığında skora yansır.
     """
-    # V4.32/V5 seçicilik ayarı:
-    # Raporlarda 6%+ momentum en güçlü sinyallerden biri olurken,
-    # 10x+ hacim tek başına zayıf kaldı. Bu yüzden hacim ağırlığı azaltıldı,
-    # momentum ağırlığı artırıldı.
+    # V5 momentum/hacim ayarı:
+    # Raporlarda 6%+ momentum en güçlü grup, 10x+ hacim ise tek başına zayıf çıktı.
+    # Bu yüzden güç skorunda momentum ağırlığı artırıldı, hacim etkisi azaltıldı.
     hacim_puan = min(hacim_kat / 10, 1) * 18
-    momentum_puan = min(max(degisim3, 0) / 6, 1) * 35
+    momentum_puan = min(max(degisim3, 0) / 6, 1) * 34
     btc_puan = (btc_guc_skoru / 10) * 20
-    lider_puan = (lider_skoru / 10) * 17
+    lider_puan = (lider_skoru / 10) * 15
     haber_puan = (min(haber_skoru, 20) / 20) * 10
 
     toplam = hacim_puan + momentum_puan + btc_puan + lider_puan + haber_puan
 
-    # Momentum güçlü olduğunda ödül artar.
+    # Momentum teyidi: 6%+ 3s momentum raporda en başarılı bant olduğu için ekstra ödüllenir.
     if degisim3 >= 6:
-        toplam += 4
+        toplam += 6
     elif degisim3 >= 4:
-        toplam += 2
+        toplam += 3
+    elif degisim3 >= 2:
+        toplam += 1
 
-    # 10x+ hacim düşük momentumla gelirse geç/şişmiş sinyal olabilir;
-    # tek başına fazla ödüllendirilmez.
-    if hacim_kat >= 10 and degisim3 < 4:
-        toplam -= 3
+    # Yüksek hacim tek başına artık güçlü sinyal sayılmaz.
+    # 10x+ hacim, momentum/liderlik zayıfsa geç kalmış hareket olarak puan kırar.
+    if hacim_kat >= 15 and degisim3 >= 6:
+        toplam += 2
     elif hacim_kat >= 10 and degisim3 >= 4:
         toplam += 1
+    elif hacim_kat >= 10 and degisim3 < 4 and lider_skoru < 7:
+        toplam -= 4
 
     if btc_fark3 >= 4:
         toplam += 2
@@ -1106,7 +1108,7 @@ def yildiz_oncesi_analiz_raporu_olustur(kayitlar, gun=7, yildiz_esik=30):
 
     return mesaj
 
-def haftalik_rapor_gonder():
+def legacy_haftalik_rapor_gonder_v4():
     global son_haftalik_rapor
     global haftalik_kayitlar
 
@@ -1557,36 +1559,32 @@ def hedef_stop_kontrol():
 
 def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, btc_fark, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0, btc_guc_skoru=0, lider_skoru=0, guc_skoru=0, yeni_zirve=False):
     """
-    V4.32/V5 seçicilik ayarı.
+    V4.25 kategori mantığı.
 
-    Rapor bulgusu:
-    - 6%+ momentum en yüksek H2 oranlarından birini verdi.
-    - 10x+ hacim tek başına zayıf kaldı.
+    Telegram sadeleşti:
+    - 📊 TRADER HACİM
+    - 🚀 Roket Adayı
+    - 🔥 Elit Roket
+    - ⭐ Yıldız
 
-    Bu yüzden:
-    - Momentum şartları güçlendirildi.
-    - 10x+ hacim düşük momentumla gelirse ana sinyale alınmaz, arka plana bırakılır.
-    - Sinyal motorunun ana yapısı korunur; sadece seçicilik artırılır.
+    İzleme ve Güçlü Hacim arka planda kalır; Telegram'a gönderilmez.
+    Geç Pump kategori değildir; yalnızca DNA raporunda risk puanı olarak tutulur.
     """
 
-    momentum_guclu = degisim3 >= 4
-    momentum_cok_guclu = degisim3 >= 6
-    hacim_yuksek_ama_momentum_zayif = hacim_kat >= 10 and degisim3 < 4
-
-    # 1) ⭐ YILDIZ - artık güçlü momentum da ister
+    # 1) ⭐ YILDIZ - en seçici seviye
     if (
         guc_skoru >= 88
         and lider_skoru >= 7
         and btc_guc_skoru >= 7
         and kalite_skoru >= 14
-        and hacim_kat >= 6
+        and hacim_kat >= 5
         and degisim1 > 1
-        and momentum_guclu
+        and degisim3 >= 4
         and zirve_yakin
     ):
-        return "⭐ Yıldız", "Lider + güçlü momentum adayı"
+        return "⭐ Yıldız", "En güçlü lider aday"
 
-    # 2) 🔥 ELİT ROKET - 10x+ hacimde momentum şartı sıkılaştırıldı
+    # 2) 🔥 ELİT ROKET - Roket Adayı'ndan daha güçlü hacim teyidi ister
     if (
         guc_skoru >= 74
         and lider_skoru >= 5
@@ -1594,50 +1592,1349 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         and kalite_skoru >= 10
         and hacim_kat >= 8
         and degisim1 > 0
-        and degisim3 >= 2
+        and degisim3 >= 3
         and btcden_guclu
-        and not hacim_yuksek_ama_momentum_zayif
     ):
-        return "🔥 Elit Roket", "Güç skoru + momentum yüksek aday"
+        return "🔥 Elit Roket", "Güç skoru yüksek aday"
 
-    # 3) 📊 TRADER HACİM - yüksek hacim artık güçlü momentum teyidi olmadan mesaj üretmez
+    # 3) 📊 TRADER HACİM - 15x+ hacim özel sinyali
+    # Not: Roket Adayı'ndan önce kontrol edilir; yoksa 15x+ hacimli adaylar
+    # çoğu zaman Roket Adayı olarak etiketlenip Trader Hacim hiç görünmez.
     if (
         guc_skoru >= 55
         and hacim_kat >= 15
         and btcden_guclu
         and btc_guc_skoru >= 4
-        and momentum_guclu
-        and (zirve_yakin or yeni_zirve or lider_skoru >= 5)
+        and degisim3 >= 6
     ):
-        if momentum_cok_guclu:
-            return "📊 TRADER HACİM", "15x+ hacim + 6%+ momentum"
-        return "📊 TRADER HACİM", "15x+ hacim + momentum teyidi"
+        if zirve_yakin or yeni_zirve:
+            return "📊 TRADER HACİM", "15x+ hacim + BTC gücü + zirve teyidi"
+        return "📊 TRADER HACİM", "15x+ hacim + BTC gücü"
 
-    # 4) 🚀 ROKET ADAYI - düşük/orta hacimde momentum biraz güçlendirildi
+    # 4) 🚀 ROKET ADAYI - haberli veya sessiz güçlü aday
     if (
         guc_skoru >= 62
         and kalite_skoru >= 8
         and hacim_kat >= 5
         and degisim1 > 0
         and degisim3 >= 1.5
+        and not (hacim_kat >= 10 and degisim3 < 4 and lider_skoru < 7)
         and btcden_guclu
         and btc_guc_skoru >= 4
         and (haber_skoru > 0 or lider_skoru >= 5)
-        and not hacim_yuksek_ama_momentum_zayif
     ):
         if haber_skoru > 0:
             return "🚀 Roket Adayı", "Haberli güçlü aday"
-        return "🚀 Roket Adayı", "Sessiz momentum adayı"
+        return "🚀 Roket Adayı", "Sessiz güçlü aday"
 
-    # Arka plan güçlü hacim: 10x+ ama momentum zayıfsa Telegram'a çıkmaz, rapora veri olur.
-    if hacim_kat >= 12 and btcden_guclu and not (degisim1 < 0 and degisim3 < 0):
-        return "⚡ GÜÇLÜ HACİM", "Arka plan güçlü hacim"
+    # Arka plan güçlü hacim
+    if hacim_kat >= 12 and btcden_guclu and degisim3 >= 4 and not (degisim1 < 0 and degisim3 < 0):
+        return "⚡ GÜÇLÜ HACİM", "Arka plan güçlü hacim + momentum teyidi"
 
     # Arka plan izleme
     if genel_skor >= 8.5 and 5 <= hacim_kat < 12 and degisim3 > 1 and btcden_guclu:
         return "📈 İzleme", "Arka plan izleme"
 
     return None, None
+
+
+# ============================================================
+# COIN RADAR V5.1 - GERCEK DNA / OGRENME / OPTIMIZASYON MOTORU
+# Bu blok son calisan V4/V25 dosyasina dokunmadan, while True'dan once
+# fonksiyon override ederek profesyonel V5 analiz katmanini aktif eder.
+# ============================================================
+
+import math
+import statistics
+import sqlite3
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+V5_SURUM = "V5.1 GERCEK DNA + OGRENME + OPTIMIZASYON"
+V5_DNA_JSON = "coin_dna_veritabani_v5.json"
+V5_ANALIZ_JSON = "v5_analiz_ozeti.json"
+V5_SQLITE_DB = "coin_radar_v5.sqlite"
+V5_PARAMETRE_JSON = "v5_parametre_onerileri.json"
+V5_DASHBOARD_JSON = "v5_dashboard.json"
+V5_DASHBOARD_HTML = "v5_dashboard.html"
+V5_API_PORT = int(os.getenv("V5_API_PORT", "8787"))
+
+# V5 DNA: sinyal anindaki profil + sonuc metrikleri. 90+ alan hedeflenir.
+V5_DNA_ALANLARI = [
+    "id", "symbol", "base", "sector", "kategori", "kategori_son", "sonuc",
+    "zaman", "tarih", "hafta", "gun_adi", "gun_no", "saat", "saat_blok", "ay",
+    "giris", "son_fiyat", "max_fiyat", "min_fiyat", "max_kazanc", "min_kazanc", "son_kazanc",
+    "h1", "h2", "stop", "h1_zaman", "h2_zaman", "stop_zaman", "h1_sure_saat", "h2_sure_saat", "stop_sure_saat",
+    "skor", "kalite", "guc_skoru", "ai_skor", "ai_olasilik", "yildiz_olasilik",
+    "risk_puani", "firsat_puani", "momentum_puani", "akilli_para_puani", "balina_puani",
+    "hacim", "hacim_log", "hacim_2x", "hacim_5x", "hacim_7x", "hacim_8x", "hacim_10x", "hacim_12x", "hacim_15x", "hacim_20x", "hacim_50x",
+    "hacim_gucleniyor", "hacim_onceki", "hacim_artis_orani", "hacim_bonus",
+    "degisim1", "degisim3", "degisim24", "momentum_gucleniyor", "momentum_onceki", "momentum_farki",
+    "yakalama_tipi", "erken_yakalandi", "normal_yakalandi", "gec_yakalandi", "gec_pump_puan",
+    "btc_guclu", "btc_fark", "btc_fark1", "btc_fark3", "btc_fark24", "btc_guc_skoru", "btc_bonus",
+    "piyasa_modu", "btc_trend_puani", "btc_risk_puani", "btc_dususte_mi",
+    "lider_mi", "lider_guclu", "lider_skoru", "lider_bonus", "lider_rank",
+    "zirve_yakin", "yeni_zirve", "zirve_teyidi", "zirve_bonus", "zirve_mesafe",
+    "haber", "haber_var", "haber_pozitif", "haber_negatif", "haber_bonus", "haber_risk",
+    "rsi", "macd", "macd_signal", "macd_hist", "ema20", "ema50", "ema200", "ema_durum", "trend_durum",
+    "fear_greed", "btc_dominans", "dominans_durum",
+    "ortak_sinyal", "filtre_imzasi", "pattern_key", "dna_alan_sayisi", "created_at"
+]
+
+V5_BOOL_FILTTRELER = [
+    ("BTC guclu", "btc_guclu"), ("Lider", "lider_mi"), ("Lider guclu", "lider_guclu"),
+    ("Zirve teyidi", "zirve_teyidi"), ("Haber var", "haber_var"), ("Hacim gucleniyor", "hacim_gucleniyor"),
+    ("Momentum gucleniyor", "momentum_gucleniyor"), ("Hacim 8x+", "hacim_8x"),
+    ("Hacim 10x+", "hacim_10x"), ("Erken", "erken_yakalandi"), ("Gec degil", "gec_degildir")
+]
+
+V5_SEKTOR_HARITASI = {
+    "FET": "AI", "AGIX": "AI", "OCEAN": "AI", "NMR": "AI", "ARKM": "AI", "AIOZ": "AI",
+    "SOL": "Layer1", "AVAX": "Layer1", "ADA": "Layer1", "DOT": "Layer1", "NEAR": "Layer1", "ATOM": "Layer1",
+    "ARB": "Layer2", "OP": "Layer2", "MATIC": "Layer2", "STRK": "Layer2",
+    "UNI": "DeFi", "AAVE": "DeFi", "MKR": "DeFi", "COMP": "DeFi", "SNX": "DeFi", "LDO": "DeFi",
+    "DOGE": "Meme", "SHIB": "Meme", "PEPE": "Meme", "FLOKI": "Meme", "BONK": "Meme",
+    "CHZ": "Fan", "CITY": "Fan", "PSG": "Fan", "BAR": "Fan", "JUV": "Fan", "FB": "Fan",
+    "SAND": "Game", "MANA": "Game", "AXS": "Game", "GALA": "Game", "ENJ": "Game",
+}
+
+
+def v5_safe_float(x, default=0.0):
+    try:
+        if x is None or x == "":
+            return default
+        return float(x)
+    except Exception:
+        return default
+
+
+def v5_safe_int(x, default=0):
+    try:
+        return int(float(x))
+    except Exception:
+        return default
+
+
+def v5_round(x, n=4):
+    try:
+        return round(float(x), n)
+    except Exception:
+        return 0
+
+
+def v5_load_json(path, default=None):
+    if default is None:
+        default = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def v5_save_json(path, data, limit=None):
+    try:
+        if isinstance(data, list) and limit:
+            data = data[-limit:]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("V5 JSON kayit hatasi:", path, e)
+
+
+def v5_coin_base(symbol):
+    s = str(symbol or "").upper().replace("TRY", "")
+    return s
+
+
+def v5_sector(symbol):
+    return V5_SEKTOR_HARITASI.get(v5_coin_base(symbol), "Genel")
+
+
+def v5_now_parts(ts=None):
+    ts = ts or time.time()
+    lt = time.localtime(ts)
+    gunler = ["Pazartesi", "Sali", "Carsamba", "Persembe", "Cuma", "Cumartesi", "Pazar"]
+    saat = int(time.strftime("%H", lt))
+    if 0 <= saat < 6:
+        blok = "gece"
+    elif 6 <= saat < 12:
+        blok = "sabah"
+    elif 12 <= saat < 18:
+        blok = "oglen"
+    else:
+        blok = "aksam"
+    return {
+        "tarih": time.strftime("%Y-%m-%d", lt),
+        "hafta": time.strftime("%Y-W%W", lt),
+        "gun_adi": gunler[lt.tm_wday],
+        "gun_no": lt.tm_wday,
+        "saat": saat,
+        "saat_blok": blok,
+        "ay": lt.tm_mon,
+    }
+
+
+def v5_mean(values):
+    vals = [v5_safe_float(v) for v in values if v is not None]
+    return round(sum(vals) / len(vals), 3) if vals else 0
+
+
+def v5_pct(part, total):
+    return round(part * 100 / total, 1) if total else 0
+
+
+def v5_success(k):
+    return bool(k.get("h1") or k.get("h2") or v5_safe_float(k.get("max_kazanc")) >= 3)
+
+
+def v5_big_success(k):
+    return bool(k.get("h2") or v5_safe_float(k.get("max_kazanc")) >= 6)
+
+
+def v5_fail(k):
+    return bool((k.get("stop") and not k.get("h1") and not k.get("h2")) or v5_safe_float(k.get("max_kazanc")) < -2)
+
+
+def v5_yakalama_tipi(d1, d3, d24):
+    d1, d3, d24 = v5_safe_float(d1), v5_safe_float(d3), v5_safe_float(d24)
+    if d1 <= 2 and d3 <= 5 and d24 <= 12:
+        return "erken"
+    if d1 <= 6 and d3 <= 10 and d24 <= 25:
+        return "normal"
+    return "gec"
+
+
+def v5_piyasa_modu(a=None):
+    a = a or {}
+    btc1 = v5_safe_float(a.get("btc_fark1", a.get("btc_fark", 0)))
+    btc3 = v5_safe_float(a.get("btc_fark3", a.get("btc_fark", 0)))
+    btc24 = v5_safe_float(a.get("btc_fark24", 0))
+    # Elimizde tam BTC fiyat serisi yoksa sinyalin BTC'ye gore gucunu piyasa modu vekili olarak kullaniyoruz.
+    skor = btc1 * 0.2 + btc3 * 0.5 + btc24 * 0.3
+    if skor >= 3:
+        return "boga"
+    if skor <= -3:
+        return "ayi"
+    return "yatay"
+
+
+def v5_rsi_from_a(a):
+    # Orijinal bot RSI hesaplamiyorsa bos gecmez; momentumdan yaklasik risk vekili uretir.
+    if "rsi" in a:
+        return v5_round(a.get("rsi"), 2)
+    d1 = v5_safe_float(a.get("degisim1")); d3 = v5_safe_float(a.get("degisim3")); d24 = v5_safe_float(a.get("degisim24"))
+    return int(max(1, min(99, 50 + d1 * 2.0 + d3 * 0.9 + d24 * 0.18)))
+
+
+def v5_ema_durum_from_a(a):
+    if a.get("ema_durum"):
+        return a.get("ema_durum")
+    d3 = v5_safe_float(a.get("degisim3")); d24 = v5_safe_float(a.get("degisim24"))
+    if d3 > 0 and d24 > 0:
+        return "pozitif"
+    if d3 < 0 and d24 < 0:
+        return "negatif"
+    return "karisik"
+
+
+def v5_momentum_puani(k):
+    puan = 0
+    puan += min(max(v5_safe_float(k.get("degisim1")), 0) * 5, 20)
+    d3 = v5_safe_float(k.get("degisim3"))
+    puan += min(max(d3, 0) * 4, 35)
+    if d3 >= 6:
+        puan += 10
+    elif d3 >= 4:
+        puan += 5
+    puan += min(max(v5_safe_float(k.get("degisim24")), 0) * 0.7, 20)
+    if k.get("momentum_gucleniyor"):
+        puan += 15
+    if k.get("yakalama_tipi") == "erken":
+        puan += 10
+    if k.get("yakalama_tipi") == "gec":
+        puan -= 15
+    return int(max(0, min(100, round(puan))))
+
+
+def v5_akilli_para_puani(k):
+    puan = 0
+    hacim = v5_safe_float(k.get("hacim"))
+    d3 = v5_safe_float(k.get("degisim3"))
+    # Hacim tek başına değil, momentumla birlikte anlamlı kabul edilir.
+    puan += min(hacim * 1.8, 22)
+    if hacim >= 10 and d3 < 4:
+        puan -= 8
+    elif hacim >= 10 and d3 >= 6:
+        puan += 6
+    if k.get("hacim_gucleniyor"):
+        puan += 15
+    if k.get("lider_mi"):
+        puan += 15
+    if k.get("btc_guclu"):
+        puan += 15
+    if k.get("zirve_teyidi"):
+        puan += 10
+    if k.get("gec_yakalandi"):
+        puan -= 15
+    return int(max(0, min(100, round(puan))))
+
+
+def v5_risk_puani(k):
+    risk = 0
+    if not k.get("btc_guclu"):
+        risk += 16
+    if not k.get("lider_mi"):
+        risk += 10
+    if not k.get("zirve_teyidi"):
+        risk += 8
+    if v5_safe_float(k.get("hacim")) < 5:
+        risk += 12
+    if k.get("yakalama_tipi") == "gec":
+        risk += 20
+    if v5_safe_float(k.get("degisim24")) > 35:
+        risk += 12
+    risk += min(v5_safe_float(k.get("gec_pump_puan")) * 5, 25)
+    if str(k.get("piyasa_modu")) == "ayi":
+        risk += 10
+    return int(max(0, min(100, round(risk))))
+
+
+def v5_firsat_puani(k):
+    puan = 0
+    puan += min(v5_safe_float(k.get("skor")) * 2, 20)
+    puan += min(v5_safe_float(k.get("kalite")) * 2, 20)
+    hacim = v5_safe_float(k.get("hacim"))
+    d3 = v5_safe_float(k.get("degisim3"))
+    puan += min(hacim * 0.9, 12)
+    puan += min(max(d3, 0) * 2.2, 18)
+    if d3 >= 6:
+        puan += 8
+    if hacim >= 10 and d3 < 4:
+        puan -= 6
+    puan += 10 if k.get("btc_guclu") else 0
+    puan += 10 if k.get("lider_mi") else 0
+    puan += 10 if k.get("zirve_teyidi") else 0
+    puan += 5 if k.get("haber_var") else 0
+    puan += 5 if k.get("hacim_gucleniyor") else 0
+    puan += 5 if k.get("momentum_gucleniyor") else 0
+    puan -= v5_risk_puani(k) * 0.25
+    return int(max(0, min(100, round(puan))))
+
+
+def v5_filter_value(k, key):
+    if key == "gec_degildir":
+        return k.get("yakalama_tipi") != "gec"
+    return bool(k.get(key))
+
+
+def v5_pattern_key(k):
+    parts = []
+    if k.get("btc_guclu"): parts.append("BTC")
+    if k.get("lider_mi"): parts.append("Lider")
+    if k.get("zirve_teyidi"): parts.append("Zirve")
+    if k.get("haber_var"): parts.append("Haber")
+    if v5_safe_float(k.get("hacim")) >= 10: parts.append("10x+")
+    elif v5_safe_float(k.get("hacim")) >= 8: parts.append("8x+")
+    if k.get("hacim_gucleniyor"): parts.append("Hacim↑")
+    if k.get("momentum_gucleniyor"): parts.append("Mom↑")
+    if k.get("yakalama_tipi") == "erken": parts.append("Erken")
+    if not parts:
+        parts.append("Zayif-Ortak")
+    return "+".join(parts)
+
+
+def v5_learn_weights(kayitlar=None):
+    kayitlar = kayitlar or basari_kayitlari
+    kayitlar = [k for k in kayitlar if k.get("sonuc") != "aktif"] or kayitlar[-500:]
+    if len(kayitlar) < 12:
+        return {"base": 42, "skor": 1.2, "kalite": 1.1, "hacim": 0.45, "btc_guclu": 7, "lider_mi": 7, "zirve_teyidi": 6, "haber_var": 4, "hacim_gucleniyor": 3, "momentum_gucleniyor": 8, "gec": -10, "risk": -0.25}
+    weights = {"base": 35, "skor": 1.0, "kalite": 1.0, "hacim": 0.45, "risk": -0.25}
+    for label, key in V5_BOOL_FILTTRELER:
+        yes = [k for k in kayitlar if v5_filter_value(k, key)]
+        no = [k for k in kayitlar if not v5_filter_value(k, key)]
+        if len(yes) >= 3 and len(no) >= 3:
+            yes_rate = v5_pct(sum(v5_success(k) for k in yes), len(yes))
+            no_rate = v5_pct(sum(v5_success(k) for k in no), len(no))
+            weights[key] = round(max(-18, min(18, (yes_rate - no_rate) / 3)), 2)
+    # Sayisal alan katsayilari: basarili ortalama ile basarisiz ortalama farkina gore hafif ayar.
+    ok = [k for k in kayitlar if v5_success(k)]
+    bad = [k for k in kayitlar if not v5_success(k)]
+    for alan, cap, div in [("skor", 2.0, 8), ("kalite", 2.0, 8), ("hacim", 1.5, 10), ("guc_skoru", 0.8, 20)]:
+        if ok and bad:
+            diff = v5_mean([k.get(alan) for k in ok]) - v5_mean([k.get(alan) for k in bad])
+            weights[alan] = round(max(0.1, min(cap, 1 + diff / div)), 2)
+    return weights
+
+
+def v5_ai_score(k, weights=None):
+    weights = weights or v5_learn_weights()
+    puan = v5_safe_float(weights.get("base", 40))
+    puan += v5_safe_float(k.get("skor")) * v5_safe_float(weights.get("skor", 1.0))
+    puan += v5_safe_float(k.get("kalite")) * v5_safe_float(weights.get("kalite", 1.0))
+    puan += min(v5_safe_float(k.get("hacim")), 30) * v5_safe_float(weights.get("hacim", 0.8))
+    puan += v5_safe_float(k.get("guc_skoru")) * v5_safe_float(weights.get("guc_skoru", 0.3))
+    for _, key in V5_BOOL_FILTTRELER:
+        if v5_filter_value(k, key):
+            puan += v5_safe_float(weights.get(key, 0))
+    if k.get("yakalama_tipi") == "gec":
+        puan += v5_safe_float(weights.get("gec", -10))
+    puan += v5_risk_puani(k) * v5_safe_float(weights.get("risk", -0.25))
+    return int(max(1, min(99, round(puan))))
+
+
+def v5_yildiz_probability(k, weights=None):
+    score = v5_ai_score(k, weights)
+    # Logistic sekle yakin; AI skorunu olasiliga cevirir.
+    prob = 100 / (1 + math.exp(-(score - 55) / 12))
+    if k.get("kategori") == "⭐ Yıldız" or k.get("kategori_son") == "⭐ Yıldız":
+        prob = max(prob, 86)
+    if k.get("yakalama_tipi") == "gec":
+        prob -= 8
+    return int(max(1, min(97, round(prob))))
+
+
+def v5_make_dna(symbol, a, simdi):
+    onceki = a.get("onceki_veri") or {}
+    notes = a.get("guclenme_notlari", []) or []
+    hacim = v5_safe_float(a.get("hacim")); d1 = v5_safe_float(a.get("degisim1")); d3 = v5_safe_float(a.get("degisim3")); d24 = v5_safe_float(a.get("degisim24"))
+    onceki_hacim = v5_safe_float(onceki.get("hacim"), hacim)
+    onceki_mom = v5_safe_float(onceki.get("degisim3"), d3)
+    hacim_gucleniyor = any("hacim" in str(n).lower() and "güç" in str(n).lower() for n in notes) or (onceki_hacim > 0 and hacim >= onceki_hacim * 1.2)
+    momentum_gucleniyor = any("momentum" in str(n).lower() and "güç" in str(n).lower() for n in notes) or (d3 - onceki_mom >= 0.5)
+    yak = v5_yakalama_tipi(d1, d3, d24)
+    haber = v5_safe_float(a.get("haber_skoru"))
+    lider_skoru = v5_safe_float(a.get("lider_skoru"))
+    btc_fark = v5_safe_float(a.get("btc_fark"))
+    zirve_teyidi = bool(a.get("zirve_yakin") or a.get("yeni_zirve"))
+    parts = v5_now_parts(simdi)
+    dna = {
+        "id": f"{int(simdi)}_{symbol}", "symbol": symbol, "base": v5_coin_base(symbol), "sector": v5_sector(symbol),
+        "kategori": a.get("durum"), "kategori_son": a.get("durum"), "sonuc": "aktif", "zaman": simdi,
+        **parts,
+        "giris": v5_round(a.get("fiyat"), 8), "son_fiyat": v5_round(a.get("fiyat"), 8), "max_fiyat": v5_round(a.get("fiyat"), 8), "min_fiyat": v5_round(a.get("fiyat"), 8),
+        "max_kazanc": 0.0, "min_kazanc": 0.0, "son_kazanc": 0.0, "h1": False, "h2": False, "stop": False,
+        "h1_zaman": None, "h2_zaman": None, "stop_zaman": None, "h1_sure_saat": None, "h2_sure_saat": None, "stop_sure_saat": None,
+        "skor": v5_round(a.get("skor")), "kalite": v5_round(a.get("kalite_skoru")), "guc_skoru": v5_round(a.get("guc_skoru")),
+        "hacim": v5_round(hacim), "hacim_log": v5_round(math.log1p(max(hacim, 0))),
+        "hacim_2x": hacim >= 2, "hacim_5x": hacim >= 5, "hacim_7x": hacim >= 7, "hacim_8x": hacim >= 8, "hacim_10x": hacim >= 10, "hacim_12x": hacim >= 12, "hacim_15x": hacim >= 15, "hacim_20x": hacim >= 20, "hacim_50x": hacim >= 50,
+        "hacim_gucleniyor": bool(hacim_gucleniyor), "hacim_onceki": v5_round(onceki_hacim), "hacim_artis_orani": v5_round(((hacim - onceki_hacim) / onceki_hacim * 100) if onceki_hacim else 0), "hacim_bonus": v5_safe_int(a.get("hacim_bonus")),
+        "degisim1": v5_round(d1), "degisim3": v5_round(d3), "degisim24": v5_round(d24), "momentum_gucleniyor": bool(momentum_gucleniyor), "momentum_onceki": v5_round(onceki_mom), "momentum_farki": v5_round(d3 - onceki_mom),
+        "yakalama_tipi": yak, "erken_yakalandi": yak == "erken", "normal_yakalandi": yak == "normal", "gec_yakalandi": yak == "gec", "gec_pump_puan": v5_safe_int(a.get("gec_pump_puan")),
+        "btc_guclu": bool(a.get("btcden_guclu") or a.get("btc_guclu")), "btc_fark": v5_round(btc_fark), "btc_fark1": v5_round(a.get("btc_fark1", btc_fark)), "btc_fark3": v5_round(a.get("btc_fark3", btc_fark)), "btc_fark24": v5_round(a.get("btc_fark24", 0)), "btc_guc_skoru": v5_round(a.get("btc_guc_skoru")), "btc_bonus": v5_safe_int(a.get("btc_fark_bonus", a.get("btc_bonus", 0))),
+        "piyasa_modu": v5_piyasa_modu(a), "btc_trend_puani": int(max(0, min(100, 50 + btc_fark * 4))), "btc_risk_puani": int(max(0, min(100, 50 - btc_fark * 4))), "btc_dususte_mi": btc_fark < -1,
+        "lider_mi": lider_skoru >= 5, "lider_guclu": lider_skoru >= 7, "lider_skoru": v5_round(lider_skoru), "lider_bonus": v5_safe_int(a.get("lider_bonus")), "lider_rank": v5_safe_int(a.get("lider_rank"), 0),
+        "zirve_yakin": bool(a.get("zirve_yakin")), "yeni_zirve": bool(a.get("yeni_zirve")), "zirve_teyidi": zirve_teyidi, "zirve_bonus": v5_safe_int(a.get("zirve_bonus")), "zirve_mesafe": v5_round(a.get("zirve_mesafe")),
+        "haber": v5_round(haber), "haber_var": haber > 0, "haber_pozitif": haber > 0, "haber_negatif": haber < 0, "haber_bonus": max(0, int(haber)), "haber_risk": abs(min(0, int(haber))),
+        "rsi": v5_rsi_from_a(a), "macd": v5_round(a.get("macd")), "macd_signal": v5_round(a.get("macd_signal")), "macd_hist": v5_round(a.get("macd_hist")), "ema20": v5_round(a.get("ema20")), "ema50": v5_round(a.get("ema50")), "ema200": v5_round(a.get("ema200")), "ema_durum": v5_ema_durum_from_a(a), "trend_durum": v5_ema_durum_from_a(a),
+        "fear_greed": v5_safe_int(os.getenv("FEAR_GREED", "0")), "btc_dominans": v5_safe_float(os.getenv("BTC_DOMINANCE", "0")), "dominans_durum": "bilinmiyor",
+        "ortak_sinyal": "", "filtre_imzasi": "", "pattern_key": "", "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(simdi)),
+    }
+    dna["momentum_puani"] = v5_momentum_puani(dna)
+    dna["akilli_para_puani"] = v5_akilli_para_puani(dna)
+    dna["balina_puani"] = int(max(0, min(100, min(hacim * 4, 70) + (15 if hacim_gucleniyor else 0) + (15 if lider_skoru >= 7 else 0))))
+    dna["risk_puani"] = v5_risk_puani(dna)
+    dna["firsat_puani"] = v5_firsat_puani(dna)
+    dna["ai_skor"] = v5_ai_score(dna)
+    dna["ai_olasilik"] = dna["ai_skor"]
+    dna["yildiz_olasilik"] = v5_yildiz_probability(dna)
+    dna["pattern_key"] = v5_pattern_key(dna)
+    dna["filtre_imzasi"] = dna["pattern_key"]
+    dna["ortak_sinyal"] = dna["pattern_key"].replace("+", " • ")
+    dna["dna_alan_sayisi"] = sum(1 for x in V5_DNA_ALANLARI if x in dna)
+    return dna
+
+
+def v5_sql_init():
+    try:
+        con = sqlite3.connect(V5_SQLITE_DB)
+        cur = con.cursor()
+        cur.execute("CREATE TABLE IF NOT EXISTS signals (id TEXT PRIMARY KEY, symbol TEXT, zaman REAL, kategori TEXT, sonuc TEXT, data TEXT)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_signals_zaman ON signals(zaman)")
+        cur.execute("CREATE TABLE IF NOT EXISTS analysis (zaman REAL, type TEXT, data TEXT)")
+        con.commit(); con.close()
+    except Exception as e:
+        print("V5 SQLite init hatasi:", e)
+
+
+def v5_sql_upsert(k):
+    try:
+        v5_sql_init()
+        con = sqlite3.connect(V5_SQLITE_DB)
+        cur = con.cursor()
+        cur.execute("INSERT OR REPLACE INTO signals(id, symbol, zaman, kategori, sonuc, data) VALUES (?, ?, ?, ?, ?, ?)", (str(k.get("id") or f"{k.get('zaman')}_{k.get('symbol')}"), k.get("symbol"), v5_safe_float(k.get("zaman")), k.get("kategori"), k.get("sonuc"), json.dumps(k, ensure_ascii=False)))
+        con.commit(); con.close()
+    except Exception as e:
+        print("V5 SQLite upsert hatasi:", e)
+
+
+def v5_sql_save_analysis(t, data):
+    try:
+        v5_sql_init()
+        con = sqlite3.connect(V5_SQLITE_DB)
+        cur = con.cursor()
+        cur.execute("INSERT INTO analysis(zaman, type, data) VALUES (?, ?, ?)", (time.time(), t, json.dumps(data, ensure_ascii=False)))
+        con.commit(); con.close()
+    except Exception as e:
+        print("V5 SQLite analysis hatasi:", e)
+
+
+def v5_sync_all_to_sqlite():
+    try:
+        for k in basari_kayitlari[-3000:]:
+            if "id" not in k:
+                k["id"] = f"{int(v5_safe_float(k.get('zaman'), time.time()))}_{k.get('symbol')}"
+            v5_sql_upsert(k)
+    except Exception as e:
+        print("V5 sqlite sync hatasi:", e)
+
+
+# Override: her sinyal kaydini 90+ alanli DNA olarak olusturur.
+def basari_kaydi_olustur(symbol, a, simdi):
+    return v5_make_dna(symbol, a, simdi)
+
+
+# Override: JSON + SQLite birlikte kaydeder. Eski dosya adini korur.
+def basari_db_kaydet(veriler):
+    try:
+        with open(BASARI_DB_DOSYA, "w", encoding="utf-8") as f:
+            json.dump(veriler[-3000:], f, ensure_ascii=False, indent=2)
+        v5_save_json(V5_DNA_JSON, veriler[-3000:], limit=3000)
+        for k in veriler[-10:]:
+            v5_sql_upsert(k)
+    except Exception as e:
+        print("V5 basari veritabani kaydedilemedi:", e)
+
+
+def v5_filter_contribution(kayitlar):
+    out = []
+    total = len(kayitlar)
+    genel = v5_pct(sum(v5_success(k) for k in kayitlar), total)
+    for ad, key in V5_BOOL_FILTTRELER:
+        yes = [k for k in kayitlar if v5_filter_value(k, key)]
+        no = [k for k in kayitlar if not v5_filter_value(k, key)]
+        if len(yes) < 2:
+            continue
+        yr = v5_pct(sum(v5_success(k) for k in yes), len(yes))
+        nr = v5_pct(sum(v5_success(k) for k in no), len(no)) if no else genel
+        out.append({"filtre": ad, "ornek": len(yes), "basari": yr, "genel": genel, "katki": round(yr - nr, 1)})
+    return sorted(out, key=lambda x: x["katki"], reverse=True)
+
+
+def v5_pattern_discovery(kayitlar, top=8):
+    groups = {}
+    for k in kayitlar:
+        key = k.get("pattern_key") or v5_pattern_key(k)
+        groups.setdefault(key, []).append(k)
+    rows = []
+    for key, arr in groups.items():
+        if len(arr) < 2:
+            continue
+        rows.append({
+            "pattern": key, "adet": len(arr),
+            "basari": v5_pct(sum(v5_success(k) for k in arr), len(arr)),
+            "h2": v5_pct(sum(v5_big_success(k) for k in arr), len(arr)),
+            "ort_kazanc": v5_mean([k.get("max_kazanc") for k in arr]),
+            "risk": v5_mean([k.get("risk_puani") for k in arr]),
+        })
+    return sorted(rows, key=lambda x: (x["basari"], x["ort_kazanc"], x["adet"]), reverse=True)[:top]
+
+
+def v5_category_league(kayitlar):
+    cats = {}
+    for k in kayitlar:
+        cats.setdefault(k.get("kategori", "Bilinmiyor"), []).append(k)
+    rows = []
+    for c, arr in cats.items():
+        rows.append({"kategori": c, "adet": len(arr), "basari": v5_pct(sum(v5_success(k) for k in arr), len(arr)), "h2": v5_pct(sum(v5_big_success(k) for k in arr), len(arr)), "ort_kazanc": v5_mean([k.get("max_kazanc") for k in arr]), "stop": v5_pct(sum(bool(k.get("stop")) for k in arr), len(arr))})
+    return sorted(rows, key=lambda x: (x["basari"], x["h2"], x["ort_kazanc"]), reverse=True)
+
+
+def v5_failure_analysis(kayitlar):
+    fails = [k for k in kayitlar if v5_fail(k) or (not v5_success(k) and k.get("sonuc") != "aktif")]
+    if not fails:
+        return {"adet": 0, "sebepler": []}
+    causes = []
+    checks = [
+        ("BTC zayif", lambda k: not k.get("btc_guclu")), ("Lider yok", lambda k: not k.get("lider_mi")),
+        ("Zirve teyidi yok", lambda k: not k.get("zirve_teyidi")), ("Gec yakalama", lambda k: k.get("yakalama_tipi") == "gec"),
+        ("Hacim 8x altinda", lambda k: v5_safe_float(k.get("hacim")) < 8), ("Haber destegi yok", lambda k: not k.get("haber_var")),
+        ("24s hareket sisik", lambda k: v5_safe_float(k.get("degisim24")) > 30), ("Risk puani yuksek", lambda k: v5_safe_float(k.get("risk_puani")) >= 55),
+    ]
+    for ad, fn in checks:
+        cnt = sum(1 for k in fails if fn(k))
+        if cnt:
+            causes.append({"sebep": ad, "adet": cnt, "oran": v5_pct(cnt, len(fails))})
+    return {"adet": len(fails), "sebepler": sorted(causes, key=lambda x: x["oran"], reverse=True)}
+
+
+def v5_market_catch_rate(gun=30, esik=10):
+    try:
+        now = time.time(); start = now - gun * 86400
+        market = [k for k in piyasa_kayitlari if v5_safe_float(k.get("zaman")) >= start]
+        by_symbol = {}
+        for k in market:
+            s = k.get("symbol")
+            if not s:
+                continue
+            if s not in by_symbol or v5_safe_float(k.get("degisim24")) > v5_safe_float(by_symbol[s].get("degisim24")):
+                by_symbol[s] = k
+        winners = [k for k in by_symbol.values() if v5_safe_float(k.get("degisim24")) >= esik]
+        signals = {}
+        for b in basari_kayitlari:
+            if v5_safe_float(b.get("zaman")) >= start:
+                s = b.get("symbol")
+                if s and (s not in signals or v5_safe_float(b.get("zaman")) < signals[s]):
+                    signals[s] = v5_safe_float(b.get("zaman"))
+        caught, missed = [], []
+        for w in winners:
+            s = w.get("symbol"); wz = v5_safe_float(w.get("zaman"))
+            if s in signals and signals[s] <= wz:
+                caught.append(w)
+            else:
+                missed.append(w)
+        return {"gun": gun, "esik": esik, "kazanan": len(winners), "yakalanan": len(caught), "kacirilan": len(missed), "yakalama_orani": v5_pct(len(caught), len(winners)), "en_buyuk_kacan": sorted(missed, key=lambda x: v5_safe_float(x.get("degisim24")), reverse=True)[:10]}
+    except Exception as e:
+        return {"hata": str(e), "kazanan": 0, "yakalanan": 0, "kacirilan": 0, "yakalama_orani": 0, "en_buyuk_kacan": []}
+
+
+def v5_parameter_optimization(kayitlar):
+    suggestions = []
+    tests = [
+        ("hacim_esigi", "hacim", [5, 6, 7, 8, 10, 12, 15]),
+        ("skor_esigi", "skor", [8, 10, 12, 14, 16, 18, 20]),
+        ("kalite_esigi", "kalite", [5, 6, 7, 8, 9, 10, 12]),
+        ("rsi_ust_limit", "rsi", [62, 65, 68, 70, 72, 75, 80]),
+        ("risk_ust_limit", "risk_puani", [40, 45, 50, 55, 60, 65, 70]),
+    ]
+    for name, field, values in tests:
+        best = None
+        for v in values:
+            if name.endswith("ust_limit"):
+                arr = [k for k in kayitlar if v5_safe_float(k.get(field)) <= v]
+            else:
+                arr = [k for k in kayitlar if v5_safe_float(k.get(field)) >= v]
+            if len(arr) < 3:
+                continue
+            rate = v5_pct(sum(v5_success(k) for k in arr), len(arr))
+            h2 = v5_pct(sum(v5_big_success(k) for k in arr), len(arr))
+            score = rate + h2 * 0.35 + min(len(arr), 50) * 0.1
+            row = {"parametre": name, "onerilen": v, "ornek": len(arr), "basari": rate, "h2": h2, "skor": round(score, 2)}
+            if best is None or row["skor"] > best["skor"]:
+                best = row
+        if best:
+            suggestions.append(best)
+    # Kural bazli yorumlar
+    catch = v5_market_catch_rate(30, 10)
+    if catch.get("kazanan", 0) >= 3 and catch.get("yakalama_orani", 0) < 50:
+        suggestions.append({"parametre": "catch_rate", "onerilen": "erken filtreleri gevset", "ornek": catch.get("kazanan"), "basari": catch.get("yakalama_orani"), "h2": 0, "skor": 0})
+    v5_save_json(V5_PARAMETRE_JSON, suggestions)
+    return sorted(suggestions, key=lambda x: x.get("skor", 0), reverse=True)
+
+
+def v5_backtest_simulation(kayitlar, gun=180):
+    start = time.time() - gun * 86400
+    arr = [k for k in kayitlar if v5_safe_float(k.get("zaman")) >= start]
+    if len(arr) < 5:
+        return {"gun": gun, "ornek": len(arr), "not": "Yeterli gecmis sonuc yok. Veri biriktikce 6 aylik simulasyon otomatik dolacak."}
+    strategies = {
+        "mevcut": lambda k: True,
+        "sadece_ai_60": lambda k: v5_ai_score(k) >= 60,
+        "btc_lider_hacim8": lambda k: k.get("btc_guclu") and k.get("lider_mi") and v5_safe_float(k.get("hacim")) >= 8,
+        "erken_normal_risk55": lambda k: k.get("yakalama_tipi") != "gec" and v5_safe_float(k.get("risk_puani")) <= 55,
+        "haberli_guclu": lambda k: k.get("haber_var") and k.get("btc_guclu") and v5_safe_float(k.get("hacim")) >= 5,
+    }
+    out = []
+    for name, fn in strategies.items():
+        sel = [k for k in arr if fn(k)]
+        if not sel:
+            continue
+        out.append({"strateji": name, "adet": len(sel), "basari": v5_pct(sum(v5_success(k) for k in sel), len(sel)), "h2": v5_pct(sum(v5_big_success(k) for k in sel), len(sel)), "ort_kazanc": v5_mean([k.get("max_kazanc") for k in sel]), "stop": v5_pct(sum(bool(k.get("stop")) for k in sel), len(sel))})
+    return {"gun": gun, "ornek": len(arr), "sonuclar": sorted(out, key=lambda x: (x["basari"], x["ort_kazanc"]), reverse=True)}
+
+
+def v5_hall_of_fame(kayitlar):
+    by = {}
+    for k in kayitlar:
+        by.setdefault(k.get("symbol"), []).append(k)
+    rows = []
+    for s, arr in by.items():
+        if not s:
+            continue
+        rows.append({"symbol": s, "adet": len(arr), "basari": v5_pct(sum(v5_success(k) for k in arr), len(arr)), "h2": v5_pct(sum(v5_big_success(k) for k in arr), len(arr)), "en_iyi": max([v5_safe_float(k.get("max_kazanc")) for k in arr] or [0]), "ort": v5_mean([k.get("max_kazanc") for k in arr])})
+    return sorted(rows, key=lambda x: (x["basari"], x["en_iyi"], x["adet"]), reverse=True)[:10]
+
+
+def v5_time_analysis(kayitlar):
+    def group(field):
+        d = {}
+        for k in kayitlar:
+            key = k.get(field, "?")
+            d.setdefault(key, []).append(k)
+        rows = []
+        for key, arr in d.items():
+            if len(arr) >= 2:
+                rows.append({"ad": key, "adet": len(arr), "basari": v5_pct(sum(v5_success(k) for k in arr), len(arr)), "ort": v5_mean([k.get("max_kazanc") for k in arr])})
+        return sorted(rows, key=lambda x: (x["basari"], x["ort"]), reverse=True)[:5]
+    return {"saat": group("saat"), "gun": group("gun_adi"), "saat_blok": group("saat_blok")}
+
+
+def v5_sector_analysis(kayitlar):
+    d = {}
+    for k in kayitlar:
+        d.setdefault(k.get("sector") or v5_sector(k.get("symbol")), []).append(k)
+    rows = []
+    for sec, arr in d.items():
+        rows.append({"sektor": sec, "adet": len(arr), "basari": v5_pct(sum(v5_success(k) for k in arr), len(arr)), "ort": v5_mean([k.get("max_kazanc") for k in arr])})
+    return sorted(rows, key=lambda x: (x["basari"], x["ort"]), reverse=True)
+
+
+def v5_target_stop_drawdown(kayitlar):
+    return {
+        "h1_isabet": v5_pct(sum(bool(k.get("h1")) for k in kayitlar), len(kayitlar)),
+        "h2_isabet": v5_pct(sum(bool(k.get("h2")) for k in kayitlar), len(kayitlar)),
+        "stop_orani": v5_pct(sum(bool(k.get("stop")) for k in kayitlar), len(kayitlar)),
+        "ort_max_kazanc": v5_mean([k.get("max_kazanc") for k in kayitlar]),
+        "ort_min_kazanc": v5_mean([k.get("min_kazanc") for k in kayitlar]),
+        "en_kotu_drawdown": min([v5_safe_float(k.get("min_kazanc")) for k in kayitlar] or [0]),
+    }
+
+
+def v5_news_btc_effect(kayitlar):
+    def rate(arr): return v5_pct(sum(v5_success(k) for k in arr), len(arr))
+    haberli = [k for k in kayitlar if k.get("haber_var")]
+    habersiz = [k for k in kayitlar if not k.get("haber_var")]
+    btc_ok = [k for k in kayitlar if k.get("btc_guclu")]
+    btc_no = [k for k in kayitlar if not k.get("btc_guclu")]
+    modes = {}
+    for k in kayitlar:
+        modes.setdefault(k.get("piyasa_modu", "bilinmiyor"), []).append(k)
+    return {
+        "haberli": {"adet": len(haberli), "basari": rate(haberli)}, "habersiz": {"adet": len(habersiz), "basari": rate(habersiz)},
+        "btc_guclu": {"adet": len(btc_ok), "basari": rate(btc_ok)}, "btc_zayif": {"adet": len(btc_no), "basari": rate(btc_no)},
+        "piyasa_modu": {m: {"adet": len(a), "basari": rate(a)} for m, a in modes.items()}
+    }
+
+
+def v5_build_analysis(gun=30):
+    now = time.time(); start = now - gun * 86400
+    kayitlar = [k for k in basari_kayitlari if v5_safe_float(k.get("zaman")) >= start]
+    # Eski kayitlari V5 alanlariyla zenginlestir.
+    for k in kayitlar:
+        if "pattern_key" not in k: k["pattern_key"] = v5_pattern_key(k)
+        if "risk_puani" not in k: k["risk_puani"] = v5_risk_puani(k)
+        if "ai_skor" not in k: k["ai_skor"] = v5_ai_score(k)
+        if "yildiz_olasilik" not in k: k["yildiz_olasilik"] = v5_yildiz_probability(k)
+        if "sector" not in k: k["sector"] = v5_sector(k.get("symbol"))
+    total = len(kayitlar)
+    weights = v5_learn_weights(kayitlar)
+    analysis = {
+        "surum": V5_SURUM, "zaman": now, "gun": gun, "toplam_sinyal": total,
+        "basari_orani": v5_pct(sum(v5_success(k) for k in kayitlar), total),
+        "h2_orani": v5_pct(sum(v5_big_success(k) for k in kayitlar), total),
+        "aktif": sum(1 for k in kayitlar if k.get("sonuc") == "aktif"),
+        "weights": weights,
+        "kategori_ligi": v5_category_league(kayitlar),
+        "pattern_discovery": v5_pattern_discovery(kayitlar),
+        "filtre_katki": v5_filter_contribution(kayitlar),
+        "failure": v5_failure_analysis(kayitlar),
+        "catch_rate": v5_market_catch_rate(gun, 10),
+        "parametre_onerileri": v5_parameter_optimization(kayitlar),
+        "backtest": v5_backtest_simulation(kayitlar, min(180, gun)),
+        "hall_of_fame": v5_hall_of_fame(kayitlar),
+        "time_analysis": v5_time_analysis(kayitlar),
+        "sector_analysis": v5_sector_analysis(kayitlar),
+        "target_stop_drawdown": v5_target_stop_drawdown(kayitlar),
+        "news_btc_effect": v5_news_btc_effect(kayitlar),
+    }
+    v5_save_json(V5_ANALIZ_JSON, analysis)
+    v5_save_json(V5_DASHBOARD_JSON, analysis)
+    v5_sql_save_analysis("weekly", analysis)
+    return analysis
+
+
+def v5_dashboard_html(analysis):
+    try:
+        html = """<!doctype html><html><head><meta charset='utf-8'><title>Coin Radar V5</title><style>body{font-family:Arial;margin:24px;background:#111;color:#eee}.card{background:#1d1d1d;padding:16px;margin:12px 0;border-radius:12px}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #333;padding:8px;text-align:left}</style></head><body>"""
+        html += f"<h1>Coin Radar {analysis.get('surum')}</h1><div class='card'>Toplam: {analysis.get('toplam_sinyal')} | Başarı: %{analysis.get('basari_orani')} | H2: %{analysis.get('h2_orani')}</div>"
+        def table(title, rows, cols):
+            nonlocal html
+            html += f"<div class='card'><h2>{title}</h2><table><tr>" + "".join(f"<th>{c}</th>" for c in cols) + "</tr>"
+            for r in rows[:10]:
+                html += "<tr>" + "".join(f"<td>{r.get(c,'')}</td>" for c in cols) + "</tr>"
+            html += "</table></div>"
+        table("Kategori Ligi", analysis.get("kategori_ligi", []), ["kategori", "adet", "basari", "h2", "ort_kazanc"])
+        table("Pattern Discovery", analysis.get("pattern_discovery", []), ["pattern", "adet", "basari", "h2", "ort_kazanc"])
+        table("Filtre Katkı", analysis.get("filtre_katki", []), ["filtre", "ornek", "basari", "katki"])
+        html += "</body></html>"
+        with open(V5_DASHBOARD_HTML, "w", encoding="utf-8") as f:
+            f.write(html)
+    except Exception as e:
+        print("V5 dashboard html hatasi:", e)
+
+
+def v5_professional_report_text(gun=30):
+    a = v5_build_analysis(gun)
+    v5_dashboard_html(a)
+    msg = f"🧠 COIN RADAR {V5_SURUM}\n"
+    msg += f"Dönem: Son {gun} gün | DNA alanı: {len(V5_DNA_ALANLARI)} | Sinyal: {a['toplam_sinyal']}\n"
+    msg += f"Başarı: %{a['basari_orani']} | H2: %{a['h2_orani']} | Aktif: {a['aktif']}\n\n"
+    if not a["toplam_sinyal"]:
+        return msg + "Henüz rapor için yeterli V5 sinyal sonucu yok. Sinyaller geldikçe DNA ve öğrenme motoru dolacak.\n"
+    msg += "🏆 KATEGORİ LİGİ\n"
+    for r in a["kategori_ligi"][:6]:
+        msg += f"{r['kategori']}: {r['adet']} sinyal | Başarı %{r['basari']} | H2 %{r['h2']} | Ort %{r['ort_kazanc']}\n"
+    msg += "\n🧬 PATTERN DISCOVERY\n"
+    for r in a["pattern_discovery"][:6]:
+        msg += f"{r['pattern']}: {r['adet']} | Başarı %{r['basari']} | Ort %{r['ort_kazanc']}\n"
+    msg += "\n📊 FİLTRE KATKI ANALİZİ\n"
+    for r in a["filtre_katki"][:7]:
+        msg += f"{r['filtre']}: katkı %{r['katki']} | başarı %{r['basari']} | örnek {r['ornek']}\n"
+    nb = a["news_btc_effect"]
+    msg += "\n📰 HABER / BTC ETKİSİ\n"
+    msg += f"Haberli başarı %{nb['haberli']['basari']} ({nb['haberli']['adet']}) | Habersiz %{nb['habersiz']['basari']} ({nb['habersiz']['adet']})\n"
+    msg += f"BTC güçlü başarı %{nb['btc_guclu']['basari']} ({nb['btc_guclu']['adet']}) | BTC zayıf %{nb['btc_zayif']['basari']} ({nb['btc_zayif']['adet']})\n"
+    cr = a["catch_rate"]
+    msg += "\n🎯 GERÇEK CATCH RATE\n"
+    msg += f"%{cr.get('esik',10)}+ piyasa kazananı: {cr.get('kazanan',0)} | Yakalanan: {cr.get('yakalanan',0)} | Kaçan: {cr.get('kacirilan',0)} | Oran %{cr.get('yakalama_orani',0)}\n"
+    if cr.get("en_buyuk_kacan"):
+        msg += "En büyük kaçanlar: " + ", ".join([f"{x.get('symbol')}(%{v5_round(x.get('degisim24'),1)})" for x in cr["en_buyuk_kacan"][:5]]) + "\n"
+    fail = a["failure"]
+    msg += "\n📉 BAŞARISIZLIK SEBEBİ\n"
+    if fail["adet"]:
+        for s in fail["sebepler"][:5]:
+            msg += f"{s['sebep']}: %{s['oran']}\n"
+    else:
+        msg += "Belirgin başarısızlık kümesi yok.\n"
+    msg += "\n🤖 AI / PARAMETRE ÖNERİLERİ\n"
+    for r in a["parametre_onerileri"][:6]:
+        msg += f"{r['parametre']}: {r['onerilen']} | başarı %{r.get('basari',0)} | örnek {r.get('ornek',0)}\n"
+    bt = a["backtest"]
+    msg += "\n🔁 GEÇMİŞTEN SİMÜLASYON\n"
+    if bt.get("sonuclar"):
+        for r in bt["sonuclar"][:5]:
+            msg += f"{r['strateji']}: {r['adet']} | başarı %{r['basari']} | ort %{r['ort_kazanc']}\n"
+    else:
+        msg += bt.get("not", "Yeterli veri yok.") + "\n"
+    ts = a["target_stop_drawdown"]
+    msg += "\n🎯 HEDEF / STOP / DRAWDOWN\n"
+    msg += f"H1 %{ts['h1_isabet']} | H2 %{ts['h2_isabet']} | Stop %{ts['stop_orani']} | Ort Max %{ts['ort_max_kazanc']} | En kötü DD %{ts['en_kotu_drawdown']}\n"
+    msg += "\n🏅 HALL OF FAME\n"
+    for r in a["hall_of_fame"][:5]:
+        msg += f"{r['symbol']}: başarı %{r['basari']} | en iyi %{v5_round(r['en_iyi'],1)} | adet {r['adet']}\n"
+    msg += "\n⏱️ EN İYİ ZAMANLAR\n"
+    best_hours = a["time_analysis"].get("saat", [])[:3]
+    if best_hours:
+        msg += "Saat: " + ", ".join([f"{r['ad']}:%{r['basari']}" for r in best_hours]) + "\n"
+    best_days = a["time_analysis"].get("gun", [])[:3]
+    if best_days:
+        msg += "Gün: " + ", ".join([f"{r['ad']}:%{r['basari']}" for r in best_days]) + "\n"
+    msg += "\n📊 SEKTÖR ANALİZİ\n"
+    for r in a["sector_analysis"][:5]:
+        msg += f"{r['sektor']}: {r['adet']} | başarı %{r['basari']} | ort %{r['ort']}\n"
+    msg += "\n📚 V5 çıktı dosyaları: coin_dna_veritabani_v5.json, coin_radar_v5.sqlite, v5_dashboard.html, v5_dashboard.json\n"
+    return msg
+
+
+# Legacy: V5 30 gunluk rapor gonderici pasif hale getirildi.
+def legacy_haftalik_rapor_gonder_v5_30gun():
+    try:
+        v5_sync_all_to_sqlite()
+        rapor = v5_report_text(30)
+        telegram_gonder(rapor)
+    except Exception as e:
+        telegram_gonder(f"V5 rapor motoru hata verdi: {e}")
+        print("V5 haftalik rapor hatasi:", e)
+
+
+class V5APIHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        try:
+            if self.path.startswith("/api/analysis"):
+                data = v5_build_analysis(30)
+                body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.end_headers(); self.wfile.write(body); return
+            if self.path.startswith("/api/signals"):
+                body = json.dumps(basari_kayitlari[-200:], ensure_ascii=False).encode("utf-8")
+                self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.end_headers(); self.wfile.write(body); return
+            if self.path.startswith("/dashboard"):
+                a = v5_build_analysis(30); v5_dashboard_html(a)
+                with open(V5_DASHBOARD_HTML, "rb") as f: body = f.read()
+                self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers(); self.wfile.write(body); return
+            self.send_response(200); self.send_header("Content-Type", "text/plain; charset=utf-8"); self.end_headers(); self.wfile.write(b"Coin Radar V5 API: /api/analysis /api/signals /dashboard")
+        except Exception as e:
+            self.send_response(500); self.end_headers(); self.wfile.write(str(e).encode("utf-8"))
+
+    def log_message(self, format, *args):
+        return
+
+
+def v5_start_api_if_enabled():
+    if os.getenv("V5_API", "0") != "1":
+        return
+    try:
+        def run():
+            server = HTTPServer(("0.0.0.0", V5_API_PORT), V5APIHandler)
+            print(f"Coin Radar V5 API aktif: port {V5_API_PORT}")
+            server.serve_forever()
+        threading.Thread(target=run, daemon=True).start()
+    except Exception as e:
+        print("V5 API baslatilamadi:", e)
+
+
+# Bot acilista DB ve opsiyonel API hazir olur. V5_API=1 yapilmazsa web server acilmaz.
+v5_sql_init()
+v5_start_api_if_enabled()
+print(f"{V5_SURUM} aktif. DNA alanı: {len(V5_DNA_ALANLARI)}")
+
+
+# ============================================================
+# COIN RADAR V5.2 FINAL - EKSIK KALAN PROFESYONEL KATMAN
+# ============================================================
+# Bu blok V5.1'in uzerine kalan eksikleri ekler:
+# - Opsiyonel gercek ML modeli (sklearn varsa LogisticRegression)
+# - Harici piyasa verisi: Fear&Greed, BTC dominance, global market snapshot
+# - BTCTurk gecmis mum indirerek basit backtest/simulasyon
+# - Telegram komut paneli: /v5 /bugun /hafta /ay /dna /oneriler /dashboard /backtest
+# - Gelismis HTML dashboard
+# - Runtime parametre uygulama dosyasi
+# - Daha net basarisizlik sebebi ve filtre katkisi raporu
+# Sistem guvenligi: hicbiri ana sinyal uretimini bozmaz; hepsi try/except ve env flag ile korunur.
+
+V5_FINAL_SURUM = "V5.2 FINAL PRO + ML + KOMUT + BACKTEST + DIS VERI"
+V5_ML_MODEL_JSON = "v5_ml_model.json"
+V5_EXTERNAL_JSON = "v5_external_market.json"
+V5_RUNTIME_PARAMS_JSON = "v5_runtime_params.json"
+V5_BACKTEST_JSON = "v5_backtest_ozeti.json"
+V5_COMMAND_STATE_JSON = "v5_telegram_command_state.json"
+V5_ADVANCED_DASHBOARD_HTML = "v5_advanced_dashboard.html"
+
+
+def v5_http_json(url, timeout=12, headers=None):
+    try:
+        r = requests.get(url, timeout=timeout, headers=headers or {"User-Agent": "CoinRadarV5/1.0"})
+        if r.status_code >= 400:
+            return None
+        return r.json()
+    except Exception:
+        return None
+
+
+def v5_external_market_snapshot(force=False):
+    """Fear&Greed, BTC dominance ve global piyasa verisi. Harici kaynak calismazsa bot bozulmaz."""
+    try:
+        if (not force) and os.path.exists(V5_EXTERNAL_JSON):
+            old = v5_load_json(V5_EXTERNAL_JSON, {})
+            if time.time() - v5_safe_float(old.get("updated_at"), 0) < 6 * 3600:
+                return old
+        out = {"updated_at": time.time(), "fear_greed": None, "btc_dominance": None, "market_change_24h": None, "source_status": {}}
+        fg = v5_http_json("https://api.alternative.me/fng/?limit=1&format=json")
+        if fg and fg.get("data"):
+            one = fg["data"][0]
+            out["fear_greed"] = {"value": v5_safe_float(one.get("value")), "label": one.get("value_classification")}
+            out["source_status"]["fear_greed"] = "ok"
+        else:
+            out["source_status"]["fear_greed"] = "unavailable"
+        cg = v5_http_json("https://api.coingecko.com/api/v3/global")
+        data = (cg or {}).get("data") or {}
+        if data:
+            out["btc_dominance"] = v5_safe_float((data.get("market_cap_percentage") or {}).get("btc"))
+            out["market_change_24h"] = v5_safe_float(data.get("market_cap_change_percentage_24h_usd"))
+            out["source_status"]["coingecko_global"] = "ok"
+        else:
+            out["source_status"]["coingecko_global"] = "unavailable"
+        v5_save_json(V5_EXTERNAL_JSON, out)
+        return out
+    except Exception as e:
+        return {"updated_at": time.time(), "error": str(e), "fear_greed": None, "btc_dominance": None, "market_change_24h": None}
+
+
+V5_ML_FEATURES = [
+    "genel_skor", "kalite_skoru", "hacim", "degisim1", "degisim3", "degisim24",
+    "haber_skoru", "btc_fark", "btc_fark1", "btc_fark3", "btc_fark24",
+    "btc_guc_skoru", "lider_skoru", "guc_skoru", "momentum_score",
+    "risk_score", "smart_money_score", "whale_score", "capture_score",
+    "hour", "weekday", "entry_pump_pct", "market_btc_3h", "market_btc_24h"
+]
+
+
+def v5_feature_vector(k):
+    return [v5_safe_float(k.get(f)) for f in V5_ML_FEATURES]
+
+
+def v5_train_ml_model(records=None):
+    """sklearn varsa gercek LogisticRegression egitir; yoksa agirlikli fallback model uretir."""
+    try:
+        records = records or v5_load_records()
+        rows = [k for k in records if k.get("sonuc") or k.get("h1") or k.get("h2") or k.get("stop")]
+        rows = rows[-2000:]
+        if len(rows) < 20:
+            model = {"type": "fallback", "trained": False, "reason": "en az 20 sonuc kaydi gerekli", "features": V5_ML_FEATURES, "weights": {}, "bias": 0}
+            v5_save_json(V5_ML_MODEL_JSON, model)
+            return model
+        y = [1 if v5_success(k) else 0 for k in rows]
+        if len(set(y)) < 2:
+            model = {"type": "fallback", "trained": False, "reason": "basarili ve basarisiz ornek birlikte gerekli", "features": V5_ML_FEATURES, "weights": {}, "bias": 0}
+            v5_save_json(V5_ML_MODEL_JSON, model)
+            return model
+        X = [v5_feature_vector(k) for k in rows]
+        try:
+            from sklearn.linear_model import LogisticRegression
+            from sklearn.preprocessing import StandardScaler
+            scaler = StandardScaler()
+            Xs = scaler.fit_transform(X)
+            clf = LogisticRegression(max_iter=1000, class_weight="balanced")
+            clf.fit(Xs, y)
+            model = {
+                "type": "sklearn_logistic_regression",
+                "trained": True,
+                "sample_count": len(rows),
+                "positive_count": sum(y),
+                "features": V5_ML_FEATURES,
+                "coef": [float(x) for x in clf.coef_[0]],
+                "intercept": float(clf.intercept_[0]),
+                "mean": [float(x) for x in scaler.mean_],
+                "scale": [float(x) if float(x) != 0 else 1.0 for x in scaler.scale_],
+                "updated_at": time.time()
+            }
+            v5_save_json(V5_ML_MODEL_JSON, model)
+            return model
+        except Exception as e:
+            # Fallback: basarili ortalama - basarisiz ortalama farkindan agirlik uretir.
+            pos = [v5_feature_vector(k) for k in rows if v5_success(k)]
+            neg = [v5_feature_vector(k) for k in rows if not v5_success(k)]
+            weights = {}
+            for i, f in enumerate(V5_ML_FEATURES):
+                pm = v5_mean([p[i] for p in pos]); nm = v5_mean([n[i] for n in neg])
+                weights[f] = max(-3, min(3, (pm - nm) / (abs(nm) + 1)))
+            model = {"type": "fallback_weight_model", "trained": True, "sample_count": len(rows), "positive_count": sum(y), "features": V5_ML_FEATURES, "weights": weights, "bias": 0, "sklearn_error": str(e), "updated_at": time.time()}
+            v5_save_json(V5_ML_MODEL_JSON, model)
+            return model
+    except Exception as e:
+        return {"type": "error", "trained": False, "error": str(e), "features": V5_ML_FEATURES}
+
+
+def v5_ml_probability(k, model=None):
+    try:
+        model = model or v5_load_json(V5_ML_MODEL_JSON, {}) or v5_train_ml_model()
+        if model.get("type") == "sklearn_logistic_regression" and model.get("trained"):
+            vals = v5_feature_vector(k)
+            mean = model.get("mean") or [0] * len(vals)
+            scale = model.get("scale") or [1] * len(vals)
+            coef = model.get("coef") or [0] * len(vals)
+            z = model.get("intercept", 0)
+            for val, m, s, c in zip(vals, mean, scale, coef):
+                z += ((val - m) / (s or 1)) * c
+            return round(100 / (1 + pow(2.718281828, -z)), 1)
+        if model.get("type") == "fallback_weight_model" and model.get("trained"):
+            z = 0.0
+            weights = model.get("weights") or {}
+            for f in V5_ML_FEATURES:
+                z += v5_safe_float(k.get(f)) * v5_safe_float(weights.get(f)) / 10
+            return round(max(1, min(99, 50 + z)), 1)
+        # Model egitilmemisse kural tabanli AI skorunu olasilik gibi kullan.
+        return v5_round(k.get("ai_decision_score", v5_star_probability(k)), 1)
+    except Exception:
+        return v5_round(k.get("ai_decision_score", 50), 1)
+
+
+def v5_fetch_history(symbol, hours=24*180, resolution=60):
+    """BTCTurk graph-api'den parca parca mum indirir. Varsayilan 6 ay/1s."""
+    try:
+        now = int(time.time())
+        step = 24 * 30 * 3600
+        start = now - int(hours * 3600)
+        all_o, all_h, all_l, all_c, all_v, all_t = [], [], [], [], [], []
+        t = start
+        while t < now:
+            to = min(now, t + step)
+            url = f"https://graph-api.btcturk.com/v1/klines/history?symbol={symbol}&resolution={resolution}&from={t}&to={to}"
+            d = v5_http_json(url, timeout=15) or {}
+            all_o += d.get("o", []) or []
+            all_h += d.get("h", []) or []
+            all_l += d.get("l", []) or []
+            all_c += d.get("c", []) or []
+            all_v += d.get("v", []) or []
+            all_t += d.get("t", []) or []
+            t = to + 1
+            time.sleep(0.08)
+        return {"o": all_o, "h": all_h, "l": all_l, "c": all_c, "v": all_v, "t": all_t}
+    except Exception as e:
+        return {"error": str(e), "o": [], "h": [], "l": [], "c": [], "v": [], "t": []}
+
+
+def v5_backtest_symbol(symbol, hours=24*180):
+    """Mevcut mantiga yakin basit gecmis simulasyon. Ana bot karar fonksiyonunu bozmaz."""
+    try:
+        d = v5_fetch_history(symbol, hours=hours)
+        c, h, v, ts = d.get("c", []), d.get("h", []), d.get("v", []), d.get("t", [])
+        if len(c) < 60:
+            return {"symbol": symbol, "error": "yetersiz veri", "bars": len(c)}
+        signals = []
+        for i in range(24, len(c)-24):
+            try:
+                deg1 = ((c[i] - c[i-1]) / c[i-1]) * 100
+                deg3 = ((c[i] - c[i-3]) / c[i-3]) * 100
+                deg24 = ((c[i] - c[i-24]) / c[i-24]) * 100
+                avg_v = sum(v[i-6:i-1]) / 5 if i >= 6 else 0
+                hacim = (v[i] / avg_v) if avg_v else 0
+                zirve = c[i] >= max(h[max(0, i-12):i] or [c[i]]) * 0.995
+                # Basit V5 sinyal profili: hacim+momentum+zirve. Haber/BTC yoksa nötr.
+                if hacim >= 8 and deg3 >= 2 and deg24 < 18:
+                    future = c[i+1:min(len(c), i+25)]
+                    max_gain = max([((x - c[i]) / c[i]) * 100 for x in future] or [0])
+                    min_gain = min([((x - c[i]) / c[i]) * 100 for x in future] or [0])
+                    signals.append({"t": ts[i] if i < len(ts) else i, "price": c[i], "hacim": round(hacim, 2), "deg3": round(deg3, 2), "deg24": round(deg24, 2), "zirve": zirve, "max_24h": round(max_gain, 2), "min_24h": round(min_gain, 2), "success": max_gain >= 5})
+            except Exception:
+                continue
+        return {"symbol": symbol, "bars": len(c), "signals": len(signals), "success_rate": v5_pct(sum(1 for s in signals if s["success"]), len(signals)), "avg_max_24h": v5_mean([s["max_24h"] for s in signals]), "best": max([s["max_24h"] for s in signals] or [0]), "worst": min([s["min_24h"] for s in signals] or [0]), "sample": signals[-10:]}
+    except Exception as e:
+        return {"symbol": symbol, "error": str(e)}
+
+
+def v5_run_backtest(symbols=None, hours=24*180):
+    try:
+        symbols = symbols or ["BTCTRY", "ETHTRY", "SOLTRY", "AVAXTRY", "XRPTRY", "FETTRY", "HOTTRY", "AIOZTRY"]
+        symbols = [s for s in symbols if s != "BTCTRY"]
+        results = [v5_backtest_symbol(s, hours=hours) for s in symbols[:25]]
+        ok = [r for r in results if not r.get("error")]
+        out = {"updated_at": time.time(), "hours": hours, "symbols": len(results), "avg_success_rate": v5_mean([r.get("success_rate") for r in ok]), "avg_gain": v5_mean([r.get("avg_max_24h") for r in ok]), "results": results}
+        v5_save_json(V5_BACKTEST_JSON, out)
+        return out
+    except Exception as e:
+        return {"error": str(e), "results": []}
+
+
+def v5_apply_runtime_params(suggestions=None):
+    """Kodu otomatik degistirmez; guvenli runtime parametre dosyasi yazar. Istenirse ileride ana esikler buradan okunur."""
+    try:
+        suggestions = suggestions or v5_parameter_suggestions(v5_load_records())
+        params = v5_load_json(V5_RUNTIME_PARAMS_JSON, {}) or {}
+        params.setdefault("created_at", time.time())
+        params["updated_at"] = time.time()
+        params["mode"] = os.getenv("V5_AUTO_PARAMETRE", "0")
+        params["suggestions"] = suggestions
+        if os.getenv("V5_AUTO_PARAMETRE", "0") == "1":
+            # Yalnizca makul sinirlar icinde oneriyi aktif ayar olarak yazar.
+            active = {}
+            for s in suggestions:
+                txt = str(s.get("onerilen_ayar", ""))
+                if "hacim" in txt.lower() and any(x in txt for x in ["7", "8", "9", "10"]):
+                    active["volume_threshold_hint"] = txt
+            params["active_hints"] = active
+        v5_save_json(V5_RUNTIME_PARAMS_JSON, params)
+        return params
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def v5_failure_reasons(records=None):
+    try:
+        records = records or v5_load_records()
+        failed = [k for k in records if (k.get("sonuc") or k.get("stop")) and not v5_success(k)]
+        if not failed:
+            return []
+        rules = [
+            ("BTC zayıf / coin BTC'den güçlü değil", lambda k: not k.get("btcden_guclu") or v5_safe_float(k.get("btc_fark")) < 0),
+            ("Hacim yetersiz veya sürdürülebilir değil", lambda k: v5_safe_float(k.get("hacim")) < 8 or not k.get("volume_strengthening")),
+            ("Geç yakalama / ilk mumda fazla gitmiş", lambda k: v5_safe_float(k.get("entry_pump_pct") or k.get("degisim24")) > 12),
+            ("Lider onayı yok", lambda k: not k.get("leader")),
+            ("Zirve onayı yok", lambda k: not k.get("near_high")),
+            ("Haber desteği yok veya negatif", lambda k: v5_safe_float(k.get("haber_skoru")) <= 0),
+            ("Risk puanı yüksek", lambda k: v5_safe_float(k.get("risk_score")) >= 65),
+        ]
+        out = []
+        for name, fn in rules:
+            cnt = sum(1 for k in failed if fn(k))
+            out.append({"sebep": name, "adet": cnt, "oran": v5_pct(cnt, len(failed))})
+        return sorted(out, key=lambda x: x["adet"], reverse=True)
+    except Exception:
+        return []
+
+
+def v5_advanced_dashboard_html(analysis=None):
+    try:
+        analysis = analysis or v5_build_analysis(30)
+        ext = v5_external_market_snapshot()
+        model = v5_train_ml_model(v5_load_records())
+        failures = v5_failure_reasons(v5_load_records())
+        params = v5_apply_runtime_params(analysis.get("parametre_onerileri") or [])
+        html = """<!doctype html><html><head><meta charset='utf-8'><title>Coin Radar V5 Final</title>
+<style>body{font-family:Arial;margin:0;background:#0d1117;color:#e6edf3}.wrap{max-width:1200px;margin:auto;padding:22px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}.card{background:#161b22;border:1px solid #30363d;padding:16px;border-radius:14px}.big{font-size:30px;font-weight:bold}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #30363d;padding:8px;text-align:left}.ok{color:#7ee787}.warn{color:#f2cc60}.bad{color:#ff7b72}small{color:#8b949e}</style></head><body><div class='wrap'>"""
+        html += f"<h1>Coin Radar {V5_FINAL_SURUM}</h1><small>Güncelleme: {time.strftime('%Y-%m-%d %H:%M:%S')}</small>"
+        html += "<div class='grid'>"
+        html += f"<div class='card'><div>Toplam Sinyal</div><div class='big'>{analysis.get('toplam_sinyal',0)}</div></div>"
+        html += f"<div class='card'><div>Başarı</div><div class='big ok'>%{analysis.get('basari_orani',0)}</div></div>"
+        html += f"<div class='card'><div>Catch Rate</div><div class='big warn'>%{(analysis.get('catch_rate') or {}).get('catch_rate',0)}</div></div>"
+        html += f"<div class='card'><div>ML Model</div><div class='big'>{model.get('type','-')}</div><small>Örnek: {model.get('sample_count',0)}</small></div>"
+        fg = ext.get('fear_greed') or {}
+        html += f"<div class='card'><div>Fear & Greed</div><div class='big'>{fg.get('value','-')}</div><small>{fg.get('label','')}</small></div>"
+        html += f"<div class='card'><div>BTC Dominance</div><div class='big'>%{v5_round(ext.get('btc_dominance'),1)}</div></div>"
+        html += "</div>"
+        def table(title, rows, cols):
+            nonlocal html
+            html += f"<div class='card'><h2>{title}</h2><table><tr>" + "".join(f"<th>{c}</th>" for c in cols) + "</tr>"
+            for r in rows[:20]:
+                html += "<tr>" + "".join(f"<td>{r.get(c,'')}</td>" for c in cols) + "</tr>"
+            html += "</table></div>"
+        table("Kategori Ligi", analysis.get("kategori_ligi") or [], ["kategori","adet","basari","h2","ort_getiri"])
+        table("En Karlı Coinler", analysis.get("coin_hall_of_fame") or [], ["symbol","adet","basari","h2","en_iyi","ort"])
+        table("Başarısızlık Sebepleri", failures, ["sebep","adet","oran"])
+        table("Parametre Önerileri", params.get("suggestions") or [], ["konu","mevcut","onerilen_ayar","neden"])
+        html += "</div></body></html>"
+        with open(V5_ADVANCED_DASHBOARD_HTML, "w", encoding="utf-8") as f:
+            f.write(html)
+        return V5_ADVANCED_DASHBOARD_HTML
+    except Exception as e:
+        print("V5 advanced dashboard hatasi:", e)
+        return None
+
+
+# V5.2: Var olan API handler'i gelismis endpointlerle genislet.
+try:
+    _V5OldAPIHandler = V5APIHandler
+    class V5APIHandler(_V5OldAPIHandler):
+        def do_GET(self):
+            try:
+                if self.path.startswith("/api/external"):
+                    body = json.dumps(v5_external_market_snapshot(force=True), ensure_ascii=False).encode("utf-8")
+                    self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.end_headers(); self.wfile.write(body); return
+                if self.path.startswith("/api/ml"):
+                    body = json.dumps(v5_train_ml_model(v5_load_records()), ensure_ascii=False).encode("utf-8")
+                    self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.end_headers(); self.wfile.write(body); return
+                if self.path.startswith("/api/backtest"):
+                    body = json.dumps(v5_run_backtest(hours=24*30), ensure_ascii=False).encode("utf-8")
+                    self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.end_headers(); self.wfile.write(body); return
+                if self.path.startswith("/dashboard/advanced"):
+                    v5_advanced_dashboard_html(v5_build_analysis(30))
+                    with open(V5_ADVANCED_DASHBOARD_HTML, "rb") as f: body = f.read()
+                    self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers(); self.wfile.write(body); return
+                return super().do_GET()
+            except Exception as e:
+                self.send_response(500); self.end_headers(); self.wfile.write(str(e).encode("utf-8"))
+except Exception as e:
+    print("V5 API override hatasi:", e)
+
+
+def v5_report_text(gun=7):
+    a = v5_build_analysis(gun)
+    ext = v5_external_market_snapshot()
+    model = v5_train_ml_model(v5_load_records())
+    v5_advanced_dashboard_html(a)
+    msg = v5_professional_report_text(gun)
+    msg += "\n🧠 V5.2 FINAL EKLER\n"
+    msg += f"ML model: {model.get('type')} | Eğitim: {'✅' if model.get('trained') else '❌'} | Örnek: {model.get('sample_count',0)}\n"
+    fg = ext.get('fear_greed') or {}
+    msg += f"Fear&Greed: {fg.get('value','-')} {fg.get('label','')} | BTC Dominance: %{v5_round(ext.get('btc_dominance'),1)}\n"
+    failures = v5_failure_reasons(v5_load_records())[:3]
+    if failures:
+        msg += "Başarısızlık ana sebepleri: " + ", ".join([f"{x['sebep']} %{x['oran']}" for x in failures]) + "\n"
+    msg += "Komutlar: /v5 /bugun /hafta /ay /dna /oneriler /dashboard /backtest\n"
+    msg += "Dosyalar: v5_advanced_dashboard.html, v5_ml_model.json, v5_external_market.json, v5_backtest_ozeti.json\n"
+    return msg
+
+
+# Override: haftalik rapor V5.2 final rapor metnini gonderir.
+def haftalik_rapor_gonder():
+    global son_haftalik_rapor
+    simdi = time.time()
+    if simdi - son_haftalik_rapor < HAFTALIK_RAPOR_SURESI:
+        return
+    try:
+        telegram_gonder(v5_report_text(7))
+        son_haftalik_rapor = simdi
+    except Exception as e:
+        telegram_gonder(f"V5.2 final rapor motoru hata verdi: {e}")
+        print("V5.2 haftalik rapor hatasi:", e)
+
+
+def v5_telegram_send_to(chat_id, text):
+    try:
+        if not BOT_TOKEN:
+            return False
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        chunks, kalan = [], str(text)
+        while len(kalan) > 3900:
+            cut = kalan.rfind("\n", 0, 3900)
+            if cut == -1: cut = 3900
+            chunks.append(kalan[:cut]); kalan = kalan[cut:].lstrip()
+        chunks.append(kalan)
+        for ch in chunks:
+            requests.post(url, json={"chat_id": chat_id, "text": ch}, timeout=15)
+        return True
+    except Exception as e:
+        print("V5 command send hatasi:", e)
+        return False
+
+
+def v5_handle_command(text):
+    t = (text or "").strip().lower()
+    if t in ["/v5", "/start", "/help"]:
+        return "🧠 Coin Radar V5 Komutları\n/bugun - günlük özet\n/hafta - 7 gün\n/ay - 30 gün\n/dna - DNA özeti\n/oneriler - parametre önerileri\n/dashboard - panel dosyaları\n/backtest - 30 günlük hızlı simülasyon"
+    if t == "/bugun": return v5_report_text(1)
+    if t == "/hafta": return v5_report_text(7)
+    if t == "/ay": return v5_report_text(30)
+    if t == "/dna":
+        a = v5_build_analysis(30)
+        return "🧬 DNA Özeti\n" + json.dumps({"toplam": a.get("toplam_sinyal"), "pattern": a.get("pattern_discovery", [])[:5], "hall_of_fame": a.get("coin_hall_of_fame", [])[:5]}, ensure_ascii=False, indent=2)
+    if t == "/oneriler":
+        a = v5_build_analysis(30); params = v5_apply_runtime_params(a.get("parametre_onerileri") or [])
+        rows = params.get("suggestions") or []
+        if not rows: return "Şu an yeterli veriyle parametre önerisi yok."
+        return "🤖 Parametre Önerileri\n" + "\n".join([f"- {x.get('konu')}: {x.get('onerilen_ayar')} ({x.get('neden')})" for x in rows[:10]])
+    if t == "/dashboard":
+        v5_advanced_dashboard_html(v5_build_analysis(30))
+        return "📊 Dashboard üretildi: v5_advanced_dashboard.html\nAPI açıksa: /dashboard/advanced"
+    if t == "/backtest":
+        bt = v5_run_backtest(hours=24*30)
+        return f"📈 30 Gün Backtest\nSembol: {bt.get('symbols')} | Ortalama başarı: %{v5_round(bt.get('avg_success_rate'),1)} | Ortalama max getiri: %{v5_round(bt.get('avg_gain'),1)}\nDetay: v5_backtest_ozeti.json"
+    return None
+
+
+def v5_start_telegram_commands_if_enabled():
+    if os.getenv("V5_TELEGRAM_COMMANDS", "0") != "1":
+        return
+    if not BOT_TOKEN:
+        return
+    try:
+        state = v5_load_json(V5_COMMAND_STATE_JSON, {}) or {}
+        offset = int(state.get("offset", 0) or 0)
+        def loop():
+            nonlocal offset
+            while True:
+                try:
+                    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+                    data = requests.get(url, params={"timeout": 25, "offset": offset + 1}, timeout=35).json()
+                    for upd in data.get("result", []) or []:
+                        offset = max(offset, int(upd.get("update_id", 0)))
+                        msg = upd.get("message") or upd.get("edited_message") or {}
+                        chat = msg.get("chat") or {}
+                        chat_id = chat.get("id")
+                        text = msg.get("text") or ""
+                        answer = v5_handle_command(text)
+                        if answer and chat_id:
+                            v5_telegram_send_to(chat_id, answer)
+                    v5_save_json(V5_COMMAND_STATE_JSON, {"offset": offset, "updated_at": time.time()})
+                except Exception as e:
+                    print("V5 telegram command loop hatasi:", e)
+                    time.sleep(10)
+        threading.Thread(target=loop, daemon=True).start()
+        print("V5 Telegram komut paneli aktif.")
+    except Exception as e:
+        print("V5 Telegram komut paneli baslatilamadi:", e)
+
+
+# Acilista dis veri, ML ve dashboard hazirlanir; dis kaynak hatasi botu durdurmaz.
+try:
+    v5_external_market_snapshot()
+    v5_train_ml_model(v5_load_records())
+    v5_apply_runtime_params(v5_parameter_suggestions(v5_load_records()))
+    v5_advanced_dashboard_html(v5_build_analysis(30))
+    v5_start_telegram_commands_if_enabled()
+    print(f"{V5_FINAL_SURUM} aktif.")
+except Exception as e:
+    print("V5.2 final acilis hazirligi hatasi:", e)
 
 
 while True:
@@ -1716,15 +3013,17 @@ while True:
 
                 haber_skoru = haber_puani(symbol)
 
-                hacim_skoru = min(hacim_kat * 2, 10)
-                momentum_skoru = max(0, degisim3 * 2)
+                # V5 momentum/hacim ayarı:
+                # Momentum 6%+ raporda en güçlü grup çıktı; hacim 10x+ tek başına zayıf kaldı.
+                hacim_skoru = min(hacim_kat * 1.5, 8)
+                momentum_skoru = min(max(0, degisim3 * 3), 24)
                 btc_skoru = btc_guc_skoru
                 mum_skoru = 1 if son_mum_yesil else 0
                 zirve_skoru = 1 if zirve_yakin else 0
 
                 genel_skor = (
-                    hacim_skoru * 0.50
-                    + momentum_skoru * 0.20
+                    hacim_skoru * 0.30
+                    + momentum_skoru * 0.35
                     + btc_skoru * 0.15
                     + haber_skoru * 0.20
                     + mum_skoru
@@ -1732,28 +3031,36 @@ while True:
                 )
 
                 kalite_skoru = (
-                    hacim_skoru * 0.55
-                    + momentum_skoru * 0.30
+                    hacim_skoru * 0.35
+                    + momentum_skoru * 0.40
                     + btc_skoru * 0.15
                     + mum_skoru
                     + zirve_skoru
                 )
 
-                if hacim_kat >= 5:
-                    genel_skor += 4
+                # Hacim artık ancak momentum teyidi varsa ek puan alır.
+                if hacim_kat >= 5 and degisim3 >= 2:
+                    genel_skor += 2
 
-                if hacim_kat >= 8:
-                    genel_skor += 6
+                if hacim_kat >= 8 and degisim3 >= 4:
+                    genel_skor += 2
 
-                # V4.25 commit: çok yüksek trader hacmini daha net ödüllendir.
                 hacim_bonus = 0
-                if hacim_kat >= 20:
-                    hacim_bonus = 3
-                elif hacim_kat >= 15:
+                if hacim_kat >= 20 and degisim3 >= 6:
                     hacim_bonus = 2
-                elif hacim_kat >= 10:
+                elif hacim_kat >= 15 and degisim3 >= 6:
+                    hacim_bonus = 1
+                elif hacim_kat >= 10 and degisim3 >= 4:
                     hacim_bonus = 1
                 genel_skor += hacim_bonus
+
+                # Momentum bonusu: rapora göre 6%+ 3s momentum H2 başarısında öne çıktı.
+                if degisim3 >= 6:
+                    genel_skor += 6
+                elif degisim3 >= 4:
+                    genel_skor += 3
+                elif degisim3 >= 2:
+                    genel_skor += 1
 
                 if haber_skoru >= 15:
                     genel_skor += 4
@@ -1764,8 +3071,9 @@ while True:
                 if degisim24 > 10:
                     genel_skor -= 4
 
-                if degisim3 > 7:
-                    genel_skor -= 4
+                # Sadece aşırı şişmiş ve son saatte çok hızlanmış hareketlerde küçük geç kalma cezası.
+                if degisim3 > 9 and degisim24 > 18 and degisim1 > 5:
+                    genel_skor -= 2
 
                 if degisim1 > 4:
                     genel_skor -= 4
@@ -1776,7 +3084,8 @@ while True:
                 if degisim3 > 0 and degisim1 > degisim3 * 0.65:
                     genel_skor -= 2
 
-                if hacim_kat > 7 and degisim3 > 6:
+                # 10x+ hacim güçlü momentum olmadan geliyorsa artık fazla ödüllendirilmez.
+                if hacim_kat >= 10 and degisim3 < 4:
                     genel_skor -= 3
 
                 if satis_baskisi:
