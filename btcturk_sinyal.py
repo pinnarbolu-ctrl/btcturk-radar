@@ -58,6 +58,184 @@ TELEGRAM_KATEGORILERI = {
     "⭐ Yıldız"
 }
 
+
+# === V5.1 DECISION ENGINE PATCH ===
+# Bu blok Telegram mesajını artırmadan karar kalitesini yükseltir.
+# Yıldız Adayı Telegram kategorisi değildir; sadece arka planda izlenir.
+V5_1_SURUM = "V5.1 decision engine"
+V5_1_YILDIZ_ADAY_DB = "v5_yildiz_adaylari.json"
+V5_1_ZAYIF_TRADER_MIN_MOMENTUM = 4.0
+V5_1_YILDIZ_ADAY_MIN_MOMENTUM = 2.0
+V5_1_YILDIZ_ADAY_MAX_MOMENTUM = 4.5
+V5_1_GUCLENME_SKOR_BONUS = 4
+V5_1_ZAYIF_TRADER_CEZA = 8
+
+try:
+    DURUM_SEVIYESI.setdefault("⭐ Yıldız Adayı", 5.5)
+except Exception:
+    pass
+
+
+def v5_1_json_yukle(dosya, varsayilan):
+    try:
+        with open(dosya, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return varsayilan
+
+
+def v5_1_json_kaydet(dosya, veri):
+    try:
+        with open(dosya, "w", encoding="utf-8") as f:
+            json.dump(veri, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("V5.1 json kaydedilemedi:", dosya, e)
+
+
+v5_1_yildiz_adaylari = v5_1_json_yukle(V5_1_YILDIZ_ADAY_DB, {})
+
+
+def v5_1_guclenme_bayraklari(a):
+    """Hacim/momentum güçlenmesini mesaj süsü olmaktan çıkarıp karar motoruna verir."""
+    notlar = a.get("guclenme_notlari", []) or []
+    hacim_gucleniyor = any("hacim güçleniyor" in str(n).lower() for n in notlar)
+    momentum_gucleniyor = any("momentum güçleniyor" in str(n).lower() for n in notlar)
+
+    onceki = a.get("onceki_veri") or {}
+    try:
+        eski_hacim = float(onceki.get("hacim", a.get("hacim", 0)) or 0)
+        yeni_hacim = float(a.get("hacim", 0) or 0)
+        if eski_hacim > 0 and yeni_hacim >= eski_hacim * 1.20:
+            hacim_gucleniyor = True
+    except Exception:
+        pass
+
+    try:
+        eski_momentum = float(onceki.get("degisim3", a.get("degisim3", 0)) or 0)
+        yeni_momentum = float(a.get("degisim3", 0) or 0)
+        if yeni_momentum - eski_momentum >= 0.5:
+            momentum_gucleniyor = True
+    except Exception:
+        pass
+
+    return bool(hacim_gucleniyor), bool(momentum_gucleniyor)
+
+
+def v5_1_zayif_trader_hacim_mi(a):
+    """10x+ hacim ama 3s momentum < 4 ise Telegram spam/risk sayılır."""
+    try:
+        return (
+            float(a.get("hacim", 0) or 0) >= 10
+            and float(a.get("degisim3", 0) or 0) < V5_1_ZAYIF_TRADER_MIN_MOMENTUM
+            and not bool(a.get("momentum_gucleniyor", False))
+        )
+    except Exception:
+        return False
+
+
+def v5_1_yildiz_adayi_mi(a):
+    """Erken yakalama için Telegram'a düşmeyen arka plan yıldız adayı."""
+    try:
+        degisim3 = float(a.get("degisim3", 0) or 0)
+        return (
+            bool(a.get("btcden_guclu", False))
+            and float(a.get("lider_skoru", 0) or 0) >= 6
+            and float(a.get("hacim", 0) or 0) >= 5
+            and bool(a.get("hacim_gucleniyor", False))
+            and V5_1_YILDIZ_ADAY_MIN_MOMENTUM <= degisim3 <= V5_1_YILDIZ_ADAY_MAX_MOMENTUM
+            and bool(a.get("zirve_yakin", False) or a.get("yeni_zirve", False))
+        )
+    except Exception:
+        return False
+
+
+def v5_1_yildiz_adayi_kaydet(symbol, a):
+    try:
+        v5_1_yildiz_adaylari[symbol] = {
+            "zaman": time.time(),
+            "fiyat": a.get("fiyat"),
+            "skor": a.get("skor"),
+            "guc_skoru": a.get("guc_skoru"),
+            "hacim": a.get("hacim"),
+            "degisim3": a.get("degisim3"),
+            "btc_fark": a.get("btc_fark"),
+            "lider_skoru": a.get("lider_skoru"),
+            "durum": "⭐ Yıldız Adayı",
+        }
+        # 7 günden eski adayları temizle.
+        simdi = time.time()
+        eski = [s for s, k in v5_1_yildiz_adaylari.items() if simdi - float(k.get("zaman", simdi)) > 7 * 24 * 3600]
+        for s in eski:
+            v5_1_yildiz_adaylari.pop(s, None)
+        v5_1_json_kaydet(V5_1_YILDIZ_ADAY_DB, v5_1_yildiz_adaylari)
+    except Exception as e:
+        print("V5.1 yıldız adayı kaydedilemedi:", symbol, e)
+
+
+def v5_1_yildiz_adayindan_guclendi_mi(symbol, a):
+    onceki = v5_1_yildiz_adaylari.get(symbol)
+    if not onceki:
+        return False
+    try:
+        return (
+            float(a.get("degisim3", 0) or 0) >= 4
+            and float(a.get("hacim", 0) or 0) >= float(onceki.get("hacim", 0) or 0) * 0.90
+            and float(a.get("guc_skoru", 0) or 0) >= float(onceki.get("guc_skoru", 0) or 0)
+        )
+    except Exception:
+        return False
+
+
+def v5_1_sinyal_sonuc_kalite_raporu(kayitlar):
+    """H1 var/H2 yok ayrımını rapora ekler; kar al mı bekle mi sorusuna veri üretir."""
+    try:
+        if not kayitlar:
+            return "\n🎯 V5.1 H1/H2 KALİTE ANALİZİ\nYeterli kayıt yok.\n"
+        h1_h2_yok = [k for k in kayitlar if k.get("h1") and not k.get("h2")]
+        h2ler = [k for k in kayitlar if k.get("h2")]
+        stoplar = [k for k in kayitlar if k.get("stop") and not k.get("h1") and not k.get("h2")]
+        aktif = [k for k in kayitlar if k.get("sonuc") == "aktif"]
+        toplam = max(len(kayitlar), 1)
+        msg = "\n🎯 V5.1 H1/H2 KALİTE ANALİZİ\n"
+        msg += f"H1 oldu H2 olmadı: {len(h1_h2_yok)} (%{round(len(h1_h2_yok)*100/toplam,1)})\n"
+        msg += f"H2 tamamladı: {len(h2ler)} (%{round(len(h2ler)*100/toplam,1)})\n"
+        msg += f"Stop oldu: {len(stoplar)} (%{round(len(stoplar)*100/toplam,1)})\n"
+        msg += f"Aktif takip: {len(aktif)}\n"
+        if len(h1_h2_yok) > len(h2ler) and len(h1_h2_yok) >= 3:
+            msg += "Yorum: H1 sonrası kar alma daha verimli görünüyor; H2 için ek teyit gerekebilir.\n"
+        elif len(h2ler) >= len(h1_h2_yok) and len(h2ler) >= 3:
+            msg += "Yorum: H2 tutma mantığı çalışıyor; güçlü kombinasyonlarda beklemek mantıklı.\n"
+        return msg
+    except Exception as e:
+        return f"\n🎯 V5.1 H1/H2 KALİTE ANALİZİ\nRapor hatası: {e}\n"
+
+
+def v5_1_adaptif_strateji_raporu(kayitlar):
+    """30 günlük raporda strateji önerisi üretir; 7 günlük raporda kısa kalır."""
+    try:
+        if len(kayitlar) < 5:
+            return "\n🤖 V5.1 ADAPTİF STRATEJİ\nDaha net öneri için en az 5 sonuç kaydı gerekli.\n"
+        toplam = len(kayitlar)
+        h2 = sum(1 for k in kayitlar if k.get("h2"))
+        stop = sum(1 for k in kayitlar if k.get("stop") and not k.get("h1") and not k.get("h2"))
+        zayif_trader = [k for k in kayitlar if float(k.get("hacim", 0) or 0) >= 10 and float(k.get("degisim3", 0) or 0) < 4]
+        guclenen = [k for k in kayitlar if k.get("hacim_gucleniyor") and k.get("momentum_gucleniyor")]
+        msg = "\n🤖 V5.1 ADAPTİF STRATEJİ\n"
+        msg += f"Genel H2: %{round(h2*100/max(toplam,1),1)} | Stop: %{round(stop*100/max(toplam,1),1)}\n"
+        if zayif_trader:
+            z_stop = sum(1 for k in zayif_trader if k.get("stop") and not k.get("h1") and not k.get("h2"))
+            msg += f"Zayıf Trader Hacim: {len(zayif_trader)} kayıt | Stop %{round(z_stop*100/max(len(zayif_trader),1),1)}\n"
+            msg += "Öneri: 10x+ hacimde 3s momentum <4 ise Telegram'a alma, DNA'da izle.\n"
+        if guclenen:
+            g_h2 = sum(1 for k in guclenen if k.get("h2"))
+            msg += f"Hacim+Momentum güçlenen: {len(guclenen)} kayıt | H2 %{round(g_h2*100/max(len(guclenen),1),1)}\n"
+            msg += "Öneri: Bu kombinasyon kategori yükseltmede öncelikli kalsın.\n"
+        return msg
+    except Exception as e:
+        return f"\n🤖 V5.1 ADAPTİF STRATEJİ\nRapor hatası: {e}\n"
+
+# === /V5.1 DECISION ENGINE PATCH ===
+
 RSS_KAYNAKLARI = [
     "https://cointelegraph.com/rss",
     "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml"
@@ -2376,6 +2554,11 @@ def v5_dashboard_html(analysis):
 
 def v5_professional_report_text(gun=30):
     a = v5_build_analysis(gun)
+    try:
+        now_v5_1 = time.time()
+        kayitlar = [k for k in basari_kayitlari if v5_safe_float(k.get("zaman")) >= now_v5_1 - gun * 86400]
+    except Exception:
+        kayitlar = []
     v5_dashboard_html(a)
     msg = f"🧠 COIN RADAR {V5_SURUM}\n"
     msg += f"Dönem: Son {gun} gün | DNA alanı: {len(V5_DNA_ALANLARI)} | Sinyal: {a['toplam_sinyal']}\n"
@@ -2433,6 +2616,15 @@ def v5_professional_report_text(gun=30):
     msg += "\n📊 SEKTÖR ANALİZİ\n"
     for r in a["sector_analysis"][:5]:
         msg += f"{r['sektor']}: {r['adet']} | başarı %{r['basari']} | ort %{r['ort']}\n"
+
+    try:
+        if gun >= 30:
+            msg += v5_1_sinyal_sonuc_kalite_raporu(kayitlar)
+            msg += v5_1_adaptif_strateji_raporu(kayitlar)
+        else:
+            msg += "\n📌 V5.1 Haftalık Karar Notu\nBu rapor kısa tutuldu. Strateji/eşik önerileri için /ay komutunu kullan.\n"
+    except Exception as e:
+        msg += f"\nV5.1 rapor eki hatası: {e}\n"
     msg += "\n📚 V5 çıktı dosyaları: coin_dna_veritabani_v5.json, coin_radar_v5.sqlite, v5_dashboard.html, v5_dashboard.json\n"
     return msg
 
@@ -3135,6 +3327,20 @@ while True:
                 if guclenme_bonus > 0:
                     genel_skor += guclenme_bonus
 
+
+                # === V5.1 karar motoru: güçlenme artık sadece mesaj süsü değil ===
+                hacim_gucleniyor_v5 = any("hacim güçleniyor" in str(n).lower() for n in (guclenme_notlari or []))
+                momentum_gucleniyor_v5 = any("momentum güçleniyor" in str(n).lower() for n in (guclenme_notlari or []))
+
+                if hacim_gucleniyor_v5 and momentum_gucleniyor_v5 and btcden_guclu:
+                    genel_skor += V5_1_GUCLENME_SKOR_BONUS
+
+                # 10x+ hacim, 3s momentum 4 altında kalıyorsa Telegram kalitesini bozmasın.
+                zayif_trader_hacim_v5 = hacim_kat >= 10 and degisim3 < V5_1_ZAYIF_TRADER_MIN_MOMENTUM and not momentum_gucleniyor_v5
+                if zayif_trader_hacim_v5:
+                    genel_skor -= V5_1_ZAYIF_TRADER_CEZA
+                # === /V5.1 karar motoru ===
+
                 # V4.25 commit: BTC farkı da sadece ✅ değil, puana dönüşsün.
                 btc_fark_bonus = 0
                 if btc_fark3 >= 4:
@@ -3298,6 +3504,7 @@ while True:
                 symbol = a["symbol"]
                 durum = a["durum"]
 
+
                 eski_durum = son_durumlar.get(symbol)
 
                 if symbol not in ilk_tespitler:
@@ -3310,6 +3517,32 @@ while True:
                     }
 
                 onceki_veri = onceki_veriler.get(symbol)
+                a["onceki_veri"] = onceki_veri
+
+                # === V5.1 arka plan yıldız adayı ve zayıf Trader Hacim filtresi ===
+                hacim_gucleniyor_now, momentum_gucleniyor_now = v5_1_guclenme_bayraklari(a)
+                a["hacim_gucleniyor"] = bool(hacim_gucleniyor_now)
+                a["momentum_gucleniyor"] = bool(momentum_gucleniyor_now)
+                a["zayif_trader_hacim"] = bool(v5_1_zayif_trader_hacim_mi(a))
+
+                if v5_1_yildiz_adayindan_guclendi_mi(symbol, a) and durum in ("🚀 Roket Adayı", "🔥 Elit Roket"):
+                    # Aday önceden arka planda yakalandıysa güçlenince seviye yükselt.
+                    durum = "🔥 Elit Roket"
+                    a["durum"] = durum
+                    a["alt_durum"] = "V5.1 yıldız adayı güçlendi"
+
+                if v5_1_yildiz_adayi_mi(a) and durum not in ("🔥 Elit Roket", "⭐ Yıldız"):
+                    v5_1_yildiz_adayi_kaydet(symbol, a)
+                    durum = "⭐ Yıldız Adayı"
+                    a["durum"] = durum
+                    a["alt_durum"] = "V5.1 arka plan yıldız adayı"
+
+                if v5_1_zayif_trader_hacim_mi(a) and durum == "📊 TRADER HACİM":
+                    # Telegram'a düşürme; piyasa/DNA kaydı zaten tutuluyor.
+                    durum = "📈 İzleme"
+                    a["durum"] = durum
+                    a["alt_durum"] = "10x+ hacim var ama 3s momentum zayıf; DNA'da izleniyor"
+                # === /V5.1 arka plan filtresi ===
 
                 durum_degisti = eski_durum is not None and eski_durum != durum
 
