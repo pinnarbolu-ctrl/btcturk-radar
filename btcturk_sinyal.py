@@ -603,9 +603,10 @@ def guc_skoru_hesapla(
     - BTC farkı belirginse ekstra puan alır.
     - Liderlik ve zirve teyidi trader mantığında skora yansır.
     """
-    # V4.32 seçicilik ayarı:
-    # Son raporda 6%+ momentum en güçlü göstergeydi; 10x+ hacim ise tek başına zayıf kaldı.
-    # Bu yüzden hacim puanı azaltıldı, momentum ağırlığı artırıldı.
+    # V4.32/V5 seçicilik ayarı:
+    # Raporlarda 6%+ momentum en güçlü sinyallerden biri olurken,
+    # 10x+ hacim tek başına zayıf kaldı. Bu yüzden hacim ağırlığı azaltıldı,
+    # momentum ağırlığı artırıldı.
     hacim_puan = min(hacim_kat / 10, 1) * 18
     momentum_puan = min(max(degisim3, 0) / 6, 1) * 35
     btc_puan = (btc_guc_skoru / 10) * 20
@@ -614,13 +615,14 @@ def guc_skoru_hesapla(
 
     toplam = hacim_puan + momentum_puan + btc_puan + lider_puan + haber_puan
 
-    # Momentum 6%+ olduğunda güçlü devam sinyali olarak ödüllendirilir.
+    # Momentum güçlü olduğunda ödül artar.
     if degisim3 >= 6:
         toplam += 4
     elif degisim3 >= 4:
         toplam += 2
 
-    # 10x+ hacim düşük momentumla gelirse geç/şişmiş sinyal olabilir; fazla ödüllendirilmez.
+    # 10x+ hacim düşük momentumla gelirse geç/şişmiş sinyal olabilir;
+    # tek başına fazla ödüllendirilmez.
     if hacim_kat >= 10 and degisim3 < 4:
         toplam -= 3
     elif hacim_kat >= 10 and degisim3 >= 4:
@@ -1555,10 +1557,10 @@ def hedef_stop_kontrol():
 
 def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, btc_fark, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0, btc_guc_skoru=0, lider_skoru=0, guc_skoru=0, yeni_zirve=False):
     """
-    V4.32 seçicilik ayarı.
+    V4.32/V5 seçicilik ayarı.
 
     Rapor bulgusu:
-    - 6%+ momentum en yüksek H2 oranını verdi.
+    - 6%+ momentum en yüksek H2 oranlarından birini verdi.
     - 10x+ hacim tek başına zayıf kaldı.
 
     Bu yüzden:
