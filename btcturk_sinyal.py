@@ -1828,7 +1828,7 @@ import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-V5_SURUM = "V5.1 GERCEK DNA + OGRENME + OPTIMIZASYON"
+V5_SURUM = "V5.3 RAPOR DOGRULUK + DEVAM GUCU + OGRENME"
 V5_DNA_JSON = "coin_dna_veritabani_v5.json"
 V5_ANALIZ_JSON = "v5_analiz_ozeti.json"
 V5_SQLITE_DB = "coin_radar_v5.sqlite"
@@ -3048,7 +3048,7 @@ def v5_report_text(gun=7):
     model = v5_train_ml_model(v5_load_records())
     v5_advanced_dashboard_html(a)
     msg = v5_professional_report_text(gun)
-    msg += "\n🧠 V5.2 FINAL EKLER\n"
+    msg += "\n🧠 V5.3 ÖĞRENME MOTORU EKLER\n"
     msg += f"ML model: {model.get('type')} | Eğitim: {'✅' if model.get('trained') else '❌'} | Örnek: {model.get('sample_count',0)}\n"
     fg = ext.get('fear_greed') or {}
     msg += f"Fear&Greed: {fg.get('value','-')} {fg.get('label','')} | BTC Dominance: %{v5_round(ext.get('btc_dominance'),1)}\n"
@@ -3070,8 +3070,8 @@ def haftalik_rapor_gonder():
         telegram_gonder(v5_report_text(7))
         son_haftalik_rapor = simdi
     except Exception as e:
-        telegram_gonder(f"V5.2 final rapor motoru hata verdi: {e}")
-        print("V5.2 haftalik rapor hatasi:", e)
+        telegram_gonder(f"V5.3 rapor motoru hata verdi: {e}")
+        print("V5.3 haftalik rapor hatasi:", e)
 
 
 def v5_telegram_send_to(chat_id, text):
@@ -3162,10 +3162,348 @@ except Exception as e:
     print("V5.2 final acilis hazirligi hatasi:", e)
 
 
+# ================================================================
+# COIN RADAR V5.3 - RAPOR DOGRULUK + DEVAM GUCU + OGRENME MOTORU
+# Sinyal esikleri degistirilmez. Bu katman olcum ve raporlama icindir.
+# ================================================================
+V5_OGRENME_MIN_ORNEK = int(os.getenv("V5_OGRENME_MIN_ORNEK", "20"))
+V5_PATTERN_MIN_ORNEK = int(os.getenv("V5_PATTERN_MIN_ORNEK", "10"))
+
+
+def v5_bool(k, *keys):
+    for key in keys:
+        if key in k and k.get(key) is not None:
+            return bool(k.get(key))
+    return False
+
+
+def v5_field(k, *keys, default=0.0):
+    for key in keys:
+        if key in k and k.get(key) is not None:
+            return v5_safe_float(k.get(key), default)
+    return default
+
+
+def v5_nihai_sonuc(k):
+    """Her sinyali tek bir nihai sinifa ayirir."""
+    if v5_bool(k, "h2") or str(k.get("sonuc", "")).lower() == "h2":
+        return "h2"
+    if v5_bool(k, "h1") or str(k.get("sonuc", "")).lower() == "h1":
+        return "h1"
+    if v5_bool(k, "stop") or str(k.get("sonuc", "")).lower() == "stop":
+        return "stop"
+    if str(k.get("sonuc", "")).lower() in ("kapandi", "suresi_doldu", "expired"):
+        return "suresi_doldu"
+    return "aktif"
+
+
+def v5_devam_gucu_hesapla(k):
+    """0-100 devam gucu. Sinyali filtrelemez; sadece olcer."""
+    d1 = v5_field(k, "degisim1")
+    d3 = v5_field(k, "degisim3")
+    d24 = v5_field(k, "degisim24")
+    hacim = v5_field(k, "hacim")
+    btc_fark = v5_field(k, "btc_fark", "btc_fark3")
+    lider = v5_field(k, "lider_skoru")
+    gec_pump = v5_field(k, "gec_pump_puan")
+
+    puan = 35.0
+    puan += min(max(d3, 0), 8) * 2.0
+    puan += 10 if v5_bool(k, "momentum_gucleniyor") else 0
+    puan += 10 if v5_bool(k, "hacim_gucleniyor", "volume_strengthening") else 0
+    puan += 8 if v5_bool(k, "btc_guclu", "btcden_guclu") else -10
+    puan += min(max(btc_fark, -3), 5) * 2
+    puan += 8 if (v5_bool(k, "lider_guclu") or lider >= 7) else (4 if (v5_bool(k, "lider_mi", "leader") or lider >= 5) else -5)
+    puan += 6 if v5_bool(k, "zirve_teyidi", "near_high") else 0
+    if 5 <= hacim <= 15:
+        puan += 8
+    elif 15 < hacim <= 30:
+        puan += 4
+    elif hacim > 50:
+        puan -= 5
+    elif hacim < 2:
+        puan -= 8
+    if d1 > 6:
+        puan -= min(12, (d1 - 6) * 2)
+    if d24 > 20:
+        puan -= min(15, (d24 - 20) * 0.6)
+    if gec_pump > 0:
+        puan -= min(15, gec_pump * 2)
+    if hacim >= 10 and d3 < 1:
+        puan -= 8
+    return int(max(0, min(100, round(puan))))
+
+
+def v5_devam_gucu_seviye(puan):
+    if puan >= 80: return "Cok Guclu"
+    if puan >= 65: return "Guclu"
+    if puan >= 50: return "Orta"
+    return "Riskli"
+
+
+# Yeni DNA kaydina devam gucu ekle.
+_v5_make_dna_v52 = v5_make_dna
+def v5_make_dna(symbol, a, simdi):
+    dna = _v5_make_dna_v52(symbol, a, simdi)
+    puan = v5_devam_gucu_hesapla(dna)
+    dna["devam_gucu"] = puan
+    dna["devam_gucu_seviye"] = v5_devam_gucu_seviye(puan)
+    dna["nihai_sonuc"] = v5_nihai_sonuc(dna)
+    return dna
+
+
+def basari_kaydi_guncelle(symbol, fiyat, durum=None, h1=False, h2=False, stop=False):
+    """Max/min performansi ve tek nihai sonucu guvenilir bicimde gunceller."""
+    simdi = time.time()
+    for k in reversed(basari_kayitlari):
+        if k.get("symbol") != symbol:
+            continue
+        # H2 kesin terminaldir. H1 sonrasi stop nihai sonucu bozamaz.
+        if v5_nihai_sonuc(k) == "h2":
+            return
+        giris = v5_safe_float(k.get("giris"), fiyat)
+        if giris:
+            kazanc = ((fiyat - giris) / giris) * 100
+            k["son_fiyat"] = fiyat
+            k["son_kazanc"] = round(kazanc, 4)
+            k["max_kazanc"] = round(max(v5_safe_float(k.get("max_kazanc")), kazanc), 4)
+            # Ilk kayitlarda min 0 olabilir; negatif hareketleri mutlaka sakla.
+            onceki_min = v5_safe_float(k.get("min_kazanc"), 0.0)
+            k["min_kazanc"] = round(min(onceki_min, kazanc), 4)
+            k["max_fiyat"] = max(v5_safe_float(k.get("max_fiyat"), giris), fiyat)
+            onceki_min_fiyat = v5_safe_float(k.get("min_fiyat"), giris) or giris
+            k["min_fiyat"] = min(onceki_min_fiyat, fiyat)
+        if durum:
+            k["kategori_son"] = durum
+        if h1 and not k.get("h1"):
+            k["h1"] = True
+            k["h1_zaman"] = simdi
+            k["h1_sure_saat"] = round((simdi - v5_safe_float(k.get("zaman"), simdi)) / 3600, 2)
+            k["sonuc"] = "h1"
+        if h2 and not k.get("h2"):
+            k["h2"] = True
+            k["h2_zaman"] = simdi
+            k["h2_sure_saat"] = round((simdi - v5_safe_float(k.get("zaman"), simdi)) / 3600, 2)
+            k["sonuc"] = "h2"
+            k["stop"] = False
+        if stop:
+            k["stop_zaman"] = simdi
+            k["stop_sure_saat"] = round((simdi - v5_safe_float(k.get("zaman"), simdi)) / 3600, 2)
+            if k.get("h1") or k.get("h2"):
+                k["hedef_sonrasi_stop"] = True
+                k["hedef_sonrasi_stop_kazanc"] = k.get("son_kazanc", 0)
+                k["stop"] = False
+                k["sonuc"] = "h2" if k.get("h2") else "h1"
+            else:
+                k["stop"] = True
+                k["sonuc"] = "stop"
+        k["nihai_sonuc"] = v5_nihai_sonuc(k)
+        if "devam_gucu" not in k:
+            k["devam_gucu"] = v5_devam_gucu_hesapla(k)
+            k["devam_gucu_seviye"] = v5_devam_gucu_seviye(k["devam_gucu"])
+        basari_db_kaydet(basari_kayitlari)
+        return
+
+
+def v5_pattern_discovery(kayitlar, top=8):
+    groups = {}
+    for k in kayitlar:
+        key = k.get("pattern_key") or v5_pattern_key(k)
+        groups.setdefault(key, []).append(k)
+    rows = []
+    for key, arr in groups.items():
+        if len(arr) < V5_PATTERN_MIN_ORNEK:
+            continue
+        rows.append({
+            "pattern": key, "adet": len(arr),
+            "basari": v5_pct(sum(v5_success(k) for k in arr), len(arr)),
+            "h2": v5_pct(sum(v5_big_success(k) for k in arr), len(arr)),
+            "ort_kazanc": v5_mean([k.get("max_kazanc") for k in arr]),
+            "risk": v5_mean([k.get("risk_puani") for k in arr]),
+        })
+    return sorted(rows, key=lambda x: (x["basari"], x["h2"], x["adet"]), reverse=True)[:top]
+
+
+def v5_parameter_optimization(kayitlar):
+    """Az ornekle esik onermez; mevcut basariya anlamli fark arar."""
+    suggestions = []
+    baseline = v5_pct(sum(v5_success(k) for k in kayitlar), len(kayitlar))
+    tests = [
+        ("hacim_esigi", "hacim", [5, 6, 7, 8, 10, 12, 15]),
+        ("skor_esigi", "skor", [8, 10, 12, 14, 16, 18, 20]),
+        ("kalite_esigi", "kalite", [5, 6, 7, 8, 9, 10, 12]),
+        ("rsi_ust_limit", "rsi", [62, 65, 68, 70, 72, 75, 80]),
+        ("risk_ust_limit", "risk_puani", [40, 45, 50, 55, 60, 65, 70]),
+    ]
+    for name, field, values in tests:
+        best = None
+        for v in values:
+            arr = ([k for k in kayitlar if v5_safe_float(k.get(field)) <= v]
+                   if name.endswith("ust_limit") else
+                   [k for k in kayitlar if v5_safe_float(k.get(field)) >= v])
+            if len(arr) < V5_OGRENME_MIN_ORNEK:
+                continue
+            rate = v5_pct(sum(v5_success(k) for k in arr), len(arr))
+            h2r = v5_pct(sum(v5_big_success(k) for k in arr), len(arr))
+            fark = round(rate - baseline, 1)
+            if fark < 3.0:
+                continue
+            score = fark + h2r * 0.25 + min(len(arr), 100) * 0.03
+            row = {"parametre": name, "onerilen": v, "ornek": len(arr), "basari": rate, "h2": h2r, "fark": fark, "skor": round(score, 2), "guven": "orta" if len(arr) < 50 else "guclu"}
+            if best is None or row["skor"] > best["skor"]:
+                best = row
+        if best:
+            suggestions.append(best)
+    v5_save_json(V5_PARAMETRE_JSON, suggestions)
+    return sorted(suggestions, key=lambda x: x.get("skor", 0), reverse=True)
+
+
+def v5_failure_analysis(kayitlar):
+    fails = [k for k in kayitlar if v5_nihai_sonuc(k) in ("stop", "suresi_doldu")]
+    if not fails:
+        return {"adet": 0, "sebepler": []}
+    checks = [
+        ("Başarısızlarda BTC gücü yok", lambda k: not v5_bool(k, "btc_guclu", "btcden_guclu")),
+        ("Başarısızlarda lider onayı yok", lambda k: not (v5_bool(k, "lider_mi", "leader") or v5_field(k, "lider_skoru") >= 5)),
+        ("Başarısızlarda zirve teyidi yok", lambda k: not v5_bool(k, "zirve_teyidi", "near_high")),
+        ("Başarısızlarda geç yakalama", lambda k: k.get("yakalama_tipi") == "gec"),
+        ("Başarısızlarda hacim 8x altında", lambda k: v5_field(k, "hacim") < 8),
+        ("Başarısızlarda haber desteği yok", lambda k: not v5_bool(k, "haber_var") and v5_field(k, "haber", "haber_skoru") <= 0),
+        ("Başarısızlarda risk puanı yüksek", lambda k: v5_field(k, "risk_puani", "risk_score") >= 55),
+    ]
+    causes=[]
+    for ad, fn in checks:
+        cnt=sum(1 for k in fails if fn(k))
+        if cnt:
+            causes.append({"sebep":ad,"adet":cnt,"oran":v5_pct(cnt,len(fails))})
+    return {"adet":len(fails),"sebepler":sorted(causes,key=lambda x:x["oran"],reverse=True)}
+
+
+def v5_failure_reasons(records=None):
+    records = records or v5_load_records()
+    result = v5_failure_analysis(records)
+    return result.get("sebepler", [])
+
+
+def v5_target_stop_drawdown(kayitlar):
+    final = [v5_nihai_sonuc(k) for k in kayitlar]
+    mins = [v5_safe_float(k.get("min_kazanc")) for k in kayitlar if k.get("min_kazanc") is not None]
+    return {
+        "h1_isabet": v5_pct(sum(x in ("h1", "h2") for x in final), len(kayitlar)),
+        "h2_isabet": v5_pct(sum(x == "h2" for x in final), len(kayitlar)),
+        "stop_orani": v5_pct(sum(x == "stop" for x in final), len(kayitlar)),
+        "aktif_orani": v5_pct(sum(x == "aktif" for x in final), len(kayitlar)),
+        "ort_max_kazanc": v5_mean([k.get("max_kazanc") for k in kayitlar]),
+        "ort_min_kazanc": v5_mean(mins),
+        "en_kotu_drawdown": min(mins or [0]),
+    }
+
+
+def v5_devam_gucu_analizi(kayitlar):
+    bands=[(80,101,"80-100"),(65,80,"65-79"),(50,65,"50-64"),(0,50,"0-49")]
+    rows=[]
+    for lo,hi,label in bands:
+        arr=[k for k in kayitlar if lo <= v5_safe_float(k.get("devam_gucu", v5_devam_gucu_hesapla(k))) < hi]
+        if arr:
+            rows.append({"band":label,"adet":len(arr),"basari":v5_pct(sum(v5_success(k) for k in arr),len(arr)),"h2":v5_pct(sum(v5_big_success(k) for k in arr),len(arr)),"ort":v5_mean([k.get("max_kazanc") for k in arr])})
+    return rows
+
+
+def v5_kazanan_dna(kayitlar):
+    wins=[k for k in kayitlar if v5_nihai_sonuc(k) in ("h1","h2")]
+    if not wins: return {"adet":0}
+    def oran(*keys): return v5_pct(sum(v5_bool(k,*keys) for k in wins),len(wins))
+    cats={}
+    for k in wins: cats[k.get("kategori","Bilinmiyor")]=cats.get(k.get("kategori","Bilinmiyor"),0)+1
+    return {
+        "adet":len(wins), "btc":oran("btc_guclu","btcden_guclu"), "lider":oran("lider_mi","leader"),
+        "zirve":oran("zirve_teyidi","near_high"), "mom_up":oran("momentum_gucleniyor"), "vol_up":oran("hacim_gucleniyor","volume_strengthening"),
+        "ort_devam":v5_mean([k.get("devam_gucu",v5_devam_gucu_hesapla(k)) for k in wins]), "ort_skor":v5_mean([k.get("skor") for k in wins]),
+        "ort_hacim":v5_mean([k.get("hacim") for k in wins]), "ort_max":v5_mean([k.get("max_kazanc") for k in wins]),
+        "en_iyi_kategori":max(cats,key=cats.get) if cats else "-"
+    }
+
+
+def v5_skor_basari_analizi(kayitlar):
+    bands=[(0,15,"0-14.9"),(15,20,"15-19.9"),(20,25,"20-24.9"),(25,30,"25-29.9"),(30,10**9,"30+")]
+    rows=[]
+    for lo,hi,label in bands:
+        arr=[k for k in kayitlar if lo <= v5_field(k,"skor") < hi]
+        if arr:
+            finals=[v5_nihai_sonuc(k) for k in arr]
+            rows.append({"band":label,"adet":len(arr),"basari":v5_pct(sum(x in ("h1","h2") for x in finals),len(arr)),"h2":v5_pct(sum(x=="h2" for x in finals),len(arr)),"stop":v5_pct(sum(x=="stop" for x in finals),len(arr)),"ort":v5_mean([k.get("max_kazanc") for k in arr])})
+    return rows
+
+
+def v5_haftalik_degerlendirme(analysis):
+    notes=[]
+    cats=[x for x in analysis.get("kategori_ligi",[]) if x.get("adet",0)>=V5_PATTERN_MIN_ORNEK]
+    if cats:
+        best=max(cats,key=lambda x:(x.get("h2",0),x.get("basari",0)))
+        notes.append(f"En güçlü kategori {best['kategori']} (başarı %{best['basari']}, H2 %{best['h2']}, {best['adet']} örnek).")
+    dg=[x for x in analysis.get("devam_gucu_analizi",[]) if x.get("adet",0)>=V5_PATTERN_MIN_ORNEK]
+    if dg:
+        best=max(dg,key=lambda x:(x.get("h2",0),x.get("basari",0)))
+        notes.append(f"En verimli Devam Gücü bandı {best['band']} (başarı %{best['basari']}, H2 %{best['h2']}).")
+    cr=analysis.get("catch_rate",{})
+    notes.append(f"Piyasa yakalama oranı %{cr.get('yakalama_orani',0)}; kaçan coin sayısı {cr.get('kacirilan',0)}.")
+    if not analysis.get("parametre_onerileri"):
+        notes.append(f"Eşik değişikliği önerilmedi: en az {V5_OGRENME_MIN_ORNEK} örnek ve +%3 başarı farkı şartı sağlanmadı.")
+    return notes
+
+
+_v5_build_analysis_v52 = v5_build_analysis
+def v5_build_analysis(gun=30):
+    a = _v5_build_analysis_v52(gun)
+    start=time.time()-gun*86400
+    kayitlar=[k for k in basari_kayitlari if v5_safe_float(k.get("zaman"))>=start]
+    for k in kayitlar:
+        k["nihai_sonuc"]=v5_nihai_sonuc(k)
+        if "devam_gucu" not in k:
+            k["devam_gucu"]=v5_devam_gucu_hesapla(k)
+            k["devam_gucu_seviye"]=v5_devam_gucu_seviye(k["devam_gucu"])
+    a["devam_gucu_analizi"]=v5_devam_gucu_analizi(kayitlar)
+    a["kazanan_dna"]=v5_kazanan_dna(kayitlar)
+    a["skor_basari"]=v5_skor_basari_analizi(kayitlar)
+    a["haftalik_degerlendirme"]=v5_haftalik_degerlendirme(a)
+    a["target_stop_drawdown"]=v5_target_stop_drawdown(kayitlar)
+    a["failure"]=v5_failure_analysis(kayitlar)
+    a["pattern_discovery"]=v5_pattern_discovery(kayitlar)
+    a["parametre_onerileri"]=v5_parameter_optimization(kayitlar)
+    v5_save_json(V5_ANALIZ_JSON,a)
+    v5_save_json(V5_DASHBOARD_JSON,a)
+    return a
+
+
+_v5_professional_report_text_v52 = v5_professional_report_text
+def v5_professional_report_text(gun=30):
+    msg=_v5_professional_report_text_v52(gun)
+    a=v5_build_analysis(gun)
+    rows=a.get("devam_gucu_analizi",[])
+    msg += "\n🚀 DEVAM GÜCÜ ANALİZİ\n"
+    if rows:
+        for r in rows: msg += f"{r['band']}: {r['adet']} | Başarı %{r['basari']} | H2 %{r['h2']} | Ort %{r['ort']}\n"
+    else: msg += "Henüz yeterli veri yok.\n"
+    d=a.get("kazanan_dna",{})
+    msg += "\n🧬 7 GÜNÜN KAZANANLARININ DNA'SI\n"
+    if d.get("adet"):
+        msg += f"Kazanan: {d['adet']} | BTC güçlü %{d['btc']} | Lider %{d['lider']} | Zirve %{d['zirve']}\n"
+        msg += f"Mom↑ %{d['mom_up']} | Hacim↑ %{d['vol_up']} | Ort Devam {d['ort_devam']} | Ort Skor {d['ort_skor']} | Ort Hacim {d['ort_hacim']}x\n"
+        msg += f"En sık kategori: {d['en_iyi_kategori']} | Ort Max %{d['ort_max']}\n"
+    else: msg += "Henüz kazanan kaydı yok.\n"
+    msg += "\n📈 SKOR BAŞARI ANALİZİ\n"
+    for r in a.get("skor_basari",[]):
+        msg += f"{r['band']}: {r['adet']} | Başarı %{r['basari']} | H2 %{r['h2']} | Stop %{r['stop']} | Ort %{r['ort']}\n"
+    msg += "\n📅 HAFTALIK DEĞERLENDİRME\n"
+    for note in a.get("haftalik_degerlendirme",[]): msg += f"• {note}\n"
+    return msg
+
+
+
 while True:
     try:
         print()
-        print("COIN RADAR V4.30")
+        print("COIN RADAR V5.3")
         print("--------------------------------")
 
         hedef_stop_kontrol()
@@ -3622,7 +3960,7 @@ while True:
 
                 mesaj = (
                     f"{bildirim_basligi}\n"
-                    f"COIN RADAR V4.30\n"
+                    f"COIN RADAR V5.3\n"
                     f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
@@ -3693,6 +4031,7 @@ while True:
                     satir += (
                         f"Skor: {round(a['skor'], 2)}\n"
                         f"Kalite: {round(a['kalite_skoru'], 2)}\n"
+                        f"🚀 Devam Gücü: {v5_devam_gucu_hesapla(a)}/100 ({v5_devam_gucu_seviye(v5_devam_gucu_hesapla(a))})\n"
                         f"Hacim: {round(a['hacim'], 2)}x\n"
                     )
 
