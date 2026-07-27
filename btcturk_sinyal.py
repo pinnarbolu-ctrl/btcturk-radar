@@ -4019,7 +4019,6 @@ while True:
                         print(mesaj_yukselis)
 
                     satir = (
-                        f"{sira}. {a['symbol']}\n"
                         f"{ortak_sinyal_ozeti_olustur(a)}\n\n"
                     )
 
