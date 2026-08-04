@@ -33,7 +33,38 @@ haftalik_kayitlar = []
 h1_kayitlari = []
 h2_kayitlari = []
 kategori_istatistikleri = {}
-son_haftalik_rapor = time.time()
+V5_RAPOR_STATE_DOSYA = "v5_report_state.json"
+
+def _v5_rapor_state_yukle():
+    try:
+        with open(V5_RAPOR_STATE_DOSYA, "r", encoding="utf-8") as f:
+            veri = json.load(f)
+        return float(veri.get("son_haftalik_rapor", 0) or 0)
+    except Exception:
+        # İlk çalıştırmada rapor gecikmesin; ilk ana döngüde gönderilebilir.
+        return 0.0
+
+def _v5_rapor_state_kaydet(zaman_degeri):
+    try:
+        gecici = V5_RAPOR_STATE_DOSYA + ".tmp"
+        with open(gecici, "w", encoding="utf-8") as f:
+            json.dump({"son_haftalik_rapor": float(zaman_degeri)}, f, ensure_ascii=False, indent=2)
+        os.replace(gecici, V5_RAPOR_STATE_DOSYA)
+        return True
+    except Exception as e:
+        print("❌ Haftalık rapor zamanı kaydedilemedi:", e)
+        return False
+
+def _v5_zaman_yazi(ts):
+    if not ts:
+        return "henüz gönderilmedi"
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(ts)))
+    except Exception:
+        return str(ts)
+
+son_haftalik_rapor = _v5_rapor_state_yukle()
+_son_rapor_kontrol_logu = 0.0
 
 STABLE_COINLER = [
     "USDT", "USDC", "FDUSD", "TUSD", "DAI", "USDP"
@@ -584,13 +615,12 @@ def basari_kaydi_guncelle(symbol, fiyat, durum=None, h1=False, h2=False, stop=Fa
         return
 
 def telegram_gonder(mesaj):
+    """Telegram mesajını parçalara ayırarak gönderir ve gerçek başarı durumunu döndürür."""
     if not BOT_TOKEN:
-        print("BOT_TOKEN bulunamadı. Railway Variables kontrol et.")
-        return
+        print("❌ BOT_TOKEN bulunamadı. Railway Variables kontrol et.")
+        return False
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
-    # Telegram sendMessage limiti 4096 karakter. Raporlar uzarsa sessizce düşmesin diye parçala.
     parcalar = []
     kalan = str(mesaj)
     while len(kalan) > 3900:
@@ -602,17 +632,26 @@ def telegram_gonder(mesaj):
     if kalan:
         parcalar.append(kalan)
 
+    tumu_basarili = True
     for chat_id in CHAT_IDS:
-        for parca in parcalar:
+        for sira, parca in enumerate(parcalar, 1):
             try:
-                r = requests.get(
-                    url,
-                    params={"chat_id": chat_id, "text": parca},
-                    timeout=10
-                )
-                print(chat_id, r.text)
+                r = requests.get(url, params={"chat_id": chat_id, "text": parca}, timeout=15)
+                try:
+                    cevap = r.json()
+                    telegram_ok = bool(cevap.get("ok"))
+                except Exception:
+                    cevap = {"raw": r.text[:500]}
+                    telegram_ok = False
+                if not (r.ok and telegram_ok):
+                    tumu_basarili = False
+                    print(f"❌ Telegram gönderim hatası | chat={chat_id} parça={sira}/{len(parcalar)} status={r.status_code} cevap={cevap}")
+                else:
+                    print(f"✅ Telegram gönderildi | chat={chat_id} parça={sira}/{len(parcalar)}")
             except Exception as e:
-                print(chat_id, e)
+                tumu_basarili = False
+                print(f"❌ Telegram bağlantı hatası | chat={chat_id}: {e}")
+    return tumu_basarili
 
 
 def veri_getir(symbol, saat=24):
@@ -2565,12 +2604,42 @@ def v5_professional_report_text(gun=30):
     msg += f"Başarı: %{a['basari_orani']} | H2: %{a['h2_orani']} | Aktif: {a['aktif']}\n\n"
     if not a["toplam_sinyal"]:
         return msg + "Henüz rapor için yeterli V5 sinyal sonucu yok. Sinyaller geldikçe DNA ve öğrenme motoru dolacak.\n"
+
+    # İlk bakışta okunacak kısa karar özeti.
+    cr7 = a.get("catch_rate") or {}
+    try:
+        cr30 = v5_market_catch_rate(30, 10)
+    except Exception:
+        cr30 = {}
+    kategori_ligi = a.get("kategori_ligi") or []
+    en_iyi_kategori = kategori_ligi[0] if kategori_ligi else {}
+    failure_rows = (a.get("failure") or {}).get("sebepler") or []
+    en_buyuk_problem = failure_rows[0].get("sebep") if failure_rows else "Belirgin tek sorun yok"
+    if a.get("basari_orani", 0) >= 30 and cr7.get("yakalama_orani", 0) >= 65:
+        ai_kisa = "Sistem dengeli görünüyor; eşikleri şimdilik koru."
+    elif cr7.get("yakalama_orani", 0) < 55:
+        ai_kisa = "Yakalama oranı düşük; kaçırılan coin nedenlerini izle."
+    else:
+        ai_kisa = "Başarı düşük; yeni eşik yerine öğrenme verisini büyüt."
+
+    msg += "📌 KARAR ÖZETİ\n"
+    msg += f"Başarı %{a.get('basari_orani',0)} | H2 %{a.get('h2_orani',0)}\n"
+    msg += f"Catch Rate 7G %{cr7.get('yakalama_orani',0)} | 30G %{cr30.get('yakalama_orani',0)}\n"
+    if en_iyi_kategori:
+        msg += f"En iyi kategori: {en_iyi_kategori.get('kategori')} (%{en_iyi_kategori.get('basari',0)} başarı, {en_iyi_kategori.get('adet',0)} örnek)\n"
+    msg += f"En büyük gözlem: {en_buyuk_problem}\n"
+    msg += f"AI kısa yorum: {ai_kisa}\n\n"
+    msg += "🧠 ÖĞRENME\n"
     msg += "🏆 KATEGORİ LİGİ\n"
     for r in a["kategori_ligi"][:6]:
         msg += f"{r['kategori']}: {r['adet']} sinyal | Başarı %{r['basari']} | H2 %{r['h2']} | Ort %{r['ort_kazanc']}\n"
     msg += "\n🧬 PATTERN DISCOVERY\n"
-    for r in a["pattern_discovery"][:6]:
-        msg += f"{r['pattern']}: {r['adet']} | Başarı %{r['basari']} | Ort %{r['ort_kazanc']}\n"
+    pattern_rows = [r for r in a["pattern_discovery"] if r.get("adet",0) >= 10 and r.get("basari",0) >= 30][:6]
+    if pattern_rows:
+        for r in pattern_rows:
+            msg += f"{r['pattern']}: {r['adet']} | Başarı %{r['basari']} | Ort %{r['ort_kazanc']}\n"
+    else:
+        msg += "Henüz 10+ örnek ve %30+ başarı sağlayan güvenilir desen yok.\n"
     msg += "\n📊 FİLTRE KATKI ANALİZİ\n"
     for r in a["filtre_katki"][:7]:
         msg += f"{r['filtre']}: katkı %{r['katki']} | başarı %{r['basari']} | örnek {r['ornek']}\n"
@@ -2591,8 +2660,12 @@ def v5_professional_report_text(gun=30):
     else:
         msg += "Belirgin başarısızlık kümesi yok.\n"
     msg += "\n🤖 AI / PARAMETRE ÖNERİLERİ\n"
-    for r in a["parametre_onerileri"][:6]:
-        msg += f"{r['parametre']}: {r['onerilen']} | başarı %{r.get('basari',0)} | örnek {r.get('ornek',0)}\n"
+    ai_rows = [r for r in a["parametre_onerileri"] if r.get("ornek",0) >= 30 and r.get("fark",0) >= 5][:6]
+    if ai_rows:
+        for r in ai_rows:
+            msg += f"{r['parametre']}: {r['onerilen']} | başarı %{r.get('basari',0)} | fark +%{r.get('fark',0)} | örnek {r.get('ornek',0)}\n"
+    else:
+        msg += "30+ örnek ve en az +%5 iyileşme sağlayan güvenilir öneri yok.\n"
     bt = a["backtest"]
     msg += "\n🔁 GEÇMİŞTEN SİMÜLASYON\n"
     if bt.get("sonuclar"):
@@ -2603,9 +2676,14 @@ def v5_professional_report_text(gun=30):
     ts = a["target_stop_drawdown"]
     msg += "\n🎯 HEDEF / STOP / DRAWDOWN\n"
     msg += f"H1 %{ts['h1_isabet']} | H2 %{ts['h2_isabet']} | Stop %{ts['stop_orani']} | Ort Max %{ts['ort_max_kazanc']} | En kötü DD %{ts['en_kotu_drawdown']}\n"
-    msg += "\n🏅 HALL OF FAME\n"
-    for r in a["hall_of_fame"][:5]:
-        msg += f"{r['symbol']}: başarı %{r['basari']} | en iyi %{v5_round(r['en_iyi'],1)} | adet {r['adet']}\n"
+    msg += "\n📊 DETAY\n"
+    msg += "🏅 HALL OF FAME\n"
+    hof_rows = [r for r in a["hall_of_fame"] if r.get("adet",0) >= 3][:5]
+    if hof_rows:
+        for r in hof_rows:
+            msg += f"{r['symbol']}: başarı %{r['basari']} | en iyi %{v5_round(r['en_iyi'],1)} | adet {r['adet']}\n"
+    else:
+        msg += "En az 3 sinyalli yeterli coin yok.\n"
     msg += "\n⏱️ EN İYİ ZAMANLAR\n"
     best_hours = a["time_analysis"].get("saat", [])[:3]
     if best_hours:
@@ -3062,16 +3140,45 @@ def v5_report_text(gun=7):
 
 # Override: haftalik rapor V5.2 final rapor metnini gonderir.
 def haftalik_rapor_gonder():
-    global son_haftalik_rapor
+    """Haftalık raporu kalıcı zaman takibi ve görünür hata loglarıyla gönderir."""
+    global son_haftalik_rapor, _son_rapor_kontrol_logu
     simdi = time.time()
-    if simdi - son_haftalik_rapor < HAFTALIK_RAPOR_SURESI:
-        return
+    gecen = simdi - float(son_haftalik_rapor or 0)
+    kalan = max(0, HAFTALIK_RAPOR_SURESI - gecen)
+
+    # Her taramada log yağdırmamak için kontrol durumunu saatte bir yaz.
+    if simdi - _son_rapor_kontrol_logu >= 3600:
+        print("📊 Haftalık rapor kontrolü")
+        print("📅 Son rapor:", _v5_zaman_yazi(son_haftalik_rapor))
+        if kalan > 0:
+            print(f"⏳ Kalan süre: {int(kalan // 86400)} gün {int((kalan % 86400) // 3600)} saat {int((kalan % 3600) // 60)} dk")
+        else:
+            print("⏳ Rapor zamanı geldi.")
+        _son_rapor_kontrol_logu = simdi
+
+    if kalan > 0:
+        return False
+
     try:
-        telegram_gonder(v5_report_text(7))
+        print("🧠 Haftalık V5 raporu hazırlanıyor...")
+        rapor_metni = v5_report_text(7)
+        print(f"✅ V5 raporu hazır. Uzunluk: {len(rapor_metni)} karakter")
+        gonderildi = telegram_gonder(rapor_metni)
+        if not gonderildi:
+            print("❌ Haftalık rapor gönderilemedi; zaman damgası güncellenmedi.")
+            return False
         son_haftalik_rapor = simdi
+        _v5_rapor_state_kaydet(simdi)
+        print("✅ Haftalık rapor başarıyla gönderildi ve zamanı kalıcı kaydedildi.")
+        return True
     except Exception as e:
-        telegram_gonder(f"V5.3 rapor motoru hata verdi: {e}")
-        print("V5.3 haftalik rapor hatasi:", e)
+        print("❌ V5.3 haftalık rapor hatası:", repr(e))
+        # Hata mesajını Telegram'a göndermeye çalış, fakat ana döngüyü durdurma.
+        try:
+            telegram_gonder(f"V5.3 rapor motoru hata verdi: {e}")
+        except Exception as bildirim_hatasi:
+            print("❌ Rapor hata bildirimi de gönderilemedi:", bildirim_hatasi)
+        return False
 
 
 def v5_telegram_send_to(chat_id, text):
