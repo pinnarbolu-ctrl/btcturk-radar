@@ -2,6 +2,9 @@
 H AI v1.0
 Initial Foundation
 
+BOT_TOKEN = "8855467313:AAHYdR1ts-liJ0hMwxxPGpgmrPne6ydFOpI"
+CHAT_IDS = [2097448038]
+
 Commit 1:
 - Clean project entry point
 - H AI startup
