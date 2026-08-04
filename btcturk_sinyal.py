@@ -3930,6 +3930,429 @@ def v5_professional_report_text(gun=30):
 
 # === /V5.4 COMMIT 2 ===
 
+
+# === V5.4 COMMIT 3: AKILLI ANALIZ MOTORU ===
+V5_COMMIT3_TREND_DOSYA = "v5_haftalik_trend.json"
+V5_COMMIT3_MIN_KATEGORI_ORNEK = 5
+V5_COMMIT3_MIN_ZAMAN_ORNEK = 3
+V5_COMMIT3_MIN_SEKTOR_ORNEK = 3
+
+
+def _v5c3_float(v, default=0.0):
+    try:
+        return float(v if v is not None else default)
+    except Exception:
+        return float(default)
+
+
+def _v5c3_mean(values):
+    nums = [_v5c3_float(v) for v in values if v is not None]
+    return round(sum(nums) / len(nums), 3) if nums else 0.0
+
+
+def _v5c3_pct(n, d):
+    return round(100.0 * n / max(d, 1), 1)
+
+
+def _v5c3_field(k, *names, default=0.0):
+    for name in names:
+        if name in k and k.get(name) is not None:
+            return k.get(name)
+    return default
+
+
+def _v5c3_success(k):
+    try:
+        return v5_nihai_sonuc(k) in ("h1", "h2")
+    except Exception:
+        return bool(k.get("h1") or k.get("h2") or _v5c3_float(k.get("max_kazanc")) >= 3)
+
+
+def _v5c3_h2(k):
+    try:
+        return v5_nihai_sonuc(k) == "h2"
+    except Exception:
+        return bool(k.get("h2"))
+
+
+def _v5c3_stop(k):
+    try:
+        return v5_nihai_sonuc(k) == "stop"
+    except Exception:
+        return bool(k.get("stop") and not k.get("h1") and not k.get("h2"))
+
+
+def _v5c3_oran(records, *fields):
+    if not records:
+        return 0.0
+    adet = 0
+    for k in records:
+        if any(bool(k.get(f)) for f in fields):
+            adet += 1
+    return _v5c3_pct(adet, len(records))
+
+
+def _v5c3_mode(records, field, default="-"):
+    counts = {}
+    for k in records:
+        value = k.get(field)
+        if value in (None, ""):
+            continue
+        counts[str(value)] = counts.get(str(value), 0) + 1
+    return max(counts, key=counts.get) if counts else default
+
+
+def v5_kazanan_dna_2(kayitlar):
+    wins = [k for k in kayitlar if _v5c3_success(k)]
+    if not wins:
+        return {"adet": 0}
+    return {
+        "adet": len(wins),
+        "btc_guclu": _v5c3_oran(wins, "btc_guclu", "btcden_guclu"),
+        "lider": _v5c3_oran(wins, "lider_mi", "lider_guclu"),
+        "zirve": _v5c3_oran(wins, "zirve_teyidi", "zirve_yakin", "yeni_zirve"),
+        "haber": _v5c3_oran(wins, "haber_var"),
+        "momentum_gucleniyor": _v5c3_oran(wins, "momentum_gucleniyor"),
+        "hacim_gucleniyor": _v5c3_oran(wins, "hacim_gucleniyor", "volume_strengthening"),
+        "ort_devam": _v5c3_mean([_v5c3_field(k, "devam_gucu", default=v5_devam_gucu_hesapla(k)) for k in wins]),
+        "ort_rsi": _v5c3_mean([_v5c3_field(k, "rsi") for k in wins]),
+        "ort_risk": _v5c3_mean([_v5c3_field(k, "risk_puani", "risk_score") for k in wins]),
+        "ort_skor": _v5c3_mean([_v5c3_field(k, "skor", "genel_skor") for k in wins]),
+        "ort_kalite": _v5c3_mean([_v5c3_field(k, "kalite", "kalite_skoru") for k in wins]),
+        "ort_hacim": _v5c3_mean([_v5c3_field(k, "hacim") for k in wins]),
+        "ort_momentum": _v5c3_mean([_v5c3_field(k, "degisim3") for k in wins]),
+        "ort_btc_fark": _v5c3_mean([_v5c3_field(k, "btc_fark", "btc_fark3") for k in wins]),
+        "ort_haber": _v5c3_mean([_v5c3_field(k, "haber", "haber_skoru") for k in wins]),
+        "ort_max": _v5c3_mean([_v5c3_field(k, "max_kazanc") for k in wins]),
+        "en_sik_kategori": _v5c3_mode(wins, "kategori", "Bilinmiyor"),
+    }
+
+
+def v5_kaybeden_dna(kayitlar):
+    losses = [k for k in kayitlar if _v5c3_stop(k)]
+    if not losses:
+        return {"adet": 0}
+    nedenler = v5_failure_analysis(losses).get("sebepler", []) if losses else []
+    return {
+        "adet": len(losses),
+        "btc_guclu": _v5c3_oran(losses, "btc_guclu", "btcden_guclu"),
+        "lider": _v5c3_oran(losses, "lider_mi", "lider_guclu"),
+        "zirve": _v5c3_oran(losses, "zirve_teyidi", "zirve_yakin", "yeni_zirve"),
+        "haber": _v5c3_oran(losses, "haber_var"),
+        "momentum_gucleniyor": _v5c3_oran(losses, "momentum_gucleniyor"),
+        "hacim_gucleniyor": _v5c3_oran(losses, "hacim_gucleniyor", "volume_strengthening"),
+        "ort_devam": _v5c3_mean([_v5c3_field(k, "devam_gucu", default=v5_devam_gucu_hesapla(k)) for k in losses]),
+        "ort_rsi": _v5c3_mean([_v5c3_field(k, "rsi") for k in losses]),
+        "ort_risk": _v5c3_mean([_v5c3_field(k, "risk_puani", "risk_score") for k in losses]),
+        "ort_skor": _v5c3_mean([_v5c3_field(k, "skor", "genel_skor") for k in losses]),
+        "ort_kalite": _v5c3_mean([_v5c3_field(k, "kalite", "kalite_skoru") for k in losses]),
+        "ort_hacim": _v5c3_mean([_v5c3_field(k, "hacim") for k in losses]),
+        "ort_momentum": _v5c3_mean([_v5c3_field(k, "degisim3") for k in losses]),
+        "ort_btc_fark": _v5c3_mean([_v5c3_field(k, "btc_fark", "btc_fark3") for k in losses]),
+        "ort_min": _v5c3_mean([_v5c3_field(k, "min_kazanc", "drawdown") for k in losses]),
+        "en_sik_kategori": _v5c3_mode(losses, "kategori", "Bilinmiyor"),
+        "ana_neden": nedenler[0].get("sebep") if nedenler else "Belirgin tek neden yok",
+    }
+
+
+def v5_kategori_dna(kayitlar):
+    groups = {}
+    for k in kayitlar:
+        cat = k.get("kategori") or k.get("durum") or "Bilinmiyor"
+        groups.setdefault(cat, []).append(k)
+    rows = []
+    for cat, arr in groups.items():
+        if len(arr) < V5_COMMIT3_MIN_KATEGORI_ORNEK:
+            continue
+        h2_times = [_v5c3_field(k, "h2_sure_saat") for k in arr if k.get("h2") and k.get("h2_sure_saat") is not None]
+        rows.append({
+            "kategori": cat,
+            "adet": len(arr),
+            "basari": _v5c3_pct(sum(_v5c3_success(k) for k in arr), len(arr)),
+            "h2": _v5c3_pct(sum(_v5c3_h2(k) for k in arr), len(arr)),
+            "stop": _v5c3_pct(sum(_v5c3_stop(k) for k in arr), len(arr)),
+            "ort_devam": _v5c3_mean([_v5c3_field(k, "devam_gucu", default=v5_devam_gucu_hesapla(k)) for k in arr]),
+            "ort_hacim": _v5c3_mean([_v5c3_field(k, "hacim") for k in arr]),
+            "ort_momentum": _v5c3_mean([_v5c3_field(k, "degisim3") for k in arr]),
+            "ort_risk": _v5c3_mean([_v5c3_field(k, "risk_puani", "risk_score") for k in arr]),
+            "ort_max": _v5c3_mean([_v5c3_field(k, "max_kazanc") for k in arr]),
+            "ort_h2_saat": _v5c3_mean(h2_times),
+            "en_iyi_saat": _v5c3_en_iyi_zaman(arr, "saat"),
+            "en_iyi_gun": _v5c3_en_iyi_zaman(arr, "gun"),
+            "en_iyi_sektor": _v5c3_en_iyi_zaman(arr, "sector"),
+        })
+    return sorted(rows, key=lambda r: (r["h2"], r["basari"], r["adet"]), reverse=True)
+
+
+def _v5c3_time_values(k):
+    try:
+        tm = time.localtime(_v5c3_float(k.get("zaman")))
+        return tm.tm_hour, tm.tm_wday
+    except Exception:
+        return 0, 0
+
+
+def _v5c3_en_iyi_zaman(records, kind):
+    labels = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+    groups = {}
+    for k in records:
+        hour, weekday = _v5c3_time_values(k)
+        if kind == "saat":
+            key = str(hour)
+        elif kind == "gun":
+            key = labels[weekday]
+        else:
+            key = str(k.get("sector") or k.get("sektor") or "Genel")
+        groups.setdefault(key, []).append(k)
+    valid = [(key, arr) for key, arr in groups.items() if len(arr) >= 2]
+    if not valid:
+        return "-"
+    key, arr = max(valid, key=lambda item: (_v5c3_pct(sum(_v5c3_success(k) for k in item[1]), len(item[1])), len(item[1])))
+    return key
+
+
+def v5_zaman_gun_analizi_2(kayitlar):
+    day_names = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+    hour_groups, day_groups = {}, {}
+    for k in kayitlar:
+        h, d = _v5c3_time_values(k)
+        hour_groups.setdefault(h, []).append(k)
+        day_groups.setdefault(day_names[d], []).append(k)
+
+    def make_rows(groups, label):
+        rows = []
+        for key, arr in groups.items():
+            if len(arr) < V5_COMMIT3_MIN_ZAMAN_ORNEK:
+                continue
+            h2_times = [_v5c3_field(k, "h2_sure_saat") for k in arr if k.get("h2") and k.get("h2_sure_saat") is not None]
+            rows.append({
+                label: key,
+                "adet": len(arr),
+                "basari": _v5c3_pct(sum(_v5c3_success(k) for k in arr), len(arr)),
+                "h2": _v5c3_pct(sum(_v5c3_h2(k) for k in arr), len(arr)),
+                "stop": _v5c3_pct(sum(_v5c3_stop(k) for k in arr), len(arr)),
+                "ort_kazanc": _v5c3_mean([_v5c3_field(k, "max_kazanc") for k in arr]),
+                "ort_h2_saat": _v5c3_mean(h2_times),
+            })
+        return sorted(rows, key=lambda r: (r["h2"], r["basari"], r["adet"]), reverse=True)
+    return {"saatler": make_rows(hour_groups, "saat"), "gunler": make_rows(day_groups, "gun")}
+
+
+def v5_sektor_analizi_2(kayitlar):
+    groups = {}
+    for k in kayitlar:
+        sec = k.get("sector") or k.get("sektor") or "Genel"
+        groups.setdefault(str(sec), []).append(k)
+    rows = []
+    for sec, arr in groups.items():
+        if len(arr) < V5_COMMIT3_MIN_SEKTOR_ORNEK:
+            continue
+        rows.append({
+            "sektor": sec,
+            "adet": len(arr),
+            "basari": _v5c3_pct(sum(_v5c3_success(k) for k in arr), len(arr)),
+            "h2": _v5c3_pct(sum(_v5c3_h2(k) for k in arr), len(arr)),
+            "stop": _v5c3_pct(sum(_v5c3_stop(k) for k in arr), len(arr)),
+            "ort_kazanc": _v5c3_mean([_v5c3_field(k, "max_kazanc") for k in arr]),
+            "ort_devam": _v5c3_mean([_v5c3_field(k, "devam_gucu", default=v5_devam_gucu_hesapla(k)) for k in arr]),
+        })
+    return sorted(rows, key=lambda r: (r["h2"], r["basari"], r["adet"]), reverse=True)
+
+
+def v5_kacirilan_simulasyon_2(kacirilan_motoru):
+    coins = (kacirilan_motoru or {}).get("coinler", [])
+    rows = []
+    for c in coins[:10]:
+        hacim = _v5c3_float(c.get("hacim"))
+        mom = _v5c3_float(c.get("momentum"))
+        reasons = c.get("sebepler", []) or []
+        tests = []
+        if hacim < 5:
+            tests.append(f"Hacim eşiği {max(round(hacim,1),1)}x olsaydı yeniden değerlendirilirdi")
+        elif hacim < 8:
+            tests.append("Hacim eşiği 5x olsaydı geçebilirdi")
+        if mom < 2:
+            tests.append("Momentum alt sınırı 2 puan gevşetilseydi geçebilirdi")
+        if any("Lider" in str(x) for x in reasons):
+            tests.append("Lider şartı kaldırılırsa yakalanabilirdi")
+        if any("Zirve" in str(x) for x in reasons):
+            tests.append("Zirve teyidi opsiyonel olsaydı yakalanabilirdi")
+        if any("BTC" in str(x) for x in reasons):
+            tests.append("BTC filtresi gevşetilirse yakalanabilirdi")
+        if not tests:
+            tests.append("Mevcut kayıtlarla tek bir eşik nedeni kesinleştirilemedi")
+        rows.append({"symbol": c.get("symbol"), "degisim24": c.get("degisim24"), "simulasyon": tests[:2]})
+    return rows
+
+
+def _v5c3_trend_yukle():
+    try:
+        with open(V5_COMMIT3_TREND_DOSYA, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _v5c3_trend_kaydet(history):
+    try:
+        tmp = V5_COMMIT3_TREND_DOSYA + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(history[-20:], f, ensure_ascii=False, indent=2)
+        os.replace(tmp, V5_COMMIT3_TREND_DOSYA)
+    except Exception as e:
+        print("V5.4 trend kaydı hatası:", e)
+
+
+def v5_trend_analizi_2(analysis):
+    history = _v5c3_trend_yukle()
+    current = {
+        "zaman": time.time(),
+        "gun": analysis.get("gun", 7),
+        "basari": _v5c3_float(analysis.get("basari_orani")),
+        "h2": _v5c3_float(analysis.get("h2_orani")),
+        "catch_rate": _v5c3_float((analysis.get("catch_rate") or {}).get("yakalama_orani")),
+        "en_iyi_kategori": ((analysis.get("kategori_ligi") or [{}])[0]).get("kategori", "-") if analysis.get("kategori_ligi") else "-",
+    }
+    previous = None
+    for row in reversed(history):
+        if int(row.get("gun", 0)) == int(current["gun"]):
+            previous = row
+            break
+    result = {"mevcut": current, "onceki": previous}
+    if previous:
+        result["basari_fark"] = round(current["basari"] - _v5c3_float(previous.get("basari")), 1)
+        result["h2_fark"] = round(current["h2"] - _v5c3_float(previous.get("h2")), 1)
+        result["catch_fark"] = round(current["catch_rate"] - _v5c3_float(previous.get("catch_rate")), 1)
+        result["kategori_degisti"] = current["en_iyi_kategori"] != previous.get("en_iyi_kategori")
+    if int(current["gun"]) == 7:
+        history.append(current)
+        _v5c3_trend_kaydet(history)
+    return result
+
+
+def v5_haftalik_ai_yorumu_2(analysis):
+    notes = []
+    cats = analysis.get("kategori_dna_2", []) or []
+    if cats:
+        best = cats[0]
+        worst = min(cats, key=lambda x: (x.get("basari", 0), x.get("h2", 0)))
+        notes.append(f"En güçlü kategori {best['kategori']} (%{best['basari']} başarı, %{best['h2']} H2, {best['adet']} örnek).")
+        if worst["kategori"] != best["kategori"]:
+            notes.append(f"En zayıf kategori {worst['kategori']} (%{worst['basari']} başarı).")
+    kd = analysis.get("kazanan_dna_2", {}) or {}
+    ld = analysis.get("kaybeden_dna", {}) or {}
+    if kd.get("adet") and ld.get("adet"):
+        devam_fark = round(_v5c3_float(kd.get("ort_devam")) - _v5c3_float(ld.get("ort_devam")), 1)
+        hacim_fark = round(_v5c3_float(kd.get("ort_hacim")) - _v5c3_float(ld.get("ort_hacim")), 1)
+        if abs(devam_fark) >= 5:
+            notes.append(f"Kazananların Devam Gücü kaybedenlerden {devam_fark:+} puan farklı.")
+        else:
+            notes.append("Devam Gücü ile başarı arasında henüz belirgin ayrışma yok.")
+        if abs(hacim_fark) >= 2:
+            notes.append(f"Kazanan-kaybeden ortalama hacim farkı {hacim_fark:+}x.")
+    trend = analysis.get("trend_analizi_2", {}) or {}
+    if trend.get("onceki"):
+        notes.append(f"Geçen rapora göre başarı {trend.get('basari_fark',0):+} puan, H2 {trend.get('h2_fark',0):+} puan, Catch Rate {trend.get('catch_fark',0):+} puan değişti.")
+    suggestions = analysis.get("parametre_onerileri", []) or []
+    if suggestions:
+        notes.append("Güvenilir örnek şartını geçen öneri var; otomatik uygulanmadı, yalnızca raporlandı.")
+    else:
+        notes.append("Algoritma değişikliği önerilmiyor; güvenilir örnek ve başarı farkı şartı oluşmadı.")
+    return notes[:7]
+
+
+_v5c3_build_analysis = v5_build_analysis
+def v5_build_analysis(gun=30):
+    a = _v5c3_build_analysis(gun)
+    baslangic = time.time() - gun * 86400
+    kayitlar = [k for k in basari_kayitlari if _v5c3_float(k.get("zaman")) >= baslangic]
+    a["kazanan_dna_2"] = v5_kazanan_dna_2(kayitlar)
+    a["kaybeden_dna"] = v5_kaybeden_dna(kayitlar)
+    a["kategori_dna_2"] = v5_kategori_dna(kayitlar)
+    a["zaman_gun_analizi_2"] = v5_zaman_gun_analizi_2(kayitlar)
+    a["sektor_analizi_2"] = v5_sektor_analizi_2(kayitlar)
+    a["kacirilan_simulasyon_2"] = v5_kacirilan_simulasyon_2(a.get("kacirilan_coin_motoru"))
+    a["trend_analizi_2"] = v5_trend_analizi_2(a)
+    a["haftalik_ai_yorumu_2"] = v5_haftalik_ai_yorumu_2(a)
+    v5_save_json(V5_ANALIZ_JSON, a)
+    v5_save_json(V5_DASHBOARD_JSON, a)
+    return a
+
+
+_v5c3_professional_report = v5_professional_report_text
+def v5_professional_report_text(gun=30):
+    msg = _v5c3_professional_report(gun)
+    a = v5_build_analysis(gun)
+
+    kd = a.get("kazanan_dna_2", {}) or {}
+    msg += "\n🧬 KAZANAN DNA 2.0\n"
+    if kd.get("adet"):
+        msg += f"Kazanan {kd['adet']} | BTC güçlü %{kd['btc_guclu']} | Lider %{kd['lider']} | Zirve %{kd['zirve']} | Haber %{kd['haber']}\n"
+        msg += f"Ort Devam {kd['ort_devam']} | RSI {kd['ort_rsi']} | Risk {kd['ort_risk']} | Skor {kd['ort_skor']} | Kalite {kd['ort_kalite']}\n"
+        msg += f"Ort Hacim {kd['ort_hacim']}x | Mom %{kd['ort_momentum']} | BTC fark %{kd['ort_btc_fark']} | Ort Max %{kd['ort_max']}\n"
+        msg += f"Tipik profil: {kd['en_sik_kategori']} • Mom↑ %{kd['momentum_gucleniyor']} • Hacim↑ %{kd['hacim_gucleniyor']}\n"
+    else:
+        msg += "Henüz kazanan kaydı yok.\n"
+
+    ld = a.get("kaybeden_dna", {}) or {}
+    msg += "\n📉 KAYBEDEN DNA\n"
+    if ld.get("adet"):
+        msg += f"Kaybeden {ld['adet']} | BTC güçlü %{ld['btc_guclu']} | Lider %{ld['lider']} | Zirve %{ld['zirve']} | Haber %{ld['haber']}\n"
+        msg += f"Ort Devam {ld['ort_devam']} | RSI {ld['ort_rsi']} | Risk {ld['ort_risk']} | Skor {ld['ort_skor']} | Kalite {ld['ort_kalite']}\n"
+        msg += f"Ort Hacim {ld['ort_hacim']}x | Mom %{ld['ort_momentum']} | Ort DD %{ld['ort_min']}\n"
+        msg += f"Tipik profil: {ld['en_sik_kategori']} | Ana gözlem: {ld['ana_neden']}\n"
+    else:
+        msg += "Henüz nihai stop kaydı yok.\n"
+
+    msg += "\n🎯 KATEGORİ DNA\n"
+    rows = a.get("kategori_dna_2", []) or []
+    if rows:
+        for r in rows[:5]:
+            msg += f"{r['kategori']}: {r['adet']} | Başarı %{r['basari']} | H2 %{r['h2']} | Stop %{r['stop']} | Devam {r['ort_devam']}\n"
+            msg += f"Hacim {r['ort_hacim']}x | Mom %{r['ort_momentum']} | Risk {r['ort_risk']} | Ort Max %{r['ort_max']} | H2 süre {r['ort_h2_saat']}s\n"
+    else:
+        msg += "Kategori başına en az 5 örnek birikmesi bekleniyor.\n"
+
+    zg = a.get("zaman_gun_analizi_2", {}) or {}
+    msg += "\n⏰ SAAT / GÜN ANALİZİ 2.0\n"
+    for r in (zg.get("saatler") or [])[:3]:
+        msg += f"Saat {r['saat']}: {r['adet']} | Başarı %{r['basari']} | H2 %{r['h2']} | Stop %{r['stop']} | Ort %{r['ort_kazanc']}\n"
+    for r in (zg.get("gunler") or [])[:3]:
+        msg += f"{r['gun']}: {r['adet']} | Başarı %{r['basari']} | H2 %{r['h2']} | Stop %{r['stop']} | Ort %{r['ort_kazanc']}\n"
+
+    msg += "\n📊 SEKTÖR ANALİZİ 2.0\n"
+    sectors = a.get("sektor_analizi_2", []) or []
+    if sectors:
+        for r in sectors[:6]:
+            msg += f"{r['sektor']}: {r['adet']} | Başarı %{r['basari']} | H2 %{r['h2']} | Stop %{r['stop']} | Ort %{r['ort_kazanc']} | Devam {r['ort_devam']}\n"
+    else:
+        msg += "Sektör başına en az 3 örnek birikmesi bekleniyor.\n"
+
+    msg += "\n🧪 KAÇIRILAN COIN EŞİK SİMÜLASYONU\n"
+    sims = a.get("kacirilan_simulasyon_2", []) or []
+    if sims:
+        for r in sims[:5]:
+            msg += f"{r['symbol']} +%{r['degisim24']}: " + " • ".join(r['simulasyon']) + "\n"
+    else:
+        msg += "Simüle edilecek kaçırılan coin yok.\n"
+
+    trend = a.get("trend_analizi_2", {}) or {}
+    msg += "\n📈 HAFTALIK TREND\n"
+    if trend.get("onceki"):
+        arrow = lambda x: "↑" if x > 0 else ("↓" if x < 0 else "→")
+        msg += f"Başarı {trend.get('basari_fark',0):+} puan {arrow(trend.get('basari_fark',0))} | H2 {trend.get('h2_fark',0):+} {arrow(trend.get('h2_fark',0))} | Catch {trend.get('catch_fark',0):+} {arrow(trend.get('catch_fark',0))}\n"
+        msg += f"En iyi kategori: {trend['mevcut'].get('en_iyi_kategori')}" + (" (değişti)\n" if trend.get("kategori_degisti") else " (aynı)\n")
+    else:
+        msg += "İlk trend referansı kaydedildi; sonraki aynı dönem raporunda karşılaştırma başlayacak.\n"
+
+    msg += "\n🤖 HAFTALIK AI YORUMU\n"
+    for note in a.get("haftalik_ai_yorumu_2", []) or []:
+        msg += f"• {note}\n"
+    return msg
+
+# === /V5.4 COMMIT 3 ===
+
 while True:
     try:
         print()
