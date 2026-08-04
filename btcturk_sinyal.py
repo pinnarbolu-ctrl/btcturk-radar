@@ -3607,6 +3607,329 @@ def v5_professional_report_text(gun=30):
 
 
 
+
+# === V5.4 COMMIT 2: KACIRILAN COIN + FLASH CRASH + ILK DAKIKA OGRENME MOTORU ===
+V5_COMMIT2_MIN_PATTERN_ORNEK = 10
+V5_COMMIT2_MIN_HALL_ORNEK = 3
+V5_COMMIT2_MIN_AI_ORNEK = 30
+V5_COMMIT2_MIN_AI_FARK = 5.0
+V5_FLASH_CRASH_ESIK = -5.0
+V5_FLASH_TOPARLANMA_ESIK = 3.0
+V5_PERFORMANS_DAKIKALARI = (5, 15, 30, 60)
+
+
+def _v5c2_float(v, default=0.0):
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+
+def _v5c2_bool(k, *keys):
+    for key in keys:
+        if key in k and k.get(key) is not None:
+            return bool(k.get(key))
+    return False
+
+
+def _v5c2_market_by_symbol(gun=7):
+    baslangic = time.time() - gun * 86400
+    gruplar = {}
+    for k in piyasa_kayitlari:
+        if _v5c2_float(k.get('zaman')) < baslangic:
+            continue
+        s = k.get('symbol')
+        if not s:
+            continue
+        gruplar.setdefault(s, []).append(k)
+    for s in gruplar:
+        gruplar[s].sort(key=lambda x: _v5c2_float(x.get('zaman')))
+    return gruplar
+
+
+def _v5c2_kacma_sebepleri(k):
+    sebepler = []
+    hacim = _v5c2_float(k.get('hacim'))
+    momentum = _v5c2_float(k.get('degisim3'))
+    lider = _v5c2_bool(k, 'lider_mi') or _v5c2_float(k.get('lider_skoru')) >= 5
+    btc_ok = _v5c2_bool(k, 'btc_guclu', 'btcden_guclu')
+    zirve = _v5c2_bool(k, 'zirve_teyidi', 'zirve_yakin', 'yeni_zirve')
+    gec = int(_v5c2_float(k.get('gec_pump_puan'))) >= 3
+
+    if not btc_ok:
+        sebepler.append('BTC filtresi')
+    if not lider:
+        sebepler.append('Lider filtresi')
+    if hacim < 5:
+        sebepler.append('Hacim filtresi')
+    elif hacim < 8:
+        sebepler.append('Hacim/kalite eşiği')
+    if momentum < 2:
+        sebepler.append('Momentum yetersiz')
+    if not zirve:
+        sebepler.append('Zirve teyidi yok')
+    if gec:
+        sebepler.append('Geç hareket riski')
+    if not sebepler:
+        sebepler.append('Birleşik skor/kategori eşiği')
+    return sebepler
+
+
+def v5_kacirilan_coin_motoru(gun=7, esik=10):
+    """Kazanan fakat zamanında sinyal almayan coinleri ve olası eleme nedenlerini açıklar."""
+    try:
+        baslangic = time.time() - gun * 86400
+        market = [k for k in piyasa_kayitlari if _v5c2_float(k.get('zaman')) >= baslangic]
+        coin_ozet = {}
+        for k in market:
+            s = k.get('symbol')
+            if not s:
+                continue
+            if s not in coin_ozet or _v5c2_float(k.get('degisim24')) > _v5c2_float(coin_ozet[s].get('degisim24')):
+                coin_ozet[s] = k
+
+        kazananlar = [k for k in coin_ozet.values() if _v5c2_float(k.get('degisim24')) >= esik]
+        sinyaller = {}
+        for b in basari_kayitlari:
+            z = _v5c2_float(b.get('zaman'))
+            if z < baslangic:
+                continue
+            s = b.get('symbol')
+            if s and (s not in sinyaller or z < sinyaller[s]):
+                sinyaller[s] = z
+
+        kacirilan = []
+        neden_sayilari = {}
+        for k in kazananlar:
+            s = k.get('symbol')
+            hareket_zamani = _v5c2_float(k.get('zaman'))
+            if s in sinyaller and sinyaller[s] <= hareket_zamani:
+                continue
+            sebepler = _v5c2_kacma_sebepleri(k)
+            for sebep in sebepler:
+                neden_sayilari[sebep] = neden_sayilari.get(sebep, 0) + 1
+            kacirilan.append({
+                'symbol': s,
+                'degisim24': round(_v5c2_float(k.get('degisim24')), 2),
+                'hacim': round(_v5c2_float(k.get('hacim')), 2),
+                'momentum': round(_v5c2_float(k.get('degisim3')), 2),
+                'btc_guclu': _v5c2_bool(k, 'btc_guclu', 'btcden_guclu'),
+                'lider': _v5c2_bool(k, 'lider_mi') or _v5c2_float(k.get('lider_skoru')) >= 5,
+                'zirve': _v5c2_bool(k, 'zirve_teyidi', 'zirve_yakin', 'yeni_zirve'),
+                'sebepler': sebepler,
+            })
+        kacirilan.sort(key=lambda x: x['degisim24'], reverse=True)
+        nedenler = sorted(({'sebep': k, 'adet': v} for k, v in neden_sayilari.items()), key=lambda x: x['adet'], reverse=True)
+        return {'gun': gun, 'esik': esik, 'adet': len(kacirilan), 'coinler': kacirilan, 'nedenler': nedenler}
+    except Exception as e:
+        return {'gun': gun, 'esik': esik, 'adet': 0, 'coinler': [], 'nedenler': [], 'hata': str(e)}
+
+
+def v5_flash_crash_likidite_avi(gun=7):
+    """Piyasa snapshot'larından sert düşüş ve sonrasındaki toparlanmayı ölçer."""
+    olaylar = []
+    for symbol, arr in _v5c2_market_by_symbol(gun).items():
+        if len(arr) < 3:
+            continue
+        peak_price = None
+        peak_time = None
+        best = None
+        for i, k in enumerate(arr):
+            fiyat = _v5c2_float(k.get('fiyat'))
+            if fiyat <= 0:
+                continue
+            if peak_price is None or fiyat > peak_price:
+                peak_price = fiyat
+                peak_time = _v5c2_float(k.get('zaman'))
+                continue
+            dusus = ((fiyat - peak_price) / peak_price) * 100
+            if dusus > V5_FLASH_CRASH_ESIK:
+                continue
+            low_price = fiyat
+            low_time = _v5c2_float(k.get('zaman'))
+            future = arr[i+1:]
+            if future:
+                max_after = max(_v5c2_float(x.get('fiyat')) for x in future)
+                toparlanma = ((max_after - low_price) / low_price) * 100 if low_price else 0
+            else:
+                toparlanma = 0
+            skor = max(0, min(100, abs(dusus) * 7 + max(toparlanma, 0) * 3))
+            aday = {
+                'symbol': symbol,
+                'dusus': round(dusus, 2),
+                'toparlanma': round(toparlanma, 2),
+                'dakika': round((low_time - peak_time) / 60, 1) if peak_time else 0,
+                'likidite_avi_skoru': int(round(skor)),
+                'toparladi': toparlanma >= V5_FLASH_TOPARLANMA_ESIK,
+            }
+            if best is None or abs(aday['dusus']) > abs(best['dusus']):
+                best = aday
+        if best:
+            olaylar.append(best)
+    olaylar.sort(key=lambda x: (x['toparladi'], x['likidite_avi_skoru']), reverse=True)
+    toparlayan = [x for x in olaylar if x['toparladi']]
+    return {
+        'gun': gun,
+        'adet': len(olaylar),
+        'toparlayan': len(toparlayan),
+        'basari': round(len(toparlayan) * 100 / max(len(olaylar), 1), 1),
+        'ort_dusus': round(sum(x['dusus'] for x in olaylar) / max(len(olaylar), 1), 2),
+        'ort_toparlanma': round(sum(x['toparlanma'] for x in toparlayan) / max(len(toparlayan), 1), 2),
+        'olaylar': olaylar[:10],
+    }
+
+
+# Aktif sinyaller her 5 dakikada güncellendiği için performans checkpoint'lerini burada sakla.
+_v5c2_basari_kaydi_guncelle = basari_kaydi_guncelle
+def basari_kaydi_guncelle(symbol, fiyat, durum=None, h1=False, h2=False, stop=False):
+    _v5c2_basari_kaydi_guncelle(symbol, fiyat, durum=durum, h1=h1, h2=h2, stop=stop)
+    simdi = time.time()
+    degisti = False
+    for k in reversed(basari_kayitlari):
+        if k.get('symbol') != symbol:
+            continue
+        giris = _v5c2_float(k.get('giris'), fiyat)
+        zaman = _v5c2_float(k.get('zaman'), simdi)
+        if giris <= 0:
+            return
+        kazanc = ((fiyat - giris) / giris) * 100
+        gecen_dk = (simdi - zaman) / 60
+        for dk in V5_PERFORMANS_DAKIKALARI:
+            key = f'performans_{dk}dk'
+            if gecen_dk >= dk and key not in k:
+                k[key] = round(kazanc, 4)
+                k[f'fiyat_{dk}dk'] = round(float(fiyat), 8)
+                k[f'zaman_{dk}dk'] = simdi
+                degisti = True
+        if degisti:
+            basari_db_kaydet(basari_kayitlari)
+        return
+
+
+def v5_ilk_dakika_analizi(kayitlar):
+    rows = []
+    for dk in V5_PERFORMANS_DAKIKALARI:
+        key = f'performans_{dk}dk'
+        arr = [k for k in kayitlar if k.get(key) is not None]
+        if not arr:
+            continue
+        degerler = [_v5c2_float(k.get(key)) for k in arr]
+        rows.append({
+            'dakika': dk,
+            'adet': len(arr),
+            'ort': round(sum(degerler) / len(degerler), 2),
+            'pozitif': round(sum(1 for x in degerler if x > 0) * 100 / len(degerler), 1),
+            'eksi2': round(sum(1 for x in degerler if x <= -2) * 100 / len(degerler), 1),
+            'arti3': round(sum(1 for x in degerler if x >= 3) * 100 / len(degerler), 1),
+        })
+    return rows
+
+
+# Hall of Fame: tek seferlik sans yerine en az 3 sinyal.
+def v5_hall_of_fame(kayitlar):
+    by = {}
+    for k in kayitlar:
+        s = k.get('symbol')
+        if s:
+            by.setdefault(s, []).append(k)
+    rows = []
+    for s, arr in by.items():
+        if len(arr) < V5_COMMIT2_MIN_HALL_ORNEK:
+            continue
+        rows.append({
+            'symbol': s,
+            'adet': len(arr),
+            'basari': v5_pct(sum(v5_success(k) for k in arr), len(arr)),
+            'h2': v5_pct(sum(v5_big_success(k) for k in arr), len(arr)),
+            'en_iyi': max([v5_safe_float(k.get('max_kazanc')) for k in arr] or [0]),
+            'ort': v5_mean([k.get('max_kazanc') for k in arr]),
+        })
+    return sorted(rows, key=lambda x: (x['basari'], x['h2'], x['adet']), reverse=True)[:10]
+
+
+# AI önerisi: en az 30 örnek ve mevcut başarıya göre +%5 fark.
+def v5_parameter_optimization(kayitlar):
+    suggestions = []
+    baseline = v5_pct(sum(v5_success(k) for k in kayitlar), len(kayitlar))
+    tests = [
+        ('hacim_esigi', 'hacim', [5, 6, 7, 8, 10, 12, 15]),
+        ('skor_esigi', 'skor', [8, 10, 12, 14, 16, 18, 20]),
+        ('kalite_esigi', 'kalite', [5, 6, 7, 8, 9, 10, 12]),
+        ('rsi_ust_limit', 'rsi', [62, 65, 68, 70, 72, 75, 80]),
+        ('risk_ust_limit', 'risk_puani', [40, 45, 50, 55, 60, 65, 70]),
+    ]
+    for name, field, values in tests:
+        best = None
+        for v in values:
+            arr = ([k for k in kayitlar if v5_safe_float(k.get(field)) <= v]
+                   if name.endswith('ust_limit') else
+                   [k for k in kayitlar if v5_safe_float(k.get(field)) >= v])
+            if len(arr) < V5_COMMIT2_MIN_AI_ORNEK:
+                continue
+            rate = v5_pct(sum(v5_success(k) for k in arr), len(arr))
+            h2r = v5_pct(sum(v5_big_success(k) for k in arr), len(arr))
+            fark = round(rate - baseline, 1)
+            if fark < V5_COMMIT2_MIN_AI_FARK:
+                continue
+            score = fark + h2r * 0.25 + min(len(arr), 100) * 0.03
+            row = {'parametre': name, 'onerilen': v, 'ornek': len(arr), 'basari': rate, 'h2': h2r, 'fark': fark, 'skor': round(score, 2)}
+            if best is None or row['skor'] > best['skor']:
+                best = row
+        if best:
+            suggestions.append(best)
+    v5_save_json(V5_PARAMETRE_JSON, suggestions)
+    return sorted(suggestions, key=lambda x: x.get('skor', 0), reverse=True)
+
+
+_v5c2_build_analysis = v5_build_analysis
+def v5_build_analysis(gun=30):
+    a = _v5c2_build_analysis(gun)
+    baslangic = time.time() - gun * 86400
+    kayitlar = [k for k in basari_kayitlari if _v5c2_float(k.get('zaman')) >= baslangic]
+    a['kacirilan_coin_motoru'] = v5_kacirilan_coin_motoru(gun, 10)
+    a['flash_crash'] = v5_flash_crash_likidite_avi(gun)
+    a['ilk_dakika_analizi'] = v5_ilk_dakika_analizi(kayitlar)
+    a['hall_of_fame'] = v5_hall_of_fame(kayitlar)
+    a['parametre_onerileri'] = v5_parameter_optimization(kayitlar)
+    v5_save_json(V5_ANALIZ_JSON, a)
+    v5_save_json(V5_DASHBOARD_JSON, a)
+    return a
+
+
+_v5c2_professional_report = v5_professional_report_text
+def v5_professional_report_text(gun=30):
+    msg = _v5c2_professional_report(gun)
+    a = v5_build_analysis(gun)
+
+    km = a.get('kacirilan_coin_motoru') or {}
+    msg += '\n🎯 KAÇIRILAN COIN MOTORU\n'
+    if km.get('adet'):
+        for c in km.get('coinler', [])[:5]:
+            msg += f"{c['symbol']} +%{c['degisim24']} | Hacim {c['hacim']}x | Mom %{c['momentum']}\n"
+            msg += 'Neden: ' + ' • '.join(c.get('sebepler', [])[:3]) + '\n'
+        msg += 'Kaçma sebepleri: ' + ', '.join(f"{x['sebep']} {x['adet']}" for x in km.get('nedenler', [])[:5]) + '\n'
+    else:
+        msg += 'Bu dönemde açıklanacak kaçırılan kazanan coin yok.\n'
+
+    fc = a.get('flash_crash') or {}
+    msg += '\n🌊 FLASH CRASH & LİKİDİTE AVI\n'
+    msg += f"Olay: {fc.get('adet',0)} | Toparlayan: {fc.get('toparlayan',0)} | Başarı %{fc.get('basari',0)}\n"
+    if fc.get('adet'):
+        msg += f"Ort. düşüş %{fc.get('ort_dusus',0)} | Ort. toparlanma %{fc.get('ort_toparlanma',0)}\n"
+        for x in fc.get('olaylar', [])[:5]:
+            msg += f"{x['symbol']}: düşüş %{x['dusus']} → toparlanma %{x['toparlanma']} | Likidite skoru {x['likidite_avi_skoru']}\n"
+
+    msg += '\n⏱️ İLK 5/15/30/60 DK ANALİZİ\n'
+    rows = a.get('ilk_dakika_analizi') or []
+    if rows:
+        for r in rows:
+            msg += f"{r['dakika']} dk: {r['adet']} | Ort %{r['ort']} | Pozitif %{r['pozitif']} | +%3 %{r['arti3']} | -%2 ve altı %{r['eksi2']}\n"
+    else:
+        msg += 'Yeni checkpoint verileri biriktikçe bu bölüm dolacak.\n'
+    return msg
+
+# === /V5.4 COMMIT 2 ===
+
 while True:
     try:
         print()
