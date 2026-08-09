@@ -1,7 +1,3 @@
-
-
-
-
 import os
 import time
 import requests
@@ -76,6 +72,7 @@ DURUM_SEVIYESI = {
     "⚡ GÜÇLÜ HACİM": 2,
     "📊 TRADER HACİM": 3,
     "📈 GÜÇLENİYOR": 4,
+    "🌱 Erken Aday": 4.5,
     "🚀 Roket Adayı": 5,
     "🔥 Elit Roket": 6,
     "⭐ Yıldız": 7
@@ -83,6 +80,7 @@ DURUM_SEVIYESI = {
 
 # V4.25: Telegram sadeleşti. Bu kategoriler dışındakiler sadece arka planda izlenir.
 TELEGRAM_KATEGORILERI = {
+    "🌱 Erken Aday",
     "📊 TRADER HACİM",
     "🚀 Roket Adayı",
     "🔥 Elit Roket",
@@ -1774,7 +1772,56 @@ def hedef_stop_kontrol():
         aktif_sinyaller.pop(symbol, None)
 
 
-def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, btc_fark, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0, btc_guc_skoru=0, lider_skoru=0, guc_skoru=0, yeni_zirve=False):
+# === V5.3 EARLY CAPTURE V1 ===
+# Her coin icin ham tarama snapshot'i tutulur. Boylece coin mevcut Roket
+# esigine gelmeden hacim + momentum ivmesini iki tarama arasinda gorebiliriz.
+EARLY_CAPTURE_SNAPSHOTS = {}
+EARLY_CAPTURE_MIN_HACIM = 3.0
+EARLY_CAPTURE_MIN_HACIM_ARTIS_ORANI = 1.30
+EARLY_CAPTURE_MIN_MOMENTUM = 0.8
+EARLY_CAPTURE_MAX_MOMENTUM = 3.5
+EARLY_CAPTURE_MIN_MOMENTUM_ARTIS = 0.45
+EARLY_CAPTURE_MIN_1S = 0.20
+EARLY_CAPTURE_MAX_1S = 2.80
+EARLY_CAPTURE_MIN_LIDER = 4
+EARLY_CAPTURE_MIN_BTC_GUC = 3
+EARLY_CAPTURE_MIN_GUC = 48
+
+def early_capture_kontrol(symbol, hacim_kat, degisim1, degisim3, btcden_guclu,
+                          btc_guc_skoru, lider_skoru, guc_skoru):
+    onceki = EARLY_CAPTURE_SNAPSHOTS.get(symbol)
+    sonuc = {
+        "uygun": False, "onceki_hacim": None, "onceki_momentum": None,
+        "hacim_orani": 0.0, "momentum_artisi": 0.0
+    }
+    if onceki is not None:
+        eski_h = float(onceki.get("hacim", 0) or 0)
+        eski_m = float(onceki.get("degisim3", 0) or 0)
+        hacim_orani = (float(hacim_kat) / eski_h) if eski_h > 0 else 0.0
+        momentum_artisi = float(degisim3) - eski_m
+        sonuc.update({
+            "onceki_hacim": eski_h, "onceki_momentum": eski_m,
+            "hacim_orani": hacim_orani, "momentum_artisi": momentum_artisi
+        })
+        sonuc["uygun"] = bool(
+            btcden_guclu
+            and float(hacim_kat) >= EARLY_CAPTURE_MIN_HACIM
+            and hacim_orani >= EARLY_CAPTURE_MIN_HACIM_ARTIS_ORANI
+            and EARLY_CAPTURE_MIN_MOMENTUM <= float(degisim3) <= EARLY_CAPTURE_MAX_MOMENTUM
+            and momentum_artisi >= EARLY_CAPTURE_MIN_MOMENTUM_ARTIS
+            and EARLY_CAPTURE_MIN_1S <= float(degisim1) <= EARLY_CAPTURE_MAX_1S
+            and float(lider_skoru) >= EARLY_CAPTURE_MIN_LIDER
+            and float(btc_guc_skoru) >= EARLY_CAPTURE_MIN_BTC_GUC
+            and float(guc_skoru) >= EARLY_CAPTURE_MIN_GUC
+        )
+    EARLY_CAPTURE_SNAPSHOTS[symbol] = {
+        "hacim": float(hacim_kat), "degisim3": float(degisim3), "zaman": time.time()
+    }
+    return sonuc
+
+# === /V5.3 EARLY CAPTURE V1 ===
+
+def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, btc_fark, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0, btc_guc_skoru=0, lider_skoru=0, guc_skoru=0, yeni_zirve=False, early_capture=None):
     """
     V4.25 kategori mantığı.
 
@@ -1843,6 +1890,12 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         if haber_skoru > 0:
             return "🚀 Roket Adayı", "Haberli güçlü aday"
         return "🚀 Roket Adayı", "Sessiz güçlü aday"
+
+    # 5) 🌱 ERKEN ADAY - mevcut Roket esiginden once ivme yakalama
+    # Ilk taramada sinyal uretmez; mutlaka bir onceki taramaya gore
+    # hacim ve momentum hizlanmasi ister. Bu sayede tek mumluk gurultu azalir.
+    if early_capture and early_capture.get("uygun"):
+        return "🌱 Erken Aday", "Hacim + momentum hizlaniyor; Roket esigi oncesi erken yakalama"
 
     # Arka plan güçlü hacim
     if hacim_kat >= 12 and btcden_guclu and degisim3 >= 4 and not (degisim1 < 0 and degisim3 < 0):
@@ -4601,6 +4654,12 @@ while True:
                     "durum": None,
                 })
 
+                # V5.3 Early Capture: kategori belirlenmeden once iki tarama arasi ivmeyi olc.
+                early_capture = early_capture_kontrol(
+                    symbol, hacim_kat, degisim1, degisim3, btcden_guclu,
+                    btc_guc_skoru, lider_skoru, guc_skoru
+                )
+
                 durum, alt_durum = kategori_belirle(
                     symbol,
                     genel_skor,
@@ -4617,7 +4676,8 @@ while True:
                     btc_guc_skoru,
                     lider_skoru,
                     guc_skoru,
-                    yeni_zirve
+                    yeni_zirve,
+                    early_capture
                 )
                 if durum is None:
                     continue
@@ -4673,6 +4733,7 @@ while True:
                     "zirve_bonus": zirve_bonus,
                     "gec_pump_puan": gec_pump_puan,
                     "guclenme_notlari": guclenme_notlari,
+                    "early_capture": early_capture,
                     "stop": stop,
                     "hedef1": hedef1,
                     "hedef2": hedef2
@@ -4802,6 +4863,7 @@ while True:
                 en_ust_coin = en_ust_aday.get("symbol", "")
 
                 baslik_map = {
+                    "🌱 Erken Aday": "ERKEN ADAY",
                     "📊 TRADER HACİM": "TRADER HACİM",
                     "🚀 Roket Adayı": "ROKET ADAYI",
                     "🔥 Elit Roket": "ELİT ROKET",
@@ -4887,6 +4949,14 @@ while True:
                         f"Hacim: {round(a['hacim'], 2)}x\n"
                     )
 
+                    if a.get("durum") == "🌱 Erken Aday" and a.get("early_capture"):
+                        ec = a["early_capture"]
+                        if ec.get("onceki_hacim") is not None:
+                            satir += (
+                                f"🌱 Erken yakalama: hacim {round(ec['onceki_hacim'], 2)}x → {round(a['hacim'], 2)}x\n"
+                                f"⚡ Momentum: %{round(ec['onceki_momentum'], 2)} → %{round(a['degisim3'], 2)}\n"
+                            )
+
                     if guclenme_mesaji:
                         satir += f"\n{guclenme_mesaji}\n"
 
@@ -4912,4 +4982,3 @@ while True:
     except Exception as e:
         print("Bot genel hata:", e)
         time.sleep(30)
-
