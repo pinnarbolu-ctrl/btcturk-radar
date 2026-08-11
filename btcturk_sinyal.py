@@ -1890,6 +1890,7 @@ V5_DNA_ALANLARI = [
     "zirve_yakin", "yeni_zirve", "zirve_teyidi", "zirve_bonus", "zirve_mesafe",
     "haber", "haber_var", "haber_pozitif", "haber_negatif", "haber_bonus", "haber_risk",
     "rsi", "macd", "macd_signal", "macd_hist", "ema20", "ema50", "ema200", "ema_durum", "trend_durum",
+    "giris_kalitesi", "giris_uygun", "tepe_riski", "giris_riskleri", "runup6", "ust_fitil_orani", "kapanis_pozisyonu", "yesil_seri", "range_genisleme",
     "fear_greed", "btc_dominans", "dominans_durum",
     "ortak_sinyal", "filtre_imzasi", "pattern_key", "dna_alan_sayisi", "created_at"
 ]
@@ -2229,6 +2230,11 @@ def v5_make_dna(symbol, a, simdi):
         "max_kazanc": 0.0, "min_kazanc": 0.0, "son_kazanc": 0.0, "h1": False, "h2": False, "stop": False,
         "h1_zaman": None, "h2_zaman": None, "stop_zaman": None, "h1_sure_saat": None, "h2_sure_saat": None, "stop_sure_saat": None,
         "skor": v5_round(a.get("skor")), "kalite": v5_round(a.get("kalite_skoru")), "guc_skoru": v5_round(a.get("guc_skoru")),
+        "giris_kalitesi": v5_safe_int(a.get("giris_kalitesi")), "giris_uygun": bool(a.get("giris_uygun")),
+        "tepe_riski": bool(a.get("tepe_riski")), "giris_riskleri": list(a.get("giris_riskleri", []) or []),
+        "runup6": v5_round(a.get("runup6")), "ust_fitil_orani": v5_round(a.get("ust_fitil_orani")),
+        "kapanis_pozisyonu": v5_round(a.get("kapanis_pozisyonu")), "yesil_seri": v5_safe_int(a.get("yesil_seri")),
+        "range_genisleme": v5_round(a.get("range_genisleme")),
         "hacim": v5_round(hacim), "hacim_log": v5_round(math.log1p(max(hacim, 0))),
         "hacim_2x": hacim >= 2, "hacim_5x": hacim >= 5, "hacim_7x": hacim >= 7, "hacim_8x": hacim >= 8, "hacim_10x": hacim >= 10, "hacim_12x": hacim >= 12, "hacim_15x": hacim >= 15, "hacim_20x": hacim >= 20, "hacim_50x": hacim >= 50,
         "hacim_gucleniyor": bool(hacim_gucleniyor), "hacim_onceki": v5_round(onceki_hacim), "hacim_artis_orani": v5_round(((hacim - onceki_hacim) / onceki_hacim * 100) if onceki_hacim else 0), "hacim_bonus": v5_safe_int(a.get("hacim_bonus")),
@@ -4349,6 +4355,185 @@ def v5_professional_report_text(gun=30):
 
 # === /V5.4 COMMIT 3 ===
 
+# === V5.4 GIRIS ODAKLI SINYAL ENTEGRASYONU ===
+# Ayrı bir sinyal motoru değildir. Mevcut Roket/Elit/Yıldız kararlarının
+# Telegram'a çıkabilmesi için giriş kalitesini zorunlu bir koşul yapar.
+GIRIS_KALITESI_MIN = 68
+
+
+def giris_kalitesi_hesapla(o, h, l, c, v, degisim1, degisim3, degisim24,
+                            hacim_kat, zirve_yakin=False, yeni_zirve=False,
+                            satis_baskisi=False, gec_pump_puan=0):
+    """0-100 giriş kalitesi üretir ve tepeden/uzamış hareketleri baskılar.
+
+    Amaç coin gücünü tekrar puanlamak değil; güçlü coinin *şu anda* girişe uygun
+    olup olmadığını ölçmektir. Yalnızca mevcut ve geçmiş mumlar kullanılır.
+    """
+    riskler = []
+    hard_block = False
+    skor = 70.0
+
+    try:
+        if not c or len(c) < 6:
+            return 50, False, ["yetersiz mum verisi"], {}
+
+        # API low alanı yoksa open/close minimumlarından güvenli vekil üret.
+        if not l or len(l) != len(c):
+            l = [min(float(oo), float(cc)) for oo, cc in zip(o, c)]
+
+        fiyat = float(c[-1])
+        prev_close = float(c[-2]) if float(c[-2]) else fiyat
+        cur_open = float(o[-1])
+        cur_high = float(h[-1])
+        cur_low = float(l[-1])
+        cur_range = max(cur_high - cur_low, 1e-12)
+
+        # Mum içi kapanış ve üst fitil reddi.
+        kapanis_pozisyonu = max(0.0, min(1.0, (fiyat - cur_low) / cur_range))
+        ust_fitil = max(0.0, cur_high - max(cur_open, fiyat))
+        ust_fitil_orani = max(0.0, min(1.0, ust_fitil / cur_range))
+
+        # Son 6 saatlik hareket ne kadar uzadı? Lokal tepe kovalamayı yakalar.
+        son6_low = min(float(x) for x in l[-6:])
+        runup6 = ((fiyat / son6_low) - 1.0) * 100 if son6_low > 0 else 0.0
+
+        # Son 3 tamamlanmış mumda üst üste yeşil sayısı.
+        yesil_seri = 0
+        for i in range(len(c) - 1, max(-1, len(c) - 5), -1):
+            if float(c[i]) > float(o[i]):
+                yesil_seri += 1
+            else:
+                break
+
+        # Mevcut mum genişlemesi: son 5 mumun tipik range'ine göre.
+        onceki_range_pct = []
+        for i in range(max(1, len(c) - 6), len(c) - 1):
+            pc = float(c[i-1]) if float(c[i-1]) else 0.0
+            if pc > 0:
+                onceki_range_pct.append((float(h[i]) - float(l[i])) / pc * 100)
+        ort_range_pct = sum(onceki_range_pct) / len(onceki_range_pct) if onceki_range_pct else 0.0
+        anlik_range_pct = cur_range / prev_close * 100 if prev_close > 0 else 0.0
+        range_genisleme = (anlik_range_pct / ort_range_pct) if ort_range_pct > 0 else 1.0
+
+        # Sağlıklı başlangıç / devam bölgesi ödülleri.
+        if 0.25 <= degisim1 <= 2.8:
+            skor += 10
+        elif 2.8 < degisim1 <= 4.0:
+            skor += 2
+        elif degisim1 < -0.8:
+            skor -= 10
+            riskler.append("son 1s zayıf")
+
+        if 1.5 <= degisim3 <= 5.0:
+            skor += 10
+        elif 5.0 < degisim3 <= 7.0:
+            skor += 2
+        elif degisim3 < 1.0:
+            skor -= 6
+            riskler.append("3s ivme yetersiz")
+
+        if -2 <= degisim24 <= 8:
+            skor += 5
+        elif degisim24 > 12:
+            skor -= 10
+            riskler.append("24s hareket uzamış")
+        if degisim24 > 18:
+            skor -= 10
+
+        if 5 <= hacim_kat <= 12:
+            skor += 5
+        elif hacim_kat >= 18:
+            skor -= 6
+            riskler.append("hacim climax riski")
+
+        # Kapanış kalitesi / rejection.
+        if kapanis_pozisyonu >= 0.60 and ust_fitil_orani <= 0.25:
+            skor += 5
+        if kapanis_pozisyonu <= 0.35:
+            skor -= 10
+            riskler.append("mum kapanışı zayıf")
+        if ust_fitil_orani >= 0.40:
+            skor -= 15
+            riskler.append("üst fitil / satış reddi")
+
+        # Lokal uzama: TURBO benzeri tepeden yakalamayı baskılar.
+        if runup6 <= 4.5:
+            skor += 8
+        elif runup6 <= 6.0:
+            skor += 2
+        elif runup6 <= 8.5:
+            skor -= 16
+            riskler.append("6s yükseliş uzamış")
+        else:
+            skor -= 25
+            riskler.append("6s aşırı uzama")
+
+        # Üst üste yeşil mumlardan sonra kovalamayı azalt.
+        if yesil_seri >= 3 and degisim3 >= 4:
+            skor -= 10
+            riskler.append("uzun yeşil mum serisi")
+
+        # Zirve tek başına olumlu sayılmaz: uzama ile birleşirse giriş riski.
+        if (zirve_yakin or yeni_zirve) and degisim1 >= 2.0 and runup6 >= 5.5:
+            skor -= 10
+            riskler.append("lokal zirvede giriş")
+        # TURBO tipi: coin güçlü olsa da son 6 saatte zaten belirgin uzayıp
+        # tepe bölgesindeyse giriş kalitesi ciddi düşer.
+        if (zirve_yakin or yeni_zirve) and degisim1 >= 1.8 and runup6 >= 7.0:
+            skor -= 22
+            riskler.append("tepe kovalamaca riski")
+
+        # Hacim patlaması hareketin sonunda geliyorsa ATM tipi risk.
+        if hacim_kat >= 12 and degisim1 >= 3.0:
+            skor -= 10
+            riskler.append("hacim patlaması sonrası kovalamaca")
+        if hacim_kat >= 15 and degisim3 >= 6.0:
+            skor -= 8
+
+        if range_genisleme >= 2.2 and degisim1 >= 2.5:
+            skor -= 10
+            riskler.append("genişleme mumu")
+
+        if satis_baskisi:
+            skor -= 25
+            hard_block = True
+            riskler.append("satış baskısı")
+
+        if gec_pump_puan:
+            skor -= min(float(gec_pump_puan) * 7, 21)
+            if gec_pump_puan >= 2:
+                riskler.append("geç hareket riski")
+
+        # Sert güvenlik blokları: güçlü olsa bile Telegram'a gönderme.
+        if degisim1 >= 5.0:
+            hard_block = True
+            riskler.append("1s aşırı yükseliş")
+        if degisim3 >= 9.0 and degisim1 >= 3.0:
+            hard_block = True
+            riskler.append("3s aşırı momentum")
+        if runup6 >= 9.0 and (zirve_yakin or yeni_zirve):
+            hard_block = True
+            riskler.append("tepeye aşırı uzamış")
+        if ust_fitil_orani >= 0.48 and hacim_kat >= 5:
+            hard_block = True
+            riskler.append("yüksek hacimli rejection")
+
+        skor = int(max(0, min(100, round(skor))))
+        uygun = bool(skor >= GIRIS_KALITESI_MIN and not hard_block)
+        metrikler = {
+            "runup6": round(runup6, 3),
+            "ust_fitil_orani": round(ust_fitil_orani, 3),
+            "kapanis_pozisyonu": round(kapanis_pozisyonu, 3),
+            "yesil_seri": int(yesil_seri),
+            "range_genisleme": round(range_genisleme, 3),
+            "hard_block": bool(hard_block),
+        }
+        return skor, uygun, riskler[:6], metrikler
+    except Exception as e:
+        print("Giriş kalitesi hesap hatası:", e)
+        return 50, False, ["giriş kalitesi hesaplanamadı"], {}
+
+
 while True:
     try:
         print()
@@ -4389,6 +4574,7 @@ while True:
 
                 o = d["o"]
                 h = d["h"]
+                l = d.get("l") or [min(float(oo), float(cc)) for oo, cc in zip(o, d["c"])]
                 c = d["c"]
                 v = d["v"]
 
@@ -4575,6 +4761,17 @@ while True:
                     yeni_zirve
                 )
 
+                # V5.4: Güçlü coin yetmez; giriş kalitesi de yüksek olmak zorunda.
+                giris_kalitesi, giris_uygun, giris_riskleri, giris_metrikleri = giris_kalitesi_hesapla(
+                    o, h, l, c, v,
+                    degisim1, degisim3, degisim24,
+                    hacim_kat,
+                    zirve_yakin=zirve_yakin,
+                    yeni_zirve=yeni_zirve,
+                    satis_baskisi=satis_baskisi,
+                    gec_pump_puan=gec_pump_puan,
+                )
+
                 # Piyasa analizi: Sinyal üretmese bile tüm coinlerin son durumunu kaydet.
                 # Böylece son 3 günde %10+ gidip botun kaçırdığı coinler raporda bulunabilir.
                 piyasa_kaydi_ekle(symbol, {
@@ -4593,6 +4790,11 @@ while True:
                     "haber_var": haber_skoru > 0,
                     "guc_skoru": guc_skoru,
                     "gec_pump_puan": gec_pump_puan,
+                    "giris_kalitesi": giris_kalitesi,
+                    "giris_uygun": bool(giris_uygun),
+                    "tepe_riski": bool(giris_metrikleri.get("hard_block") or giris_kalitesi < GIRIS_KALITESI_MIN),
+                    "runup6": giris_metrikleri.get("runup6", 0),
+                    "ust_fitil_orani": giris_metrikleri.get("ust_fitil_orani", 0),
                     "sinyal_var": False,
                     "durum": None,
                 })
@@ -4621,7 +4823,7 @@ while True:
                 # Son eklenen piyasa kaydına sinyal durumunu işaretle.
                 try:
                     if piyasa_kayitlari and piyasa_kayitlari[-1].get("symbol") == symbol:
-                        piyasa_kayitlari[-1]["sinyal_var"] = durum in TELEGRAM_KATEGORILERI
+                        piyasa_kayitlari[-1]["sinyal_var"] = (durum in TELEGRAM_KATEGORILERI and giris_uygun)
                         piyasa_kayitlari[-1]["durum"] = durum
                 except Exception:
                     pass
@@ -4668,6 +4870,15 @@ while True:
                     "lider_bonus": lider_bonus,
                     "zirve_bonus": zirve_bonus,
                     "gec_pump_puan": gec_pump_puan,
+                    "giris_kalitesi": giris_kalitesi,
+                    "giris_uygun": bool(giris_uygun),
+                    "giris_riskleri": giris_riskleri,
+                    "tepe_riski": bool(giris_metrikleri.get("hard_block") or giris_kalitesi < GIRIS_KALITESI_MIN),
+                    "runup6": giris_metrikleri.get("runup6", 0),
+                    "ust_fitil_orani": giris_metrikleri.get("ust_fitil_orani", 0),
+                    "kapanis_pozisyonu": giris_metrikleri.get("kapanis_pozisyonu", 0),
+                    "yesil_seri": giris_metrikleri.get("yesil_seri", 0),
+                    "range_genisleme": giris_metrikleri.get("range_genisleme", 0),
                     "guclenme_notlari": guclenme_notlari,
                     "stop": stop,
                     "hedef1": hedef1,
@@ -4748,6 +4959,7 @@ while True:
                     and eski_durum in DURUM_SEVIYESI
                     and durum in DURUM_SEVIYESI
                     and DURUM_SEVIYESI[durum] < DURUM_SEVIYESI[eski_durum]
+                    and (symbol in gonderilenler or symbol in aktif_sinyaller)
                 ):
                     print(f"Kategori geriye düşmedi: {symbol} | {durum} yerine {eski_durum} korundu.")
                     durum = eski_durum
@@ -4760,11 +4972,21 @@ while True:
                     "skor": a["skor"],
                     "hacim": a["hacim"],
                     "degisim3": a["degisim3"],
+                    "giris_kalitesi": a.get("giris_kalitesi", 0),
                     "durum": durum
                 }
 
                 if durum not in TELEGRAM_KATEGORILERI:
                     print(f"Arka plan: {symbol} | {durum} | Güç: {a.get('guc_skoru', 0)}/100 | Hacim: {round(a['hacim'], 2)}x")
+                    continue
+
+                # Ana değişiklik: Roket/Elit/Yıldız güçlü olsa bile giriş kalitesi düşükse mesaj yok.
+                if not a.get("giris_uygun", False):
+                    neden = " • ".join(a.get("giris_riskleri", [])[:3]) or "giriş kalitesi yetersiz"
+                    print(
+                        f"Giriş filtresi: {symbol} | {durum} | "
+                        f"Giriş {a.get('giris_kalitesi', 0)}/100 < {GIRIS_KALITESI_MIN} | {neden}"
+                    )
                     continue
 
                 son_gonderim = gonderilenler.get(symbol)
@@ -4815,15 +5037,6 @@ while True:
 
                 for sira, a in enumerate(gosterilecekler, start=1):
                     symbol = a["symbol"]
-
-                    # Her ayrı aday kendi coin + kategori başlığını taşısın.
-                    # İlk adayın başlığı mesajın en üstünde zaten var; sonraki adaylarda
-                    # eksik kalmaması için burada tekrar başlık ekliyoruz.
-                    if sira > 1:
-                        aday_durum = a.get("durum", "")
-                        aday_baslik = baslik_map.get(aday_durum, "SİNYAL")
-                        aday_ikon = aday_durum.split()[0] if aday_durum else "🚀"
-                        mesaj += f"{aday_ikon} {symbol} | {aday_baslik}\nCOIN RADAR V5.3\nBTC 3s: %{round(btc, 2)}\n\n"
 
                     gonderilenler[symbol] = simdi
 
@@ -4888,6 +5101,7 @@ while True:
                     satir += (
                         f"Skor: {round(a['skor'], 2)}\n"
                         f"Kalite: {round(a['kalite_skoru'], 2)}\n"
+                        f"🎯 Giriş Kalitesi: {a.get('giris_kalitesi', 0)}/100 ✅\n"
                         f"🚀 Devam Gücü: {v5_devam_gucu_hesapla(a)}/100 ({v5_devam_gucu_seviye(v5_devam_gucu_hesapla(a))})\n"
                         f"Hacim: {round(a['hacim'], 2)}x\n"
                     )
@@ -4917,3 +5131,4 @@ while True:
     except Exception as e:
         print("Bot genel hata:", e)
         time.sleep(30)
+
