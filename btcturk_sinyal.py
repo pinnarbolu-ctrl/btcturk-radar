@@ -4816,6 +4816,15 @@ while True:
                 for sira, a in enumerate(gosterilecekler, start=1):
                     symbol = a["symbol"]
 
+                    # Her ayrı aday kendi coin + kategori başlığını taşısın.
+                    # İlk adayın başlığı mesajın en üstünde zaten var; sonraki adaylarda
+                    # eksik kalmaması için burada tekrar başlık ekliyoruz.
+                    if sira > 1:
+                        aday_durum = a.get("durum", "")
+                        aday_baslik = baslik_map.get(aday_durum, "SİNYAL")
+                        aday_ikon = aday_durum.split()[0] if aday_durum else "🚀"
+                        mesaj += f"{aday_ikon} {symbol} | {aday_baslik}\nCOIN RADAR V5.3\nBTC 3s: %{round(btc, 2)}\n\n"
+
                     gonderilenler[symbol] = simdi
 
                     if symbol not in aktif_sinyaller:
