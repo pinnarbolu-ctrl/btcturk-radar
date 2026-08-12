@@ -14,6 +14,10 @@ CHAT_IDS = [
 
 TEKRAR_SURESI = 3 * 60 * 60
 TARAMA_SURESI = 5 * 60
+HIZLI_ON_TARAMA_SURESI = 60
+HIZLI_FIYAT_ESIK = 0.40  # 60 sn fiyat ivmesi (%)
+HIZLI_HACIM_ESIK = 0.35  # ticker hacmindeki 60 sn pozitif artış (%)
+HIZLI_MAX_ADAY = 15       # API yükünü sınırlamak için dakikada en fazla tam analiz
 STOP_RAPOR_SURESI = 2 * 60 * 60
 HAFTALIK_RAPOR_SURESI = 7 * 24 * 60 * 60
 
@@ -4556,6 +4560,51 @@ def giris_kalitesi_hesapla(o, h, l, c, v, degisim1, degisim3, degisim24,
         return 50, False, ["giriş kalitesi hesaplanamadı"], {}
 
 
+# === V5.4 60 SN SESSIZ HIZLI ON TARAMA ===
+# Yeni kategori/sinyal üretmez. Yalnızca hızlı fiyat veya hacim ivmesi görülen
+# coinleri 5 dakikalık genel taramayı beklemeden mevcut Radar analizine sokar.
+son_tam_tarama = 0.0
+on_tarama_onceki_ticker = {}
+
+def _ticker_float(veri, *alanlar):
+    for alan in alanlar:
+        try:
+            deger = veri.get(alan)
+            if deger is not None and deger != "":
+                return float(deger)
+        except Exception:
+            pass
+    return 0.0
+
+def hizli_on_tarama_adaylari(ticker, onceki):
+    adaylar = []
+    yeni_snapshot = {}
+    for coin in ticker:
+        try:
+            symbol = coin.get("pair", "")
+            if not symbol.endswith("TRY") or symbol == "BTCTRY" or stable_coin_mi(symbol) or len(symbol) > 15:
+                continue
+            fiyat = _ticker_float(coin, "last", "lastPrice", "price")
+            hacim = _ticker_float(coin, "volume", "volume24h", "quoteVolume")
+            if fiyat <= 0:
+                continue
+            yeni_snapshot[symbol] = {"fiyat": fiyat, "hacim": hacim}
+            eski = onceki.get(symbol)
+            if not eski:
+                continue
+            eski_fiyat = float(eski.get("fiyat", 0) or 0)
+            eski_hacim = float(eski.get("hacim", 0) or 0)
+            fiyat_ivme = ((fiyat / eski_fiyat) - 1.0) * 100 if eski_fiyat > 0 else 0.0
+            hacim_ivme = ((hacim / eski_hacim) - 1.0) * 100 if eski_hacim > 0 and hacim > eski_hacim else 0.0
+            if fiyat_ivme >= HIZLI_FIYAT_ESIK or hacim_ivme >= HIZLI_HACIM_ESIK:
+                guc = max(fiyat_ivme / max(HIZLI_FIYAT_ESIK, 0.01), hacim_ivme / max(HIZLI_HACIM_ESIK, 0.01))
+                adaylar.append((guc, symbol, fiyat_ivme, hacim_ivme))
+        except Exception:
+            continue
+    adaylar.sort(reverse=True)
+    return adaylar[:HIZLI_MAX_ADAY], yeni_snapshot
+# === /V5.4 60 SN SESSIZ HIZLI ON TARAMA ===
+
 while True:
     try:
         print()
@@ -4574,6 +4623,27 @@ while True:
             timeout=10
         ).json()["data"]
 
+        simdi_tarama = time.time()
+        tam_tarama = (simdi_tarama - son_tam_tarama) >= TARAMA_SURESI
+        hizli_hedefler = set()
+
+        hizli_adaylar, yeni_ticker_snapshot = hizli_on_tarama_adaylari(ticker, on_tarama_onceki_ticker)
+        on_tarama_onceki_ticker = yeni_ticker_snapshot
+
+        if tam_tarama:
+            son_tam_tarama = simdi_tarama
+            print("🔎 Tam piyasa taraması (5 dk)")
+        else:
+            hizli_hedefler = {x[1] for x in hizli_adaylar}
+            if hizli_adaylar:
+                ozet = ", ".join(
+                    f"{sym}(fiyat %{fp:+.2f}, hacim %{vp:+.2f})"
+                    for _, sym, fp, vp in hizli_adaylar[:8]
+                )
+                print(f"⚡ 60 sn ön tarama tetikledi: {ozet}")
+            else:
+                print("⚡ 60 sn ön tarama: hızlanan coin yok")
+
         adaylar = []
 
         for coin in ticker:
@@ -4590,6 +4660,10 @@ while True:
                     continue
 
                 if len(symbol) > 15:
+                    continue
+
+                # 5 dk ana taramada tüm piyasa; ara dakikalarda sadece hızlanan coinler.
+                if not tam_tarama and symbol not in hizli_hedefler:
                     continue
 
                 d = veri_getir(symbol, 24)
@@ -5147,8 +5221,9 @@ while True:
                 telegram_gonder(mesaj)
                 print("Telegram gönderildi.")
 
-        print("5 dk bekleniyor...")
-        time.sleep(TARAMA_SURESI)
+        # Ana tarama 5 dakikada bir, sessiz ön tarama ise her 60 saniyede çalışır.
+        print("60 sn bekleniyor...")
+        time.sleep(HIZLI_ON_TARAMA_SURESI)
 
     except Exception as e:
         print("Bot genel hata:", e)
