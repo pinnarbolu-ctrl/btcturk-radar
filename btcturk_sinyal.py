@@ -1890,7 +1890,7 @@ V5_DNA_ALANLARI = [
     "zirve_yakin", "yeni_zirve", "zirve_teyidi", "zirve_bonus", "zirve_mesafe",
     "haber", "haber_var", "haber_pozitif", "haber_negatif", "haber_bonus", "haber_risk",
     "rsi", "macd", "macd_signal", "macd_hist", "ema20", "ema50", "ema200", "ema_durum", "trend_durum",
-    "giris_kalitesi", "giris_uygun", "tepe_riski", "giris_riskleri", "runup6", "ust_fitil_orani", "kapanis_pozisyonu", "yesil_seri", "range_genisleme",
+    "giris_kalitesi", "giris_uygun", "tepe_riski", "giris_riskleri", "runup6", "ust_fitil_orani", "kapanis_pozisyonu", "yesil_seri", "range_genisleme", "tek_mum_hakimiyeti", "max_pozitif_mum", "hacim_sicrama", "basamakli_yukselis", "dikey_sicrama",
     "fear_greed", "btc_dominans", "dominans_durum",
     "ortak_sinyal", "filtre_imzasi", "pattern_key", "dna_alan_sayisi", "created_at"
 ]
@@ -2235,6 +2235,8 @@ def v5_make_dna(symbol, a, simdi):
         "runup6": v5_round(a.get("runup6")), "ust_fitil_orani": v5_round(a.get("ust_fitil_orani")),
         "kapanis_pozisyonu": v5_round(a.get("kapanis_pozisyonu")), "yesil_seri": v5_safe_int(a.get("yesil_seri")),
         "range_genisleme": v5_round(a.get("range_genisleme")),
+        "tek_mum_hakimiyeti": v5_round(a.get("tek_mum_hakimiyeti")), "max_pozitif_mum": v5_round(a.get("max_pozitif_mum")),
+        "hacim_sicrama": v5_round(a.get("hacim_sicrama")), "basamakli_yukselis": bool(a.get("basamakli_yukselis")), "dikey_sicrama": bool(a.get("dikey_sicrama")),
         "hacim": v5_round(hacim), "hacim_log": v5_round(math.log1p(max(hacim, 0))),
         "hacim_2x": hacim >= 2, "hacim_5x": hacim >= 5, "hacim_7x": hacim >= 7, "hacim_8x": hacim >= 8, "hacim_10x": hacim >= 10, "hacim_12x": hacim >= 12, "hacim_15x": hacim >= 15, "hacim_20x": hacim >= 20, "hacim_50x": hacim >= 50,
         "hacim_gucleniyor": bool(hacim_gucleniyor), "hacim_onceki": v5_round(onceki_hacim), "hacim_artis_orani": v5_round(((hacim - onceki_hacim) / onceki_hacim * 100) if onceki_hacim else 0), "hacim_bonus": v5_safe_int(a.get("hacim_bonus")),
@@ -4415,6 +4417,50 @@ def giris_kalitesi_hesapla(o, h, l, c, v, degisim1, degisim3, degisim24,
         anlik_range_pct = cur_range / prev_close * 100 if prev_close > 0 else 0.0
         range_genisleme = (anlik_range_pct / ort_range_pct) if ort_range_pct > 0 else 1.0
 
+        # V5.4.1 HAREKET YAPISI:
+        # LIT tipi basamaklı/sağlıklı yükseliş ile LINK/ATM tipi tek mumda dikey
+        # sıçramayı ayırır. Sadece toplam yüzdeye değil, hareketin dağılımına bakar.
+        son_n = min(6, len(c) - 1)
+        mum_getirileri = []
+        for i in range(len(c) - son_n, len(c)):
+            onceki_kapanis = float(c[i - 1]) if i > 0 else 0.0
+            if onceki_kapanis > 0:
+                mum_getirileri.append(((float(c[i]) / onceki_kapanis) - 1.0) * 100)
+
+        pozitif_getiriler = [x for x in mum_getirileri if x > 0]
+        toplam_pozitif = sum(pozitif_getiriler)
+        max_pozitif_mum = max(pozitif_getiriler) if pozitif_getiriler else 0.0
+        tek_mum_hakimiyeti = (max_pozitif_mum / toplam_pozitif) if toplam_pozitif > 0 else 0.0
+        yuksek_kapanis_sayisi = sum(1 for x in mum_getirileri if x > 0.15)
+        saglikli_geri_cekilme = sum(1 for x in mum_getirileri if -1.5 <= x < -0.05)
+        sert_geri_cekilme = sum(1 for x in mum_getirileri if x < -2.0)
+
+        # Hacim tek mumda patlıyor mu? Son mum hacmini önceki 5 mum medyanıyla kıyasla.
+        hacim_sicrama = 1.0
+        try:
+            onceki_hacimler = sorted(float(x) for x in v[-6:-1] if float(x) >= 0)
+            if onceki_hacimler:
+                orta = len(onceki_hacimler) // 2
+                if len(onceki_hacimler) % 2:
+                    hacim_medyan = onceki_hacimler[orta]
+                else:
+                    hacim_medyan = (onceki_hacimler[orta - 1] + onceki_hacimler[orta]) / 2.0
+                if hacim_medyan > 0:
+                    hacim_sicrama = float(v[-1]) / hacim_medyan
+        except Exception:
+            hacim_sicrama = 1.0
+
+        basamakli_yukselis = bool(
+            yuksek_kapanis_sayisi >= 3
+            and tek_mum_hakimiyeti <= 0.55
+            and max_pozitif_mum <= 3.5
+            and sert_geri_cekilme == 0
+        )
+        dikey_sicrama = bool(
+            (tek_mum_hakimiyeti >= 0.65 and max_pozitif_mum >= 2.2)
+            or (hacim_sicrama >= 3.0 and max_pozitif_mum >= 2.5)
+        )
+
         # Sağlıklı başlangıç / devam bölgesi ödülleri.
         if 0.25 <= degisim1 <= 2.8:
             skor += 10
@@ -4494,6 +4540,35 @@ def giris_kalitesi_hesapla(o, h, l, c, v, degisim1, degisim3, degisim24,
             skor -= 10
             riskler.append("genişleme mumu")
 
+        # Hareket yapısı artık giriş puanının merkezinde.
+        # Basamaklı yükseliş: birkaç mum boyunca ilerleme + arada nefeslenme +
+        # tek mumun tüm hareketi taşımaması. Bu yapı Elit/Yıldız'da da girişin
+        # sağlıklı kalmasına yardımcı olur.
+        if basamakli_yukselis:
+            skor += 12
+        if yuksek_kapanis_sayisi >= 3 and saglikli_geri_cekilme >= 1 and not dikey_sicrama:
+            skor += 5
+
+        # Dikey sıçrama: hareketin büyük kısmı tek mumda oluşuyorsa yüksek
+        # Giriş Kalitesi verilmesini engelle. LINK/ATM tipi yapı burada takılır.
+        if tek_mum_hakimiyeti >= 0.70 and max_pozitif_mum >= 2.5:
+            skor -= 20
+            riskler.append("tek mum hareketi domine ediyor")
+        elif tek_mum_hakimiyeti >= 0.60 and max_pozitif_mum >= 2.0:
+            skor -= 12
+            riskler.append("dikey hızlanma")
+
+        if hacim_sicrama >= 3.0 and max_pozitif_mum >= 2.5:
+            skor -= 14
+            riskler.append("tek mumda hacim+fiyat patlaması")
+        elif hacim_sicrama >= 2.2 and degisim1 >= 2.2:
+            skor -= 8
+            riskler.append("ani hacim hızlanması")
+
+        if sert_geri_cekilme >= 1:
+            skor -= 8
+            riskler.append("yapıda sert geri çekilme")
+
         if satis_baskisi:
             skor -= 25
             hard_block = True
@@ -4517,6 +4592,13 @@ def giris_kalitesi_hesapla(o, h, l, c, v, degisim1, degisim3, degisim24,
         if ust_fitil_orani >= 0.48 and hacim_kat >= 5:
             hard_block = True
             riskler.append("yüksek hacimli rejection")
+        # Çok belirgin tek-mum pump: puan 68 üstünde kalsa bile gönderme.
+        if tek_mum_hakimiyeti >= 0.82 and max_pozitif_mum >= 4.0:
+            hard_block = True
+            riskler.append("tek mum pump / geç giriş")
+        if hacim_sicrama >= 5.0 and degisim1 >= 4.0:
+            hard_block = True
+            riskler.append("hacim climax + dikey mum")
 
         skor = int(max(0, min(100, round(skor))))
         uygun = bool(skor >= GIRIS_KALITESI_MIN and not hard_block)
@@ -4526,6 +4608,13 @@ def giris_kalitesi_hesapla(o, h, l, c, v, degisim1, degisim3, degisim24,
             "kapanis_pozisyonu": round(kapanis_pozisyonu, 3),
             "yesil_seri": int(yesil_seri),
             "range_genisleme": round(range_genisleme, 3),
+            "tek_mum_hakimiyeti": round(tek_mum_hakimiyeti, 3),
+            "max_pozitif_mum": round(max_pozitif_mum, 3),
+            "hacim_sicrama": round(hacim_sicrama, 3),
+            "yuksek_kapanis_sayisi": int(yuksek_kapanis_sayisi),
+            "saglikli_geri_cekilme": int(saglikli_geri_cekilme),
+            "basamakli_yukselis": bool(basamakli_yukselis),
+            "dikey_sicrama": bool(dikey_sicrama),
             "hard_block": bool(hard_block),
         }
         return skor, uygun, riskler[:6], metrikler
@@ -4879,6 +4968,11 @@ while True:
                     "kapanis_pozisyonu": giris_metrikleri.get("kapanis_pozisyonu", 0),
                     "yesil_seri": giris_metrikleri.get("yesil_seri", 0),
                     "range_genisleme": giris_metrikleri.get("range_genisleme", 0),
+                    "tek_mum_hakimiyeti": giris_metrikleri.get("tek_mum_hakimiyeti", 0),
+                    "max_pozitif_mum": giris_metrikleri.get("max_pozitif_mum", 0),
+                    "hacim_sicrama": giris_metrikleri.get("hacim_sicrama", 1),
+                    "basamakli_yukselis": bool(giris_metrikleri.get("basamakli_yukselis", False)),
+                    "dikey_sicrama": bool(giris_metrikleri.get("dikey_sicrama", False)),
                     "guclenme_notlari": guclenme_notlari,
                     "stop": stop,
                     "hedef1": hedef1,
