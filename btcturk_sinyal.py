@@ -35,10 +35,21 @@ def _v5_rapor_state_yukle():
     try:
         with open(V5_RAPOR_STATE_DOSYA, "r", encoding="utf-8") as f:
             veri = json.load(f)
-        return float(veri.get("son_haftalik_rapor", 0) or 0)
+        ts = float(veri.get("son_haftalik_rapor", 0) or 0)
+        if ts > 0:
+            return ts
     except Exception:
-        # İlk çalıştırmada rapor gecikmesin; ilk ana döngüde gönderilebilir.
-        return 0.0
+        pass
+
+    # Deploy / restart anında haftalık rapor gönderme.
+    # State dosyası yoksa bu açılış anını yeni başlangıç kabul et.
+    simdi = time.time()
+    try:
+        _v5_rapor_state_kaydet(simdi)
+    except Exception:
+        pass
+    print("📅 Haftalık rapor state bulunamadı; sayaç bu açılıştan itibaren başlatıldı.")
+    return simdi
 
 def _v5_rapor_state_kaydet(zaman_degeri):
     try:
@@ -3159,6 +3170,17 @@ def haftalik_rapor_gonder():
         _son_rapor_kontrol_logu = simdi
 
     if kalan > 0:
+        return False
+
+    # Otomatik haftalık rapor boş veriyle gönderilmesin. /hafta komutu yine her zaman çalışır.
+    try:
+        son7 = [k for k in v5_load_records() if v5_ts(k) >= simdi - HAFTALIK_RAPOR_SURESI]
+    except Exception:
+        son7 = []
+    if not son7:
+        print("📊 Haftalık rapor zamanı geldi ama son 7 günde V5 sinyali yok; otomatik rapor gönderilmedi.")
+        son_haftalik_rapor = simdi
+        _v5_rapor_state_kaydet(simdi)
         return False
 
     try:
