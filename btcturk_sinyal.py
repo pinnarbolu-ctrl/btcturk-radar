@@ -18,6 +18,8 @@ HIZLI_ON_TARAMA_SURESI = 60
 HIZLI_FIYAT_ESIK = 0.40  # 60 sn fiyat ivmesi (%)
 HIZLI_HACIM_ESIK = 0.35  # ticker hacmindeki 60 sn pozitif artış (%)
 HIZLI_MAX_ADAY = 15       # API yükünü sınırlamak için dakikada en fazla tam analiz
+HIZLI_IZLEME_SURESI = 3 * 60    # Ön taramanın yakaladığı coin 3 dk sessiz takipte kalır
+hizli_izleme_havuzu = {}        # symbol -> son tetiklenme zamanı
 STOP_RAPOR_SURESI = 2 * 60 * 60
 HAFTALIK_RAPOR_SURESI = 7 * 24 * 60 * 60
 
@@ -4560,7 +4562,7 @@ def giris_kalitesi_hesapla(o, h, l, c, v, degisim1, degisim3, degisim24,
         return 50, False, ["giriş kalitesi hesaplanamadı"], {}
 
 
-# === V5.4 60 SN SESSIZ HIZLI ON TARAMA ===
+# === V5.4.1 60 SN SESSIZ HIZLI ON TARAMA + 3 DK IZLEME HAVUZU ===
 # Yeni kategori/sinyal üretmez. Yalnızca hızlı fiyat veya hacim ivmesi görülen
 # coinleri 5 dakikalık genel taramayı beklemeden mevcut Radar analizine sokar.
 son_tam_tarama = 0.0
@@ -4603,7 +4605,7 @@ def hizli_on_tarama_adaylari(ticker, onceki):
             continue
     adaylar.sort(reverse=True)
     return adaylar[:HIZLI_MAX_ADAY], yeni_snapshot
-# === /V5.4 60 SN SESSIZ HIZLI ON TARAMA ===
+# === /V5.4.1 60 SN SESSIZ HIZLI ON TARAMA + 3 DK IZLEME HAVUZU ===
 
 while True:
     try:
@@ -4630,11 +4632,24 @@ while True:
         hizli_adaylar, yeni_ticker_snapshot = hizli_on_tarama_adaylari(ticker, on_tarama_onceki_ticker)
         on_tarama_onceki_ticker = yeni_ticker_snapshot
 
+        # V5.4.1 SESSİZ HIZLI İZLEME HAVUZU
+        # Ön taramada hızlanan coin ilk analizde Roket/Elit/Yıldız olmasa bile
+        # hemen unutulmaz. 3 dakika boyunca her 60 saniyede yeniden mevcut
+        # Radar kriterleriyle analiz edilir. Yeni Telegram kategorisi üretmez.
+        for _, sym, _, _ in hizli_adaylar:
+            hizli_izleme_havuzu[sym] = simdi_tarama
+
+        hizli_izleme_havuzu = {
+            sym: ts for sym, ts in hizli_izleme_havuzu.items()
+            if simdi_tarama - ts <= HIZLI_IZLEME_SURESI
+        }
+
         if tam_tarama:
             son_tam_tarama = simdi_tarama
             print("🔎 Tam piyasa taraması (5 dk)")
         else:
-            hizli_hedefler = {x[1] for x in hizli_adaylar}
+            anlik_hizli_hedefler = {x[1] for x in hizli_adaylar}
+            hizli_hedefler = anlik_hizli_hedefler | set(hizli_izleme_havuzu.keys())
             if hizli_adaylar:
                 ozet = ", ".join(
                     f"{sym}(fiyat %{fp:+.2f}, hacim %{vp:+.2f})"
@@ -4643,6 +4658,12 @@ while True:
                 print(f"⚡ 60 sn ön tarama tetikledi: {ozet}")
             else:
                 print("⚡ 60 sn ön tarama: hızlanan coin yok")
+
+            if hizli_izleme_havuzu:
+                print(
+                    "👀 Sessiz hızlı izleme: "
+                    + ", ".join(sorted(hizli_izleme_havuzu.keys()))
+                )
 
         adaylar = []
 
