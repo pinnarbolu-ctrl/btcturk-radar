@@ -19,6 +19,13 @@ HIZLI_FIYAT_ESIK = 0.40  # 60 sn fiyat ivmesi (%)
 HIZLI_HACIM_ESIK = 0.35  # ticker hacmindeki 60 sn pozitif artış (%)
 HIZLI_MAX_ADAY = 15       # API yükünü sınırlamak için dakikada en fazla tam analiz
 HIZLI_IZLEME_SURESI = 3 * 60    # Ön taramanın yakaladığı coin 3 dk sessiz takipte kalır
+
+# V5.4.2 ERKEN ROKET: 2-3 kısa mumun basamak şeklinde birbirini geçmesini yakalar.
+# Amaç 5x hacmi beklemek değil; fiyat yapısı + hacim ivmesi + BTC üstünlüğü ile erkenden puan vermek.
+MIKRO_BASAMAK_MIN_SKOR = 60
+MIKRO_BASAMAK_MIN_HACIM = 1.35
+MIKRO_BASAMAK_MAX_DEGISIM1 = 3.20
+MIKRO_BASAMAK_MAX_DEGISIM3 = 5.50
 hizli_izleme_havuzu = {}        # symbol -> son tetiklenme zamanı
 STOP_RAPOR_SURESI = 2 * 60 * 60
 HAFTALIK_RAPOR_SURESI = 7 * 24 * 60 * 60
@@ -891,6 +898,12 @@ def neden_secildi_olustur(a):
 
     if a.get("btc_fark24", 0) >= 2:
         notlar.append(f"BTC'den 24s bazda %{round(a.get('btc_fark24', 0), 2)} güçlü")
+
+    if a.get("mikro_basamak"):
+        notlar.append(
+            f"Erken yapı: {int(a.get('mikro_mum_sayisi', 0))} kısa mum basamak • "
+            f"puan {int(a.get('mikro_basamak_skor', 0))}/100"
+        )
 
     if a.get("hacim", 0) >= 15:
         notlar.append(f"Trader hacim: {round(a.get('hacim', 0), 2)}x")
@@ -1787,7 +1800,110 @@ def hedef_stop_kontrol():
         aktif_sinyaller.pop(symbol, None)
 
 
-def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, btc_fark, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0, btc_guc_skoru=0, lider_skoru=0, guc_skoru=0, yeni_zirve=False):
+def mikro_basamak_hesapla(o, h, l, c, v):
+    """V5.4.2 erken roket formasyonu.
+
+    Son saatlik mumlarda 2-3 kısa mumun basamak şeklinde yukarı taşınmasını ölçer.
+    Büyük patlama mumunu beklemek yerine, patlama öncesi sıkışma + yukarı taşıma +
+    hacim ivmesini puanlar. Yalnızca mevcut/geçmiş mum kullanır.
+    """
+    try:
+        n = min(len(o), len(h), len(l), len(c), len(v))
+        if n < 10:
+            return 0, False, {"mum_sayisi": 0, "hacim_ivmesi": 1.0, "neden": "yetersiz veri"}
+
+        oo = [float(x) for x in o[-12:]]
+        hh = [float(x) for x in h[-12:]]
+        ll = [float(x) for x in l[-12:]]
+        cc = [float(x) for x in c[-12:]]
+        vv = [float(x) for x in v[-12:]]
+        m = len(cc)
+
+        # Son 8 mumun tipik gövdesi: "kısa mum" için coine göre adaptif referans.
+        body_pct = []
+        for i in range(max(0, m - 9), m - 1):
+            base = abs(oo[i]) if oo[i] else abs(cc[i])
+            if base > 0:
+                body_pct.append(abs(cc[i] - oo[i]) / base * 100.0)
+        body_ref = sorted(body_pct)[len(body_pct)//2] if body_pct else 0.6
+        kisa_esik = max(0.22, min(1.35, body_ref * 1.35))
+
+        best = {"skor": 0, "mum_sayisi": 0, "hacim_ivmesi": 1.0, "kisa_esik": kisa_esik}
+
+        # 2 veya 3 mumluk diziyi, son 4 mum içinde ara. Böylece mevcut saatlik mum
+        # henüz tamamlanmadan da basamak yapısı görülebilir.
+        for adet in (3, 2):
+            for end in range(m - 1, max(adet - 2, m - 5), -1):
+                start = end - adet + 1
+                if start < 0:
+                    continue
+                idx = list(range(start, end + 1))
+
+                govdeler = []
+                kisa = True
+                for i in idx:
+                    base = abs(oo[i]) if oo[i] else abs(cc[i])
+                    bp = abs(cc[i] - oo[i]) / base * 100.0 if base > 0 else 99
+                    govdeler.append(bp)
+                    if bp > kisa_esik:
+                        kisa = False
+                        break
+                if not kisa:
+                    continue
+
+                # "Birbirini geçme": kapanışlar ve tepeler basamak şeklinde yukarı.
+                kapanis_yukari = all(cc[b] > cc[a] for a, b in zip(idx, idx[1:]))
+                tepe_yukari = all(hh[b] >= hh[a] for a, b in zip(idx, idx[1:]))
+                dip_korunuyor = all(ll[b] >= ll[a] * 0.997 for a, b in zip(idx, idx[1:]))
+                if not (kapanis_yukari and tepe_yukari and dip_korunuyor):
+                    continue
+
+                # Seri toplamda pozitif olmalı ama henüz patlama kadar uzamış olmamalı.
+                ilk = cc[idx[0]-1] if idx[0] > 0 else oo[idx[0]]
+                seri_getiri = ((cc[idx[-1]] / ilk) - 1.0) * 100.0 if ilk > 0 else 0.0
+                if seri_getiri <= 0 or seri_getiri > 4.5:
+                    continue
+
+                # Hacim: 5x şartı değil, seri içinde kademeli artış / son mumun öncekiye göre açılması.
+                vol_seq = [max(vv[i], 0.0) for i in idx]
+                hacim_artiyor = sum(1 for a, b in zip(vol_seq, vol_seq[1:]) if b >= a * 0.92)
+                first_v = max(vol_seq[0], 1e-12)
+                hacim_ivmesi = vol_seq[-1] / first_v
+
+                puan = 0
+                puan += 38 if adet == 3 else 28
+                puan += 18 if kapanis_yukari else 0
+                puan += 12 if tepe_yukari else 0
+                puan += 8 if dip_korunuyor else 0
+                if hacim_artiyor >= adet - 1:
+                    puan += 12
+                elif hacim_ivmesi >= 1.15:
+                    puan += 8
+                if 0.20 <= seri_getiri <= 2.80:
+                    puan += 10
+                elif seri_getiri <= 4.0:
+                    puan += 5
+
+                puan = int(max(0, min(100, puan)))
+                if puan > best["skor"]:
+                    best = {
+                        "skor": puan,
+                        "mum_sayisi": adet,
+                        "hacim_ivmesi": round(hacim_ivmesi, 3),
+                        "seri_getiri": round(seri_getiri, 3),
+                        "ort_govde": round(sum(govdeler)/len(govdeler), 3),
+                        "kisa_esik": round(kisa_esik, 3),
+                        "son_index": end,
+                    }
+
+        uygun = best.get("skor", 0) >= MIKRO_BASAMAK_MIN_SKOR
+        return best.get("skor", 0), bool(uygun), best
+    except Exception as e:
+        print("Mikro basamak hesap hatası:", e)
+        return 0, False, {"mum_sayisi": 0, "hacim_ivmesi": 1.0, "neden": str(e)}
+
+
+def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, btc_fark, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0, btc_guc_skoru=0, lider_skoru=0, guc_skoru=0, yeni_zirve=False, mikro_basamak=False, mikro_basamak_skor=0, mikro_hacim_ivmesi=1.0):
     """
     V4.25 kategori mantığı.
 
@@ -1841,7 +1957,25 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
             return "📊 TRADER HACİM", "15x+ hacim + BTC gücü + zirve teyidi"
         return "📊 TRADER HACİM", "15x+ hacim + BTC gücü"
 
-    # 4) 🚀 ROKET ADAYI - haberli veya sessiz güçlü aday
+    # 4) 🚀 ERKEN ROKET ADAYI - 5x hacmi beklemeden mikro basamak yapısını kullanır.
+    # 2-3 kısa mum birbirini yukarı geçiyor + BTC üstünlüğü + erken momentum varsa
+    # mevcut Roket Adayı kategorisini erkenden açar. Yeni Telegram kategorisi üretmez.
+    if (
+        mikro_basamak
+        and mikro_basamak_skor >= MIKRO_BASAMAK_MIN_SKOR
+        and guc_skoru >= 48
+        and kalite_skoru >= 6
+        and hacim_kat >= MIKRO_BASAMAK_MIN_HACIM
+        and degisim1 > 0
+        and degisim1 <= MIKRO_BASAMAK_MAX_DEGISIM1
+        and degisim3 >= 0.7
+        and degisim3 <= MIKRO_BASAMAK_MAX_DEGISIM3
+        and btcden_guclu
+        and (lider_skoru >= 3 or mikro_hacim_ivmesi >= 1.15 or haber_skoru > 0)
+    ):
+        return "🚀 Roket Adayı", f"Erken mikro basamak ({int(mikro_basamak_skor)}/100)"
+
+    # 5) 🚀 ROKET ADAYI - standart güçlü aday
     if (
         guc_skoru >= 62
         and kalite_skoru >= 8
@@ -4532,6 +4666,9 @@ def giris_kalitesi_hesapla(o, h, l, c, v, degisim1, degisim3, degisim24,
             if gec_pump_puan >= 2:
                 riskler.append("geç hareket riski")
 
+        # Not: mikro basamak puanı ana döngüde ayrıca eklenir; giriş kalitesi burada
+        # sadece uzama/tepe riskini korumaya devam eder.
+
         # Sert güvenlik blokları: güçlü olsa bile Telegram'a gönderme.
         if degisim1 >= 6.0:
             hard_block = True
@@ -4712,6 +4849,11 @@ while True:
 
                 hacim_kat = son_hacim / ort_hacim
 
+                # V5.4.2: Patlama mumundan önce görülen 2-3 kısa "basamak" mumu.
+                mikro_basamak_skor, mikro_basamak, mikro_metrikler = mikro_basamak_hesapla(o, h, l, c, v)
+                mikro_hacim_ivmesi = float(mikro_metrikler.get("hacim_ivmesi", 1.0) or 1.0)
+                mikro_mum_sayisi = int(mikro_metrikler.get("mum_sayisi", 0) or 0)
+
                 btc_guc_skoru, btc_fark1, btc_fark3, btc_fark24 = btc_gucu_v2_hesapla(
                     degisim1,
                     degisim3,
@@ -4806,6 +4948,18 @@ while True:
                 if satis_baskisi:
                     genel_skor -= 5
 
+                # V5.4.2 erken yapı bonusu: 5x hacim gelmeden skoru hazırlamaya başlar.
+                # Büyük tek mum değil, küçük basamaklar ödüllendirilir.
+                mikro_bonus = 0
+                if mikro_basamak:
+                    mikro_bonus = 4 if mikro_mum_sayisi >= 3 else 3
+                    if mikro_hacim_ivmesi >= 1.15:
+                        mikro_bonus += 2
+                    if 0 < degisim1 <= 2.5 and 0.7 <= degisim3 <= 4.5:
+                        mikro_bonus += 2
+                    genel_skor += mikro_bonus
+                    kalite_skoru += min(4, mikro_bonus)
+
 
                 guclenme_bonus, guclenme_notlari = guclenme_bonusu_hesapla(
                     symbol,
@@ -4878,6 +5032,9 @@ while True:
                     yeni_zirve
                 )
 
+                if mikro_basamak and btcden_guclu:
+                    guc_skoru = round(min(100, guc_skoru + (8 if mikro_mum_sayisi >= 3 else 6) + (3 if mikro_hacim_ivmesi >= 1.15 else 0)), 2)
+
                 # V5.4: Güçlü coin yetmez; giriş kalitesi de yüksek olmak zorunda.
                 giris_kalitesi, giris_uygun, giris_riskleri, giris_metrikleri = giris_kalitesi_hesapla(
                     o, h, l, c, v,
@@ -4912,6 +5069,10 @@ while True:
                     "tepe_riski": bool(giris_metrikleri.get("hard_block") or giris_kalitesi < GIRIS_KALITESI_MIN),
                     "runup6": giris_metrikleri.get("runup6", 0),
                     "ust_fitil_orani": giris_metrikleri.get("ust_fitil_orani", 0),
+                    "mikro_basamak": bool(mikro_basamak),
+                    "mikro_basamak_skor": mikro_basamak_skor,
+                    "mikro_mum_sayisi": mikro_mum_sayisi,
+                    "mikro_hacim_ivmesi": round(mikro_hacim_ivmesi, 3),
                     "sinyal_var": False,
                     "durum": None,
                 })
@@ -4932,7 +5093,10 @@ while True:
                     btc_guc_skoru,
                     lider_skoru,
                     guc_skoru,
-                    yeni_zirve
+                    yeni_zirve,
+                    mikro_basamak,
+                    mikro_basamak_skor,
+                    mikro_hacim_ivmesi
                 )
                 if durum is None:
                     continue
@@ -4996,6 +5160,11 @@ while True:
                     "kapanis_pozisyonu": giris_metrikleri.get("kapanis_pozisyonu", 0),
                     "yesil_seri": giris_metrikleri.get("yesil_seri", 0),
                     "range_genisleme": giris_metrikleri.get("range_genisleme", 0),
+                    "mikro_basamak": bool(mikro_basamak),
+                    "mikro_basamak_skor": mikro_basamak_skor,
+                    "mikro_mum_sayisi": mikro_mum_sayisi,
+                    "mikro_hacim_ivmesi": round(mikro_hacim_ivmesi, 3),
+                    "mikro_bonus": mikro_bonus,
                     "guclenme_notlari": guclenme_notlari,
                     "stop": stop,
                     "hedef1": hedef1,
