@@ -91,12 +91,11 @@ DURUM_SEVIYESI = {
     "📈 GÜÇLENİYOR": 4,
     "🚀 Roket Adayı": 5,
     "🔥 Elit Roket": 6,
-    "⭐ Yıldız": 7  # V5.4.5: Telegram kategorisi değil; eski kayıt uyumluluğu için tutuluyor
+    "⭐ Yıldız": 7  # V5.4.6: Telegram kategorisi değil; eski kayıt uyumluluğu için tutuluyor
 }
 
 # V4.25: Telegram sadeleşti. Bu kategoriler dışındakiler sadece arka planda izlenir.
 TELEGRAM_KATEGORILERI = {
-    "📊 TRADER HACİM",
     "🚀 Roket Adayı",
     "🔥 Elit Roket",
 }
@@ -1788,44 +1787,28 @@ def hedef_stop_kontrol():
 
 def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, btc_fark, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0, btc_guc_skoru=0, lider_skoru=0, guc_skoru=0, yeni_zirve=False):
     """
-    V5.4.5 kategori mantığı.
+    V5.4.6 TEMİZ İKİ KATEGORİLİ CANLI MOTOR
 
-    - 🚀 Roket Adayı: GERÇEK erken yakalama katmanı. Amaç hareket %4-5 olmadan,
-      mümkünse ilk %1-3 bölgesinde güç oluşumunu görmek.
-    - 🔥 Elit Roket: Eski Roket Adayı / güçlü teyit mantığı. Yani daha geç ama
-      kanıtlanmış hareket ikinci seviye olarak kalır.
-    - ⭐ Yıldız: Şimdilik Telegram karar motorundan kaldırıldı. Yıldız analizi/DNA
-      kayıtları gelecekte ayrı tahmin modeli kurmak için korunur.
+    🚀 Roket Adayı:
+      Yeni erken yakalama mantığı. Amaç hareket %4-5 olmadan, mümkünse ilk %1-3
+      bölgesinde güç oluşumunu görmek.
+
+    🔥 Elit Roket:
+      Eski Roket Adayı'nın teyitli/güçlü mantığı. Artık ilk alarm değil,
+      erken adayın olgunlaşmış ikinci seviyesi.
+
+    ⭐ Yıldız:
+      Canlı kategoriden tamamen kapalı. DNA/geçmiş kayıtları gelecekte gerçek
+      büyük-hareket tahmin modeli için korunur.
+
+    Not:
+      Eski "Elit Roket" için ayrı ikinci kategori yolu YOKTUR. Onun güçlü
+      özellikleri yalnızca aynı Elit kararının açıklamasını güçlendirir.
     """
 
-    # 1) 🔥 ELİT ROKET - eski çok güçlü/Elit koşul
-    if (
-        guc_skoru >= 74
-        and lider_skoru >= 5
-        and btc_guc_skoru >= 5
-        and kalite_skoru >= 10
-        and hacim_kat >= 8
-        and degisim1 > 0
-        and degisim3 >= 3
-        and btcden_guclu
-    ):
-        return "🔥 Elit Roket", "Güçlü teyitli hareket"
-
-    # 2) 📊 TRADER HACİM - özel yüksek hacim sinyali
-    if (
-        guc_skoru >= 55
-        and hacim_kat >= 15
-        and btcden_guclu
-        and btc_guc_skoru >= 4
-        and degisim3 >= 6
-    ):
-        if zirve_yakin or yeni_zirve:
-            return "📊 TRADER HACİM", "15x+ hacim + BTC gücü + zirve teyidi"
-        return "📊 TRADER HACİM", "15x+ hacim + BTC gücü"
-
-    # 3) 🔥 ELİT ROKET - ESKİ ROKET ADAYI mantığı.
-    # Daha önce yaklaşık %4-5'e yaklaşınca ilk mesaj olan yapı artık Elit'tir.
-    if (
+    # 1) 🔥 ELİT ROKET = ESKİ ROKET ADAYI MANTIĞI
+    # Tek bir Elit kapısı vardır.
+    elit = (
         guc_skoru >= 62
         and kalite_skoru >= 8
         and hacim_kat >= 5
@@ -1835,13 +1818,25 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         and btcden_guclu
         and btc_guc_skoru >= 4
         and (haber_skoru > 0 or lider_skoru >= 5)
-    ):
+    )
+    if elit:
+        # Eski Elit şartları artık ayrı kategori değildir; yalnız güçlü teyit etiketi.
+        ekstra_guclu = (
+            guc_skoru >= 74
+            and lider_skoru >= 5
+            and btc_guc_skoru >= 5
+            and kalite_skoru >= 10
+            and hacim_kat >= 8
+            and degisim3 >= 3
+        )
+        if ekstra_guclu:
+            return "🔥 Elit Roket", "Eski Roket teyidi + ekstra güçlü yapı"
+        if haber_skoru > 0:
+            return "🔥 Elit Roket", "Eski Roket teyidi + haber"
         return "🔥 Elit Roket", "Eski Roket teyidi"
 
-    # 4) 🚀 ROKET ADAYI - V5.4.5 GERÇEK ERKEN ROKET.
-    # Burada %5 gitmesini beklemiyoruz. 60 sn ön taramanın bulduğu ilk ivmeyi,
-    # düşük/orta hacim oluşumunu, BTC üstünlüğünü ve liderlik başlangıcını kabul eder.
-    # Üst sınırlar geç kalmış hareketin 'erken' diye etiketlenmesini engeller.
+    # 2) 🚀 ROKET ADAYI = GERÇEK ERKEN ROKET
+    # Yüzde hedefi erkenliği korumak içindir; tek başına sinyal sebebi değildir.
     erken_roket = (
         guc_skoru >= 50
         and kalite_skoru >= 7
@@ -1856,7 +1851,7 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
     if erken_roket:
         return "🚀 Roket Adayı", "Erken ivme + BTC üstünlüğü + güç oluşumu"
 
-    # Arka plan güçlü hacim
+    # Yüksek hacim artık üçüncü canlı kategori değildir; arka planda kalır.
     if hacim_kat >= 12 and btcden_guclu and degisim3 >= 4 and not (degisim1 < 0 and degisim3 < 0):
         return "⚡ GÜÇLÜ HACİM", "Arka plan güçlü hacim + momentum teyidi"
 
@@ -1865,7 +1860,6 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         return "📈 İzleme", "Arka plan erken izleme"
 
     return None, None
-
 # ============================================================
 # COIN RADAR V5.1 - GERCEK DNA / OGRENME / OPTIMIZASYON MOTORU
 # Bu blok son calisan V4/V25 dosyasina dokunmadan, while True'dan once
@@ -5038,7 +5032,7 @@ while True:
                 a["momentum_gucleniyor"] = bool(momentum_gucleniyor_now)
                 a["zayif_trader_hacim"] = bool(v5_1_zayif_trader_hacim_mi(a))
 
-                # V5.4.5: Eski Yıldız/Yıldız Adayı canlı kategori yükseltmesi kapalı.
+                # V5.4.6: Eski Yıldız/Yıldız Adayı canlı kategori yükseltmesi kapalı.
                 # DNA için aday profili kaydedilebilir ama Telegram kategorisini değiştirmez.
                 if v5_1_yildiz_adayi_mi(a):
                     v5_1_yildiz_adayi_kaydet(symbol, a)
@@ -5128,7 +5122,6 @@ while True:
                 en_ust_coin = en_ust_aday.get("symbol", "")
 
                 baslik_map = {
-                    "📊 TRADER HACİM": "TRADER HACİM",
                     "🚀 Roket Adayı": "ROKET ADAYI",
                     "🔥 Elit Roket": "ELİT ROKET"
                 }
@@ -5239,3 +5232,4 @@ while True:
     except Exception as e:
         print("Bot genel hata:", e)
         time.sleep(30)
+
