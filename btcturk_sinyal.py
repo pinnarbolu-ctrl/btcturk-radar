@@ -20,11 +20,10 @@ HIZLI_HACIM_ESIK = 0.35  # ticker hacmindeki 60 sn pozitif artış (%)
 HIZLI_MAX_ADAY = 15       # API yükünü sınırlamak için dakikada en fazla tam analiz
 HIZLI_IZLEME_SURESI = 3 * 60    # Ön taramanın yakaladığı coin 3 dk sessiz takipte kalır
 
-# V5.4.3 MİKRO TEYİTLİ ROKET: 2-3 kısa mumun basamak şeklinde birbirini geçmesini yakalar.
-# Mikro basamak bağımsız sinyal değildir; standart Roket Adayı kriterlerine ek teyittir.
-# Yalnızca 5x hacmi bekleme şartını erkene çeker; güç/kalite/BTC/lider şartlarını gevşetmez.
+# V5.4.2 ERKEN ROKET: 2-3 kısa mumun basamak şeklinde birbirini geçmesini yakalar.
+# Amaç 5x hacmi beklemek değil; fiyat yapısı + hacim ivmesi + BTC üstünlüğü ile erkenden puan vermek.
 MIKRO_BASAMAK_MIN_SKOR = 60
-MIKRO_BASAMAK_MIN_HACIM = 1.80
+MIKRO_BASAMAK_MIN_HACIM = 1.35
 MIKRO_BASAMAK_MAX_DEGISIM1 = 3.20
 MIKRO_BASAMAK_MAX_DEGISIM3 = 5.50
 hizli_izleme_havuzu = {}        # symbol -> son tetiklenme zamanı
@@ -1958,26 +1957,23 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
             return "📊 TRADER HACİM", "15x+ hacim + BTC gücü + zirve teyidi"
         return "📊 TRADER HACİM", "15x+ hacim + BTC gücü"
 
-    # 4) 🚀 MİKRO BASAMAK TEYİTLİ ROKET ADAYI
-    # Mikro basamak artık bağımsız/geçişi kolay bir kapı değildir.
-    # Standart Roket Adayı'nın güç, kalite, momentum, BTC ve lider/haber şartları korunur.
-    # Mikro yapı yalnızca 5x hacmi beklemeden daha erken hacim teyidi sağlar.
+    # 4) 🚀 ERKEN ROKET ADAYI - 5x hacmi beklemeden mikro basamak yapısını kullanır.
+    # 2-3 kısa mum birbirini yukarı geçiyor + BTC üstünlüğü + erken momentum varsa
+    # mevcut Roket Adayı kategorisini erkenden açar. Yeni Telegram kategorisi üretmez.
     if (
         mikro_basamak
         and mikro_basamak_skor >= MIKRO_BASAMAK_MIN_SKOR
-        and guc_skoru >= 62
-        and kalite_skoru >= 8
+        and guc_skoru >= 48
+        and kalite_skoru >= 6
         and hacim_kat >= MIKRO_BASAMAK_MIN_HACIM
         and degisim1 > 0
         and degisim1 <= MIKRO_BASAMAK_MAX_DEGISIM1
-        and degisim3 >= 1.5
+        and degisim3 >= 0.7
         and degisim3 <= MIKRO_BASAMAK_MAX_DEGISIM3
-        and not (hacim_kat >= 10 and degisim3 < 4 and lider_skoru < 7)
         and btcden_guclu
-        and btc_guc_skoru >= 4
-        and (haber_skoru > 0 or lider_skoru >= 5)
+        and (lider_skoru >= 3 or mikro_hacim_ivmesi >= 1.15 or haber_skoru > 0)
     ):
-        return "🚀 Roket Adayı", "Mikro basamak teyitli güçlü aday"
+        return "🚀 Roket Adayı", f"Erken mikro basamak ({int(mikro_basamak_skor)}/100)"
 
     # 5) 🚀 ROKET ADAYI - standart güçlü aday
     if (
@@ -4952,10 +4948,17 @@ while True:
                 if satis_baskisi:
                     genel_skor -= 5
 
-                # V5.4.3: Mikro basamak artık skor/kaliteyi yapay olarak yükseltmez.
-                # Formasyon yalnızca Roket Adayı'nda 5x hacim şartını erkenden telafi eden
-                # bir teyit olarak kullanılır; ana kalite kriterleri aynen korunur.
+                # V5.4.2 erken yapı bonusu: 5x hacim gelmeden skoru hazırlamaya başlar.
+                # Büyük tek mum değil, küçük basamaklar ödüllendirilir.
                 mikro_bonus = 0
+                if mikro_basamak:
+                    mikro_bonus = 4 if mikro_mum_sayisi >= 3 else 3
+                    if mikro_hacim_ivmesi >= 1.15:
+                        mikro_bonus += 2
+                    if 0 < degisim1 <= 2.5 and 0.7 <= degisim3 <= 4.5:
+                        mikro_bonus += 2
+                    genel_skor += mikro_bonus
+                    kalite_skoru += min(4, mikro_bonus)
 
 
                 guclenme_bonus, guclenme_notlari = guclenme_bonusu_hesapla(
@@ -5029,8 +5032,8 @@ while True:
                     yeni_zirve
                 )
 
-                # V5.4.3: Mikro basamak güç skoruna da doğrudan bonus vermez.
-                # Böylece mikro yapı tek başına coin'i Roket Adayı seviyesine taşıyamaz.
+                if mikro_basamak and btcden_guclu:
+                    guc_skoru = round(min(100, guc_skoru + (8 if mikro_mum_sayisi >= 3 else 6) + (3 if mikro_hacim_ivmesi >= 1.15 else 0)), 2)
 
                 # V5.4: Güçlü coin yetmez; giriş kalitesi de yüksek olmak zorunda.
                 giris_kalitesi, giris_uygun, giris_riskleri, giris_metrikleri = giris_kalitesi_hesapla(
