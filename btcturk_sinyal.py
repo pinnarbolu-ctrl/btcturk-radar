@@ -20,12 +20,17 @@ HIZLI_HACIM_ESIK = 0.35  # ticker hacmindeki 60 sn pozitif artış (%)
 HIZLI_MAX_ADAY = 15       # API yükünü sınırlamak için dakikada en fazla tam analiz
 HIZLI_IZLEME_SURESI = 3 * 60    # Ön taramanın yakaladığı coin 3 dk sessiz takipte kalır
 
-# V5.4.2 ERKEN ROKET: 2-3 kısa mumun basamak şeklinde birbirini geçmesini yakalar.
-# Amaç 5x hacmi beklemek değil; fiyat yapısı + hacim ivmesi + BTC üstünlüğü ile erkenden puan vermek.
+# V5.4.4 ERKEN + LİDER ROKET:
+# 2-3 kısa mumun basamak yapısını korur; fakat mikro yapı tek başına yetmez.
+# Erkenliği öldürmeden gerçek piyasa liderliği / 60 sn ivme teyidi ister.
 MIKRO_BASAMAK_MIN_SKOR = 60
 MIKRO_BASAMAK_MIN_HACIM = 1.35
 MIKRO_BASAMAK_MAX_DEGISIM1 = 3.20
 MIKRO_BASAMAK_MAX_DEGISIM3 = 5.50
+ERKEN_LIDER_MAX_RANK = 10          # 60 sn hızlananlar içinde ilk 10
+ERKEN_LIDER_MIN_SKOR = 5           # normal lider skorunda güçlü teyit
+ERKEN_LIDER_MIN_BTC_FARK3 = 1.0    # BTC'den 3s bazda en az +%1 ayrışma
+ERKEN_LIDER_MIN_MIKRO_IVME = 1.20  # alternatif teyitte hacim basamak ivmesi
 hizli_izleme_havuzu = {}        # symbol -> son tetiklenme zamanı
 STOP_RAPOR_SURESI = 2 * 60 * 60
 HAFTALIK_RAPOR_SURESI = 7 * 24 * 60 * 60
@@ -361,6 +366,14 @@ def piyasa_kaydi_ekle(symbol, veri):
             "durum": veri.get("durum"),
             "guc_skoru": round(float(veri.get("guc_skoru", 0)), 4),
             "gec_pump_puan": int(veri.get("gec_pump_puan", 0)),
+            "mikro_basamak": bool(veri.get("mikro_basamak", False)),
+            "mikro_basamak_skor": round(float(veri.get("mikro_basamak_skor", 0)), 4),
+            "mikro_mum_sayisi": int(veri.get("mikro_mum_sayisi", 0) or 0),
+            "mikro_hacim_ivmesi": round(float(veri.get("mikro_hacim_ivmesi", 1.0) or 1.0), 4),
+            "hizli_lider_rank": int(veri.get("hizli_lider_rank", 0) or 0),
+            "hizli_fiyat_ivme": round(float(veri.get("hizli_fiyat_ivme", 0) or 0), 4),
+            "hizli_hacim_ivme": round(float(veri.get("hizli_hacim_ivme", 0) or 0), 4),
+            "erken_lider_onayi": bool(veri.get("erken_lider_onayi", False)),
         }
         piyasa_kayitlari.append(kayit)
 
@@ -898,12 +911,6 @@ def neden_secildi_olustur(a):
 
     if a.get("btc_fark24", 0) >= 2:
         notlar.append(f"BTC'den 24s bazda %{round(a.get('btc_fark24', 0), 2)} güçlü")
-
-    if a.get("mikro_basamak"):
-        notlar.append(
-            f"Erken yapı: {int(a.get('mikro_mum_sayisi', 0))} kısa mum basamak • "
-            f"puan {int(a.get('mikro_basamak_skor', 0))}/100"
-        )
 
     if a.get("hacim", 0) >= 15:
         notlar.append(f"Trader hacim: {round(a.get('hacim', 0), 2)}x")
@@ -1903,7 +1910,7 @@ def mikro_basamak_hesapla(o, h, l, c, v):
         return 0, False, {"mum_sayisi": 0, "hacim_ivmesi": 1.0, "neden": str(e)}
 
 
-def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, btc_fark, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0, btc_guc_skoru=0, lider_skoru=0, guc_skoru=0, yeni_zirve=False, mikro_basamak=False, mikro_basamak_skor=0, mikro_hacim_ivmesi=1.0):
+def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, btc_fark, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0, btc_guc_skoru=0, lider_skoru=0, guc_skoru=0, yeni_zirve=False, mikro_basamak=False, mikro_basamak_skor=0, mikro_hacim_ivmesi=1.0, hizli_lider_rank=0, hizli_fiyat_ivme=0.0, hizli_hacim_ivme=0.0):
     """
     V4.25 kategori mantığı.
 
@@ -1957,9 +1964,28 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
             return "📊 TRADER HACİM", "15x+ hacim + BTC gücü + zirve teyidi"
         return "📊 TRADER HACİM", "15x+ hacim + BTC gücü"
 
-    # 4) 🚀 ERKEN ROKET ADAYI - 5x hacmi beklemeden mikro basamak yapısını kullanır.
-    # 2-3 kısa mum birbirini yukarı geçiyor + BTC üstünlüğü + erken momentum varsa
-    # mevcut Roket Adayı kategorisini erkenden açar. Yeni Telegram kategorisi üretmez.
+    # 4) 🚀 ERKEN ROKET ADAYI - mikro basamak + GERÇEK LİDERLİK teyidi.
+    # Erkenliği korur (hacim 1.35x seviyesinde açılabilir) ama artık sadece mikro yapı
+    # veya tek bir zayıf teyitle geçmez. Aşağıdaki üç liderlik yolundan biri gerekir:
+    #   A) 60 sn hızlananlar içinde ilk 10,
+    #   B) lider skoru >=5 + BTC'den 3s bazda >=%1 güçlü,
+    #   C) lider skoru >=4 + mikro hacim ivmesi >=1.20 + BTC farkı pozitif.
+    hizli_lider = (
+        hizli_lider_rank > 0
+        and hizli_lider_rank <= ERKEN_LIDER_MAX_RANK
+        and (hizli_fiyat_ivme >= 0.15 or hizli_hacim_ivme >= HIZLI_HACIM_ESIK)
+    )
+    guclu_lider = (
+        lider_skoru >= ERKEN_LIDER_MIN_SKOR
+        and btc_fark >= ERKEN_LIDER_MIN_BTC_FARK3
+    )
+    ivmeli_lider = (
+        lider_skoru >= 4
+        and mikro_hacim_ivmesi >= ERKEN_LIDER_MIN_MIKRO_IVME
+        and btc_fark >= 0.5
+    )
+    erken_lider_onayi = hizli_lider or guclu_lider or ivmeli_lider
+
     if (
         mikro_basamak
         and mikro_basamak_skor >= MIKRO_BASAMAK_MIN_SKOR
@@ -1971,9 +1997,9 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         and degisim3 >= 0.7
         and degisim3 <= MIKRO_BASAMAK_MAX_DEGISIM3
         and btcden_guclu
-        and (lider_skoru >= 3 or mikro_hacim_ivmesi >= 1.15 or haber_skoru > 0)
+        and erken_lider_onayi
     ):
-        return "🚀 Roket Adayı", f"Erken mikro basamak ({int(mikro_basamak_skor)}/100)"
+        return "🚀 Roket Adayı", "Erken güçlü lider aday"
 
     # 5) 🚀 ROKET ADAYI - standart güçlü aday
     if (
@@ -4747,7 +4773,7 @@ def hizli_on_tarama_adaylari(ticker, onceki):
 while True:
     try:
         print()
-        print("COIN RADAR V5.3")
+        print("COIN RADAR V5.4.4 ERKEN+LIDER")
         print("--------------------------------")
 
         hedef_stop_kontrol()
@@ -4768,6 +4794,13 @@ while True:
 
         hizli_adaylar, yeni_ticker_snapshot = hizli_on_tarama_adaylari(ticker, on_tarama_onceki_ticker)
         on_tarama_onceki_ticker = yeni_ticker_snapshot
+
+        # V5.4.4: anlık piyasa liderliği. 60 sn hızlanan coinleri güç sırasına koy.
+        # Bu sıralama Telegram'a yazılmaz; erken Roket Adayı seçiciliğinde kullanılır.
+        hizli_lider_haritasi = {
+            sym: {"rank": i + 1, "guc": guc, "fiyat_ivme": fp, "hacim_ivme": vp}
+            for i, (guc, sym, fp, vp) in enumerate(hizli_adaylar)
+        }
 
         # V5.4.1 SESSİZ HIZLI İZLEME HAVUZU
         # Ön taramada hızlanan coin ilk analizde Roket/Elit/Yıldız olmasa bile
@@ -4807,6 +4840,10 @@ while True:
         for coin in ticker:
             try:
                 symbol = coin["pair"]
+                _hl = hizli_lider_haritasi.get(symbol, {})
+                hizli_lider_rank = int(_hl.get("rank", 0) or 0)
+                hizli_fiyat_ivme = float(_hl.get("fiyat_ivme", 0) or 0)
+                hizli_hacim_ivme = float(_hl.get("hacim_ivme", 0) or 0)
 
                 if not symbol.endswith("TRY"):
                     continue
@@ -5046,6 +5083,14 @@ while True:
                     gec_pump_puan=gec_pump_puan,
                 )
 
+                # V5.4.4 erken lider teyidi; raporda neden geçti/kaldı görebilelim.
+                erken_lider_onayi = bool(
+                    (hizli_lider_rank > 0 and hizli_lider_rank <= ERKEN_LIDER_MAX_RANK and
+                     (hizli_fiyat_ivme >= 0.15 or hizli_hacim_ivme >= HIZLI_HACIM_ESIK))
+                    or (lider_skoru >= ERKEN_LIDER_MIN_SKOR and btc_fark3 >= ERKEN_LIDER_MIN_BTC_FARK3)
+                    or (lider_skoru >= 4 and mikro_hacim_ivmesi >= ERKEN_LIDER_MIN_MIKRO_IVME and btc_fark3 >= 0.5)
+                )
+
                 # Piyasa analizi: Sinyal üretmese bile tüm coinlerin son durumunu kaydet.
                 # Böylece son 3 günde %10+ gidip botun kaçırdığı coinler raporda bulunabilir.
                 piyasa_kaydi_ekle(symbol, {
@@ -5073,6 +5118,10 @@ while True:
                     "mikro_basamak_skor": mikro_basamak_skor,
                     "mikro_mum_sayisi": mikro_mum_sayisi,
                     "mikro_hacim_ivmesi": round(mikro_hacim_ivmesi, 3),
+                    "hizli_lider_rank": hizli_lider_rank,
+                    "hizli_fiyat_ivme": round(hizli_fiyat_ivme, 4),
+                    "hizli_hacim_ivme": round(hizli_hacim_ivme, 4),
+                    "erken_lider_onayi": erken_lider_onayi,
                     "sinyal_var": False,
                     "durum": None,
                 })
@@ -5096,7 +5145,10 @@ while True:
                     yeni_zirve,
                     mikro_basamak,
                     mikro_basamak_skor,
-                    mikro_hacim_ivmesi
+                    mikro_hacim_ivmesi,
+                    hizli_lider_rank,
+                    hizli_fiyat_ivme,
+                    hizli_hacim_ivme
                 )
                 if durum is None:
                     continue
