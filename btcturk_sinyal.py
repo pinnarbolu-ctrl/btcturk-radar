@@ -22,7 +22,7 @@ HIZLI_IZLEME_SURESI = 3 * 60    # Ön taramanın yakaladığı coin 3 dk sessiz 
 
 # V5.4.6 ADAY + ROKET + ELİT + DEVAM GÜCÜ:
 # 3 katmanlı yapı korunur: Roket Adayı erken hazırlık, Roket doğrulanmış hareket, Elit en güçlü grup.
-# V5.4.6: Roket/Elit yükselişinde hacim güçlenmesi, momentum güçlenmesi ve Devam Gücü aktif teyit olur.
+# V5.4.7: Roket/Elit devam gücü korunur; Telegram sinyalleri 1 coin = 1 mesaj ve coin+kategori başlığıyla gönderilir.
 # Erken yakalama korunur; yalnızca yüksek hacim görmek üst kategori için artık yeterli değildir.
 MIKRO_BASAMAK_MIN_SKOR = 60
 MIKRO_BASAMAK_MIN_HACIM = 1.35
@@ -5397,16 +5397,8 @@ while True:
                 print("Yeni gönderilecek aday yok.")
 
             else:
-                # V4.30: Kilit ekranında coin adı da görünsün.
-                # Örnek: 🔥 DASHTRY | ELİT ROKET
-                en_ust_aday = sorted(
-                    gosterilecekler,
-                    key=lambda x: DURUM_SEVIYESI.get(x.get("durum"), 0),
-                    reverse=True
-                )[0]
-                en_ust_sinyal = en_ust_aday.get("durum")
-                en_ust_coin = en_ust_aday.get("symbol", "")
-
+                # V5.4.7: Her coin ayrı Telegram mesajı alır.
+                # Başlık doğrudan coin adı + kategori olur; "SYMBOL" gibi sabit metin kullanılmaz.
                 baslik_map = {
                     "📊 TRADER HACİM": "TRADER HACİM",
                     "🚀 Roket Adayı": "ROKET ADAYI",
@@ -5414,18 +5406,13 @@ while True:
                     "🔥 Elit Roket": "ELİT ROKET",
                     "⭐ Yıldız": "YILDIZ"
                 }
-                sinyal_basligi = baslik_map.get(en_ust_sinyal, "SİNYAL")
-                ikon = en_ust_sinyal.split()[0] if en_ust_sinyal else "🚀"
-                bildirim_basligi = f"{ikon} {en_ust_coin} | {sinyal_basligi}"
 
-                mesaj = (
-                    f"{bildirim_basligi}\n"
-                    f"COIN RADAR V5.4.5\n"
-                    f"BTC 3s: %{round(btc, 2)}\n\n"
-                )
-
-                for sira, a in enumerate(gosterilecekler, start=1):
+                for a in gosterilecekler:
                     symbol = a["symbol"]
+                    durum = a.get("durum", "")
+                    sinyal_basligi = baslik_map.get(durum, "SİNYAL")
+                    ikon = durum.split()[0] if durum else "🚀"
+                    bildirim_basligi = f"{ikon} {symbol} | {sinyal_basligi}"
 
                     gonderilenler[symbol] = simdi
 
@@ -5446,8 +5433,7 @@ while True:
                         }
                         basari_kayitlari.append(basari_kaydi_olustur(symbol, a, simdi))
                         basari_db_kaydet(basari_kayitlari)
-
-                    elif symbol in aktif_sinyaller:
+                    else:
                         aktif_sinyaller[symbol]["durum"] = a["durum"]
 
                     if a["durum_yukseldi"]:
@@ -5460,7 +5446,6 @@ while True:
                             f"{symbol}\n\n"
                             f"{eski} → {yeni}\n\n"
                         )
-
                         if onceki is not None:
                             mesaj_yukselis += (
                                 f"Skor: {round(onceki['skor'], 2)} → {round(a['skor'], 2)}\n"
@@ -5469,25 +5454,25 @@ while True:
                         else:
                             mesaj_yukselis += (
                                 f"Skor: {round(a['skor'], 2)}\n"
-                        f"Kalite: {round(a['kalite_skoru'], 2)}\n"
+                                f"Kalite: {round(a['kalite_skoru'], 2)}\n"
                                 f"Hacim: {round(a['hacim'], 2)}x\n"
                             )
-
                         mesaj_yukselis += f"3s: %{round(a['degisim3'], 2)}"
-
                         print("Seviye atladı ama Telegram'a gönderilmedi:")
                         print(mesaj_yukselis)
 
-                    satir = (
+                    mesaj = (
+                        f"{bildirim_basligi}\n"
+                        f"COIN RADAR V5.4.7\n"
+                        f"BTC 3s: %{round(btc, 2)}\n\n"
                         f"{ortak_sinyal_ozeti_olustur(a)}\n\n"
                     )
 
                     if a["durum_degisti"]:
-                        satir += f"Geçiş: {a['eski_durum']} → {a['durum']}\n\n"
+                        mesaj += f"Geçiş: {a['eski_durum']} → {a['durum']}\n\n"
 
                     guclenme_mesaji = guclenme_mesaji_olustur(a)
-
-                    satir += (
+                    mesaj += (
                         f"Skor: {round(a['skor'], 2)}\n"
                         f"Kalite: {round(a['kalite_skoru'], 2)}\n"
                         f"🎯 Giriş Kalitesi: {a.get('giris_kalitesi', 0)}/100 ✅\n"
@@ -5496,23 +5481,23 @@ while True:
                     )
 
                     if guclenme_mesaji:
-                        satir += f"\n{guclenme_mesaji}\n"
+                        mesaj += f"\n{guclenme_mesaji}\n"
 
-                    satir += (
+                    mesaj += (
                         f"\n1s: %{round(a['degisim1'], 2)} | "
                         f"3s: %{round(a['degisim3'], 2)} | "
                         f"24s: %{round(a['degisim24'], 2)}\n\n"
                         f"Fiyat: {round(a['fiyat'], 4)}\n"
                         f"Stop: {round(a['stop'], 4)}\n"
                         f"H1: {round(a['hedef1'], 4)}\n"
-                        f"H2: {round(a['hedef2'], 4)}\n\n"
+                        f"H2: {round(a['hedef2'], 4)}"
                     )
 
-                    print(satir)
-                    mesaj += satir
-
-                telegram_gonder(mesaj)
-                print("Telegram gönderildi.")
+                    print(mesaj)
+                    if telegram_gonder(mesaj):
+                        print(f"Telegram gönderildi: {symbol} | {sinyal_basligi}")
+                    else:
+                        print(f"Telegram gönderilemedi: {symbol} | {sinyal_basligi}")
 
         # Ana tarama 5 dakikada bir, sessiz ön tarama ise her 60 saniyede çalışır.
         print("60 sn bekleniyor...")
