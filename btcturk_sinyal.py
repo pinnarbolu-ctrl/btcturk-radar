@@ -22,7 +22,7 @@ HIZLI_IZLEME_SURESI = 3 * 60    # Ön taramanın yakaladığı coin 3 dk sessiz 
 
 # V5.4.6 ADAY + ROKET + ELİT + DEVAM GÜCÜ:
 # 3 katmanlı yapı korunur: Roket Adayı erken hazırlık, Roket doğrulanmış hareket, Elit en güçlü grup.
-# V5.4.7: Roket/Elit devam gücü korunur; Telegram sinyalleri 1 coin = 1 mesaj ve coin+kategori başlığıyla gönderilir.
+# V5.4.8: Roket Adayı dahil Telegram'a giden tüm roket sinyallerinde Devam Gücü en az 60 olmalıdır.
 # Erken yakalama korunur; yalnızca yüksek hacim görmek üst kategori için artık yeterli değildir.
 MIKRO_BASAMAK_MIN_SKOR = 60
 MIKRO_BASAMAK_MIN_HACIM = 1.35
@@ -1985,7 +1985,7 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
             return "📊 TRADER HACİM", "15x+ hacim + BTC gücü + zirve teyidi"
         return "📊 TRADER HACİM", "15x+ hacim + BTC gücü"
 
-    # 4) 🚀 ERKEN ROKET ADAYI - mikro basamak + GERÇEK LİDERLİK teyidi.
+    # 4) 🚀 ERKEN ROKET ADAYI - mikro basamak + GERÇEK LİDERLİK + DEVAM GÜCÜ >=60 teyidi.
     # Erkenliği korur (hacim 1.35x seviyesinde açılabilir) ama artık sadece mikro yapı
     # veya tek bir zayıf teyitle geçmez. Aşağıdaki üç liderlik yolundan biri gerekir:
     #   A) 60 sn hızlananlar içinde ilk 10,
@@ -2019,6 +2019,7 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         and degisim3 <= MIKRO_BASAMAK_MAX_DEGISIM3
         and btcden_guclu
         and erken_lider_onayi
+        and devam_gucu >= 60
     ):
         return "🚀 Roket Adayı", "Erken güçlü lider aday"
 
@@ -5397,7 +5398,7 @@ while True:
                 print("Yeni gönderilecek aday yok.")
 
             else:
-                # V5.4.7: Her coin ayrı Telegram mesajı alır.
+                # V5.4.8: Her coin ayrı Telegram mesajı alır; riskli/orta devam gücündeki adaylar gönderilmez.
                 # Başlık doğrudan coin adı + kategori olur; "SYMBOL" gibi sabit metin kullanılmaz.
                 baslik_map = {
                     "📊 TRADER HACİM": "TRADER HACİM",
@@ -5463,7 +5464,7 @@ while True:
 
                     mesaj = (
                         f"{bildirim_basligi}\n"
-                        f"COIN RADAR V5.4.7\n"
+                        f"COIN RADAR V5.4.8\n"
                         f"BTC 3s: %{round(btc, 2)}\n\n"
                         f"{ortak_sinyal_ozeti_olustur(a)}\n\n"
                     )
