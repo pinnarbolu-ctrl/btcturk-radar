@@ -20,9 +20,10 @@ HIZLI_HACIM_ESIK = 0.35  # ticker hacmindeki 60 sn pozitif artış (%)
 HIZLI_MAX_ADAY = 15       # API yükünü sınırlamak için dakikada en fazla tam analiz
 HIZLI_IZLEME_SURESI = 3 * 60    # Ön taramanın yakaladığı coin 3 dk sessiz takipte kalır
 
-# V5.4.4 ERKEN + LİDER ROKET:
-# 2-3 kısa mumun basamak yapısını korur; fakat mikro yapı tek başına yetmez.
-# Erkenliği öldürmeden gerçek piyasa liderliği / 60 sn ivme teyidi ister.
+# V5.4.6 ADAY + ROKET + ELİT + DEVAM GÜCÜ:
+# 3 katmanlı yapı korunur: Roket Adayı erken hazırlık, Roket doğrulanmış hareket, Elit en güçlü grup.
+# V5.4.6: Roket/Elit yükselişinde hacim güçlenmesi, momentum güçlenmesi ve Devam Gücü aktif teyit olur.
+# Erken yakalama korunur; yalnızca yüksek hacim görmek üst kategori için artık yeterli değildir.
 MIKRO_BASAMAK_MIN_SKOR = 60
 MIKRO_BASAMAK_MIN_HACIM = 1.35
 MIKRO_BASAMAK_MAX_DEGISIM1 = 3.20
@@ -102,14 +103,16 @@ DURUM_SEVIYESI = {
     "📊 TRADER HACİM": 3,
     "📈 GÜÇLENİYOR": 4,
     "🚀 Roket Adayı": 5,
-    "🔥 Elit Roket": 6,
-    "⭐ Yıldız": 7
+    "🚀 Roket": 6,
+    "🔥 Elit Roket": 7,
+    "⭐ Yıldız": 8
 }
 
 # V4.25: Telegram sadeleşti. Bu kategoriler dışındakiler sadece arka planda izlenir.
 TELEGRAM_KATEGORILERI = {
     "📊 TRADER HACİM",
     "🚀 Roket Adayı",
+    "🚀 Roket",
     "🔥 Elit Roket",
     "⭐ Yıldız"
 }
@@ -1910,19 +1913,36 @@ def mikro_basamak_hesapla(o, h, l, c, v):
         return 0, False, {"mum_sayisi": 0, "hacim_ivmesi": 1.0, "neden": str(e)}
 
 
-def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, btc_fark, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0, btc_guc_skoru=0, lider_skoru=0, guc_skoru=0, yeni_zirve=False, mikro_basamak=False, mikro_basamak_skor=0, mikro_hacim_ivmesi=1.0, hizli_lider_rank=0, hizli_fiyat_ivme=0.0, hizli_hacim_ivme=0.0):
+def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, btc_fark, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0, btc_guc_skoru=0, lider_skoru=0, guc_skoru=0, yeni_zirve=False, mikro_basamak=False, mikro_basamak_skor=0, mikro_hacim_ivmesi=1.0, hizli_lider_rank=0, hizli_fiyat_ivme=0.0, hizli_hacim_ivme=0.0, hacim_gucleniyor=False, momentum_gucleniyor=False, devam_gucu=0):
     """
     V4.25 kategori mantığı.
 
     Telegram sadeleşti:
     - 📊 TRADER HACİM
-    - 🚀 Roket Adayı
-    - 🔥 Elit Roket
+    - 🚀 Roket Adayı (erken hazırlık)
+    - 🚀 Roket (hacim + momentum doğrulandı)
+    - 🔥 Elit Roket (en güçlü hacim + liderlik)
     - ⭐ Yıldız
 
     İzleme ve Güçlü Hacim arka planda kalır; Telegram'a gönderilmez.
     Geç Pump kategori değildir; yalnızca DNA raporunda risk puanı olarak tutulur.
     """
+
+    # V5.4.6 DEVAM TEYİDİ
+    # Üst kategorilerde yalnızca anlık yüksek hacim değil, hareketin devam edip etmediği de aranır.
+    # Roket: en az bir güçlenme bayrağı + yeterli devam gücü.
+    # Elit: iki güçlenme birlikte veya çok güçlü devam + çok güçlü liderlik.
+    roket_devam_onayi = (
+        devam_gucu >= 60
+        and (hacim_gucleniyor or momentum_gucleniyor)
+    )
+    elit_devam_onayi = (
+        devam_gucu >= 70
+        and (
+            (hacim_gucleniyor and momentum_gucleniyor)
+            or (devam_gucu >= 78 and lider_skoru >= 7)
+        )
+    )
 
     # 1) ⭐ YILDIZ - en seçici seviye
     if (
@@ -1947,8 +1967,9 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         and degisim1 > 0
         and degisim3 >= 3
         and btcden_guclu
+        and elit_devam_onayi
     ):
-        return "🔥 Elit Roket", "Güç skoru yüksek aday"
+        return "🔥 Elit Roket", "Hacim + momentum + liderlik + devam gücü"
 
     # 3) 📊 TRADER HACİM - 15x+ hacim özel sinyali
     # Not: Roket Adayı'ndan önce kontrol edilir; yoksa 15x+ hacimli adaylar
@@ -2001,7 +2022,9 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
     ):
         return "🚀 Roket Adayı", "Erken güçlü lider aday"
 
-    # 5) 🚀 ROKET ADAYI - standart güçlü aday
+    # 5) 🚀 ROKET - artık "aday" değil; hareket hacim + momentum ile doğrulanmış olmalı.
+    # Erken Roket Adayı %1-2 civarında hazırlığı haber verir. Hacim 5x+ açılıp
+    # güç/kalite/BTC/liderlik teyidi gelince aynı coin Roket seviyesine yükselir.
     if (
         guc_skoru >= 62
         and kalite_skoru >= 8
@@ -2012,10 +2035,13 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         and btcden_guclu
         and btc_guc_skoru >= 4
         and (haber_skoru > 0 or lider_skoru >= 5)
+        and roket_devam_onayi
     ):
+        if hacim_gucleniyor and momentum_gucleniyor:
+            return "🚀 Roket", "Hacim + momentum birlikte güçleniyor"
         if haber_skoru > 0:
-            return "🚀 Roket Adayı", "Haberli güçlü aday"
-        return "🚀 Roket Adayı", "Sessiz güçlü aday"
+            return "🚀 Roket", "Devam gücü + haber teyidi"
+        return "🚀 Roket", "Devam gücü + liderlik teyidi"
 
     # Arka plan güçlü hacim
     if hacim_kat >= 12 and btcden_guclu and degisim3 >= 4 and not (degisim1 < 0 and degisim3 < 0):
@@ -4773,7 +4799,7 @@ def hizli_on_tarama_adaylari(ticker, onceki):
 while True:
     try:
         print()
-        print("COIN RADAR V5.4.4 ERKEN+LIDER")
+        print("COIN RADAR V5.4.6 ADAY+ROKET+ELIT+DEVAM")
         print("--------------------------------")
 
         hedef_stop_kontrol()
@@ -4795,7 +4821,7 @@ while True:
         hizli_adaylar, yeni_ticker_snapshot = hizli_on_tarama_adaylari(ticker, on_tarama_onceki_ticker)
         on_tarama_onceki_ticker = yeni_ticker_snapshot
 
-        # V5.4.4: anlık piyasa liderliği. 60 sn hızlanan coinleri güç sırasına koy.
+        # V5.4.5: anlık piyasa liderliği. 60 sn hızlanan coinleri güç sırasına koy.
         # Bu sıralama Telegram'a yazılmaz; erken Roket Adayı seçiciliğinde kullanılır.
         hizli_lider_haritasi = {
             sym: {"rank": i + 1, "guc": guc, "fiyat_ivme": fp, "hacim_ivme": vp}
@@ -5083,7 +5109,7 @@ while True:
                     gec_pump_puan=gec_pump_puan,
                 )
 
-                # V5.4.4 erken lider teyidi; raporda neden geçti/kaldı görebilelim.
+                # V5.4.5 erken lider teyidi; raporda neden geçti/kaldı görebilelim.
                 erken_lider_onayi = bool(
                     (hizli_lider_rank > 0 and hizli_lider_rank <= ERKEN_LIDER_MAX_RANK and
                      (hizli_fiyat_ivme >= 0.15 or hizli_hacim_ivme >= HIZLI_HACIM_ESIK))
@@ -5092,6 +5118,24 @@ while True:
                 )
 
                 # Piyasa analizi: Sinyal üretmese bile tüm coinlerin son durumunu kaydet.
+                # V5.4.6: Üst kategori kararında kullanılacak anlık Devam Gücü.
+                devam_gucu_anlik = v5_devam_gucu_hesapla({
+                    "degisim1": degisim1,
+                    "degisim3": degisim3,
+                    "degisim24": degisim24,
+                    "hacim": hacim_kat,
+                    "btc_fark": btc_fark,
+                    "btc_guclu": btcden_guclu,
+                    "btcden_guclu": btcden_guclu,
+                    "lider_skoru": lider_skoru,
+                    "lider_mi": lider_skoru >= 5,
+                    "lider_guclu": lider_skoru >= 7,
+                    "zirve_teyidi": zirve_yakin or yeni_zirve,
+                    "momentum_gucleniyor": momentum_gucleniyor_v5,
+                    "hacim_gucleniyor": hacim_gucleniyor_v5,
+                    "gec_pump_puan": gec_pump_puan,
+                })
+
                 # Böylece son 3 günde %10+ gidip botun kaçırdığı coinler raporda bulunabilir.
                 piyasa_kaydi_ekle(symbol, {
                     "fiyat": fiyat,
@@ -5122,6 +5166,9 @@ while True:
                     "hizli_fiyat_ivme": round(hizli_fiyat_ivme, 4),
                     "hizli_hacim_ivme": round(hizli_hacim_ivme, 4),
                     "erken_lider_onayi": erken_lider_onayi,
+                    "hacim_gucleniyor": bool(hacim_gucleniyor_v5),
+                    "momentum_gucleniyor": bool(momentum_gucleniyor_v5),
+                    "devam_gucu": devam_gucu_anlik,
                     "sinyal_var": False,
                     "durum": None,
                 })
@@ -5148,7 +5195,10 @@ while True:
                     mikro_hacim_ivmesi,
                     hizli_lider_rank,
                     hizli_fiyat_ivme,
-                    hizli_hacim_ivme
+                    hizli_hacim_ivme,
+                    hacim_gucleniyor_v5,
+                    momentum_gucleniyor_v5,
+                    devam_gucu_anlik
                 )
                 if durum is None:
                     continue
@@ -5261,13 +5311,13 @@ while True:
                 a["momentum_gucleniyor"] = bool(momentum_gucleniyor_now)
                 a["zayif_trader_hacim"] = bool(v5_1_zayif_trader_hacim_mi(a))
 
-                if v5_1_yildiz_adayindan_guclendi_mi(symbol, a) and durum in ("🚀 Roket Adayı", "🔥 Elit Roket"):
+                if v5_1_yildiz_adayindan_guclendi_mi(symbol, a) and durum in ("🚀 Roket Adayı", "🚀 Roket", "🔥 Elit Roket"):
                     # Aday önceden arka planda yakalandıysa güçlenince seviye yükselt.
                     durum = "🔥 Elit Roket"
                     a["durum"] = durum
                     a["alt_durum"] = "V5.1 yıldız adayı güçlendi"
 
-                if v5_1_yildiz_adayi_mi(a) and durum not in ("🔥 Elit Roket", "⭐ Yıldız"):
+                if v5_1_yildiz_adayi_mi(a) and durum not in ("🚀 Roket", "🔥 Elit Roket", "⭐ Yıldız"):
                     v5_1_yildiz_adayi_kaydet(symbol, a)
                     durum = "⭐ Yıldız Adayı"
                     a["durum"] = durum
@@ -5290,8 +5340,8 @@ while True:
                 )
 
                 # V4.16: Kategori geriye düşmesin.
-                # Roket -> Elit -> Yıldız çıkışı korunur.
-                # Elit olmuş coin sonraki taramada tekrar Roket'e düşerse eski yüksek seviye korunur.
+                # Roket Adayı -> Roket -> Elit -> Yıldız çıkışı korunur.
+                # Üst seviyeye çıkan coin sonraki taramada alt seviyeye düşerse eski yüksek seviye korunur.
                 if (
                     eski_durum is not None
                     and eski_durum in DURUM_SEVIYESI
@@ -5360,6 +5410,7 @@ while True:
                 baslik_map = {
                     "📊 TRADER HACİM": "TRADER HACİM",
                     "🚀 Roket Adayı": "ROKET ADAYI",
+                    "🚀 Roket": "ROKET",
                     "🔥 Elit Roket": "ELİT ROKET",
                     "⭐ Yıldız": "YILDIZ"
                 }
@@ -5369,7 +5420,7 @@ while True:
 
                 mesaj = (
                     f"{bildirim_basligi}\n"
-                    f"COIN RADAR V5.3\n"
+                    f"COIN RADAR V5.4.5\n"
                     f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
