@@ -695,6 +695,269 @@ def anlik_fiyat(symbol):
 
 
 
+def ema_hesapla(veriler, periyot):
+    if len(veriler) < periyot:
+        return None
+    ema = sum(veriler[:periyot]) / periyot
+    k = 2 / (periyot + 1)
+    for fiyat in veriler[periyot:]:
+        ema = fiyat * k + ema * (1 - k)
+    return ema
+
+
+def ema_serisi(veriler, periyot):
+    if len(veriler) < periyot:
+        return []
+    sonuc = [None] * (periyot - 1)
+    ema = sum(veriler[:periyot]) / periyot
+    sonuc.append(ema)
+    k = 2 / (periyot + 1)
+    for fiyat in veriler[periyot:]:
+        ema = fiyat * k + ema * (1 - k)
+        sonuc.append(ema)
+    return sonuc
+
+
+def rsi_hesapla(kapanislar, periyot=14):
+    if len(kapanislar) < periyot + 1:
+        return None
+    farklar = [kapanislar[i] - kapanislar[i - 1] for i in range(1, len(kapanislar))]
+    kazanclar = [max(x, 0) for x in farklar]
+    kayiplar = [max(-x, 0) for x in farklar]
+    ort_kazanc = sum(kazanclar[:periyot]) / periyot
+    ort_kayip = sum(kayiplar[:periyot]) / periyot
+    for i in range(periyot, len(farklar)):
+        ort_kazanc = ((ort_kazanc * (periyot - 1)) + kazanclar[i]) / periyot
+        ort_kayip = ((ort_kayip * (periyot - 1)) + kayiplar[i]) / periyot
+    if ort_kayip == 0:
+        return 100.0
+    rs = ort_kazanc / ort_kayip
+    return 100 - (100 / (1 + rs))
+
+
+def macd_hesapla(kapanislar):
+    ema12 = ema_serisi(kapanislar, 12)
+    ema26 = ema_serisi(kapanislar, 26)
+    if not ema12 or not ema26:
+        return None, None, None
+    macd_seri = []
+    for i in range(len(kapanislar)):
+        if i < len(ema12) and i < len(ema26) and ema12[i] is not None and ema26[i] is not None:
+            macd_seri.append(ema12[i] - ema26[i])
+    if len(macd_seri) < 9:
+        return None, None, None
+    sinyal = ema_hesapla(macd_seri, 9)
+    macd = macd_seri[-1]
+    histogram = macd - sinyal if sinyal is not None else None
+    return macd, sinyal, histogram
+
+
+def atr_adx_hesapla(yuksekler, dusukler, kapanislar, periyot=14):
+    if len(kapanislar) < (periyot * 2) + 1:
+        return None, None
+    tr, arti_dm, eksi_dm = [], [], []
+    for i in range(1, len(kapanislar)):
+        yukari = yuksekler[i] - yuksekler[i - 1]
+        asagi = dusukler[i - 1] - dusukler[i]
+        arti_dm.append(yukari if yukari > asagi and yukari > 0 else 0)
+        eksi_dm.append(asagi if asagi > yukari and asagi > 0 else 0)
+        tr.append(max(
+            yuksekler[i] - dusukler[i],
+            abs(yuksekler[i] - kapanislar[i - 1]),
+            abs(dusukler[i] - kapanislar[i - 1])
+        ))
+
+    atr = sum(tr[:periyot]) / periyot
+    arti_s = sum(arti_dm[:periyot])
+    eksi_s = sum(eksi_dm[:periyot])
+    dxler = []
+
+    for i in range(periyot, len(tr)):
+        atr = ((atr * (periyot - 1)) + tr[i]) / periyot
+        arti_s = arti_s - (arti_s / periyot) + arti_dm[i]
+        eksi_s = eksi_s - (eksi_s / periyot) + eksi_dm[i]
+        arti_di = 100 * (arti_s / (atr * periyot)) if atr else 0
+        eksi_di = 100 * (eksi_s / (atr * periyot)) if atr else 0
+        toplam = arti_di + eksi_di
+        dxler.append(100 * abs(arti_di - eksi_di) / toplam if toplam else 0)
+
+    if len(dxler) < periyot:
+        return atr, None
+    adx = sum(dxler[:periyot]) / periyot
+    for dx in dxler[periyot:]:
+        adx = ((adx * (periyot - 1)) + dx) / periyot
+    return atr, adx
+
+
+def teknik_analiz_hesapla(symbol):
+    try:
+        d = veri_getir(symbol, 120)
+        c = d.get("c", [])
+        h = d.get("h", [])
+        l = d.get("l", [])
+        if len(c) < 55 or len(h) != len(c) or len(l) != len(c):
+            return None
+
+        ema20 = ema_hesapla(c, 20)
+        ema50 = ema_hesapla(c, 50)
+        rsi = rsi_hesapla(c, 14)
+        macd, macd_sinyal, macd_hist = macd_hesapla(c)
+        atr, adx = atr_adx_hesapla(h, l, c, 14)
+        fiyat = c[-1]
+        atr_yuzde = (atr / fiyat) * 100 if atr is not None and fiyat else None
+
+        return {
+            "ema20": round(ema20, 6) if ema20 is not None else None,
+            "ema50": round(ema50, 6) if ema50 is not None else None,
+            "rsi": round(rsi, 2) if rsi is not None else None,
+            "macd": round(macd, 6) if macd is not None else None,
+            "macd_sinyal": round(macd_sinyal, 6) if macd_sinyal is not None else None,
+            "macd_hist": round(macd_hist, 6) if macd_hist is not None else None,
+            "adx": round(adx, 2) if adx is not None else None,
+            "atr": round(atr, 6) if atr is not None else None,
+            "atr_yuzde": round(atr_yuzde, 2) if atr_yuzde is not None else None
+        }
+    except Exception as e:
+        print(f"Teknik analiz hata ({symbol}):", e)
+        return None
+
+
+
+# ============================================================
+# RADAR + AL HAFİF ORTAK ONAY
+# Radar ana aday motorudur. Bu katman Radar sinyalini yeniden
+# üretmez/elemez; sadece giriş yönünü teknik olarak teyit eder.
+# Çok sert "hepsi geçsin" mantığı yoktur.
+# ============================================================
+
+def radar_al_hafif_degerlendir(aday):
+    teknik = teknik_analiz_hesapla(aday.get("symbol", ""))
+    if not teknik:
+        return {
+            "al_onay": False,
+            "al_skoru": 0,
+            "al_teknik": None,
+            "al_neden": "Teknik veri alınamadı"
+        }
+
+    fiyat = aday.get("fiyat", 0)
+    guc = aday.get("guc_skoru", 0)
+    giris = aday.get("giris_kalitesi", 0)
+
+    ema20 = teknik.get("ema20")
+    ema50 = teknik.get("ema50")
+    rsi = teknik.get("rsi")
+    macd_hist = teknik.get("macd_hist")
+    adx = teknik.get("adx")
+    atr_yuzde = teknik.get("atr_yuzde")
+
+    ema_ok = (
+        ema20 is not None
+        and ema50 is not None
+        and ema20 > ema50
+        and fiyat > ema20
+    )
+    rsi_ok = rsi is not None and 45 <= rsi <= 78
+    macd_ok = macd_hist is not None and macd_hist > 0
+    adx_ok = adx is not None and adx >= 20
+
+    # Radar zaten güçlü aday ve giriş kalitesi filtresi uyguluyor.
+    # AL katmanı bunların üstüne teknik yön puanı ekliyor.
+    skor = 40.0
+
+    if guc >= 75:
+        skor += 12
+    elif guc >= 65:
+        skor += 8
+    elif guc >= 55:
+        skor += 4
+
+    if giris >= 90:
+        skor += 12
+    elif giris >= 80:
+        skor += 8
+    elif giris >= 72:
+        skor += 5
+
+    if ema_ok:
+        skor += 10
+    else:
+        skor -= 5
+
+    if rsi is not None:
+        if 50 <= rsi <= 70:
+            skor += 10
+        elif rsi_ok:
+            skor += 5
+        else:
+            skor -= 6
+
+    if macd_ok:
+        skor += 10
+    else:
+        skor -= 7
+
+    if adx is not None:
+        if adx >= 30:
+            skor += 10
+        elif adx >= 25:
+            skor += 7
+        elif adx_ok:
+            skor += 3
+        else:
+            skor -= 7
+
+    if atr_yuzde is not None:
+        if atr_yuzde <= 5:
+            skor += 4
+        elif atr_yuzde > 7:
+            skor -= 6
+
+    skor = round(max(0, min(skor, 100)), 1)
+    teknik_onay = sum([ema_ok, rsi_ok, macd_ok, adx_ok])
+
+    # Çok sıkı değil:
+    # normalde 3/4 teknik teyit + 68 puan;
+    # çok güçlü Radar adayında 2/4 + 78 puan da yeterli.
+    al_onay = (
+        (teknik_onay >= 3 and skor >= 68)
+        or
+        (teknik_onay >= 2 and skor >= 78 and guc >= 70 and giris >= 80)
+    )
+
+    nedenler = []
+    if guc >= 65:
+        nedenler.append(f"Radar gücü {round(guc)}/100")
+    if giris >= 80:
+        nedenler.append(f"Giriş kalitesi {round(giris)}/100")
+    if ema_ok:
+        nedenler.append("EMA yukarı")
+    if rsi is not None and 50 <= rsi <= 70:
+        nedenler.append(f"RSI {round(rsi, 1)} sağlıklı")
+    elif rsi_ok:
+        nedenler.append(f"RSI {round(rsi, 1)} kabul")
+    if macd_ok:
+        nedenler.append("MACD pozitif")
+    if adx is not None and adx >= 30:
+        nedenler.append(f"ADX {round(adx, 1)} çok güçlü")
+    elif adx_ok:
+        nedenler.append(f"ADX {round(adx, 1)} yeterli")
+    if aday.get("btcden_guclu"):
+        nedenler.append("BTC'den güçlü")
+    if aday.get("mikro_basamak"):
+        nedenler.append("Mikro basamak")
+
+    if not nedenler:
+        nedenler.append("Radar ve teknik yapı birlikte yeterli")
+
+    return {
+        "al_onay": bool(al_onay),
+        "al_skoru": skor,
+        "al_teknik_onay": teknik_onay,
+        "al_teknik": teknik,
+        "al_neden": " • ".join(nedenler[:5])
+    }
+
 def btc_degisimleri():
     """
     V4.25 BTC Gücü V2 için BTC'nin 1s, 3s ve 24s değişimini hesaplar.
@@ -4747,7 +5010,7 @@ def hizli_on_tarama_adaylari(ticker, onceki):
 while True:
     try:
         print()
-        print("COIN RADAR V5.3")
+        print("RADAR + AL | HAFİF ORTAK ONAY V1")
         print("--------------------------------")
 
         hedef_stop_kontrol()
@@ -5266,7 +5529,7 @@ while True:
                     print(f"Arka plan: {symbol} | {durum} | Güç: {a.get('guc_skoru', 0)}/100 | Hacim: {round(a['hacim'], 2)}x")
                     continue
 
-                # Ana değişiklik: Roket/Elit/Yıldız güçlü olsa bile giriş kalitesi düşükse mesaj yok.
+                # Radar'ın mevcut giriş kalite filtresi korunur.
                 if not a.get("giris_uygun", False):
                     neden = " • ".join(a.get("giris_riskleri", [])[:3]) or "giriş kalitesi yetersiz"
                     print(
@@ -5274,6 +5537,26 @@ while True:
                         f"Giriş {a.get('giris_kalitesi', 0)}/100 < {GIRIS_KALITESI_MIN} | {neden}"
                     )
                     continue
+
+                # RADAR + AL: Radar adayını hafif teknik AL teyidine sok.
+                al_sonuc = radar_al_hafif_degerlendir(a)
+                a.update(al_sonuc)
+
+                if not a.get("al_onay", False):
+                    teknik = a.get("al_teknik") or {}
+                    print(
+                        f"[RADAR+AL BEKLE] {symbol} | {durum} | "
+                        f"AL {a.get('al_skoru', 0)}/100 | "
+                        f"Teknik {a.get('al_teknik_onay', 0)}/4 | "
+                        f"RSI {teknik.get('rsi', 'NA')} | ADX {teknik.get('adx', 'NA')}"
+                    )
+                    continue
+
+                print(
+                    f"[RADAR+AL ONAY] {symbol} | {durum} | "
+                    f"AL {a.get('al_skoru', 0)}/100 | "
+                    f"Teknik {a.get('al_teknik_onay', 0)}/4"
+                )
 
                 son_gonderim = gonderilenler.get(symbol)
                 tekrar_doldu = son_gonderim is None or simdi - son_gonderim >= TEKRAR_SURESI
@@ -5313,11 +5596,11 @@ while True:
                 }
                 sinyal_basligi = baslik_map.get(en_ust_sinyal, "SİNYAL")
                 ikon = en_ust_sinyal.split()[0] if en_ust_sinyal else "🚀"
-                bildirim_basligi = f"{ikon} {en_ust_coin} | {sinyal_basligi}"
+                bildirim_basligi = f"🟢 AL | {en_ust_coin} | {sinyal_basligi}"
 
                 mesaj = (
                     f"{bildirim_basligi}\n"
-                    f"COIN RADAR V5.3\n"
+                    f"RADAR + AL\n"
                     f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
@@ -5375,9 +5658,17 @@ while True:
                         print("Seviye atladı ama Telegram'a gönderilmedi:")
                         print(mesaj_yukselis)
 
-                    satir = (
-                        f"{ortak_sinyal_ozeti_olustur(a)}\n\n"
-                    )
+                    satir = ""
+                    if sira > 1:
+                        kat_map = {
+                            "📊 TRADER HACİM": "TRADER HACİM",
+                            "🚀 Roket Adayı": "ROKET ADAYI",
+                            "🔥 Elit Roket": "ELİT ROKET",
+                            "⭐ Yıldız": "YILDIZ"
+                        }
+                        satir += f"🟢 AL | {symbol} | {kat_map.get(a.get('durum'), 'SİNYAL')}\n\n"
+
+                    satir += f"{ortak_sinyal_ozeti_olustur(a)}\n\n"
 
                     if a["durum_degisti"]:
                         satir += f"Geçiş: {a['eski_durum']} → {a['durum']}\n\n"
@@ -5395,14 +5686,27 @@ while True:
                     if guclenme_mesaji:
                         satir += f"\n{guclenme_mesaji}\n"
 
+                    teknik = a.get("al_teknik") or {}
+                    ema_yon = (
+                        "Yukarı"
+                        if teknik.get("ema20") is not None
+                        and teknik.get("ema50") is not None
+                        and teknik.get("ema20") > teknik.get("ema50")
+                        else "Aşağı"
+                    )
+                    macd_yon = "Pozitif" if teknik.get("macd_hist") is not None and teknik.get("macd_hist") > 0 else "Negatif"
+
                     satir += (
+                        f"\n🟢 AL Skoru: {a.get('al_skoru', 0)}/100 | Teknik: {a.get('al_teknik_onay', 0)}/4\n"
+                        f"EMA: {ema_yon} | RSI: {teknik.get('rsi', 'NA')} | "
+                        f"ADX: {teknik.get('adx', 'NA')} | MACD: {macd_yon}\n"
                         f"\n1s: %{round(a['degisim1'], 2)} | "
-                        f"3s: %{round(a['degisim3'], 2)} | "
-                        f"24s: %{round(a['degisim24'], 2)}\n\n"
+                        f"3s: %{round(a['degisim3'], 2)}\n\n"
                         f"Fiyat: {round(a['fiyat'], 4)}\n"
                         f"Stop: {round(a['stop'], 4)}\n"
                         f"H1: {round(a['hedef1'], 4)}\n"
                         f"H2: {round(a['hedef2'], 4)}\n\n"
+                        f"Neden: {a.get('al_neden', 'Radar ve AL birlikte onayladı')}\n\n"
                     )
 
                     print(satir)
