@@ -20,9 +20,9 @@ HIZLI_HACIM_ESIK = 0.35  # ticker hacmindeki 60 sn pozitif artış (%)
 HIZLI_MAX_ADAY = 15       # API yükünü sınırlamak için dakikada en fazla tam analiz
 HIZLI_IZLEME_SURESI = 3 * 60    # Ön taramanın yakaladığı coin 3 dk sessiz takipte kalır
 
-# V5.4.9 AL ASSISTANT GÜÇLENEN ADAY + ROKET + ELİT:
+# V5.5.0 AL ASSISTANT GÜÇ HAVUZU + ROKET + ELİT:
 # 3 katmanlı yapı korunur: Roket Adayı erken hazırlık, Roket doğrulanmış hareket, Elit en güçlü grup.
-# V5.4.9: Roket Adayı, AL Assistant'ın GÜÇLENEN_ADAY yaklaşımına göre seçilir; Devam Gücü en az 60 kalır.
+# V5.5.0: Roket Adayı, son AL Assistant'taki Çoklu Güç Havuzu gibi iki aşamalı seçilir; Devam Gücü en az 60 kalır.
 # Erken yakalama korunur; yalnızca yüksek hacim görmek üst kategori için artık yeterli değildir.
 MIKRO_BASAMAK_MIN_SKOR = 60
 MIKRO_BASAMAK_MIN_HACIM = 1.35
@@ -33,6 +33,13 @@ ERKEN_LIDER_MIN_SKOR = 5           # normal lider skorunda güçlü teyit
 ERKEN_LIDER_MIN_BTC_FARK3 = 1.0    # BTC'den 3s bazda en az +%1 ayrışma
 ERKEN_LIDER_MIN_MIKRO_IVME = 1.20  # alternatif teyitte hacim basamak ivmesi
 hizli_izleme_havuzu = {}        # symbol -> son tetiklenme zamanı
+
+# V5.5.0 - AL Assistant Çoklu Güç Havuzu uyarlaması.
+# Bir coin ilk güçlenme işaretinde doğrudan Telegram'a düşmez. Önce havuza alınır,
+# sonraki derin analizde güçlenmeyi koruyup artırırsa Roket Adayı olabilir.
+al_assistant_guc_havuzu = {}
+AL_GUC_HAVUZU_SURESI = 8 * 60
+AL_GUC_HAVUZU_MIN_BEKLEME = 45
 STOP_RAPOR_SURESI = 2 * 60 * 60
 HAFTALIK_RAPOR_SURESI = 7 * 24 * 60 * 60
 
@@ -1916,87 +1923,126 @@ def mikro_basamak_hesapla(o, h, l, c, v):
 
 
 def al_assistant_guclenen_aday_hesapla(
-    hacim_kat, degisim1, degisim3, btcden_guclu, lider_skoru,
+    symbol, hacim_kat, degisim1, degisim3, btcden_guclu, lider_skoru,
     mikro_basamak=False, hacim_gucleniyor=False, momentum_gucleniyor=False
 ):
     """
-    V5.4.9 - AL Assistant GÜÇLENEN_ADAY mantığının Radar uyarlaması.
+    V5.5.0 - Son AL Assistant'taki Çoklu Güç Havuzu yaklaşımının Radar uyarlaması.
 
-    Humanity/AL Assistant'taki temel fikir korunur:
-      * yalnız skor yetmez, pozitif momentum + en az 4 teyit gerekir,
-      * hacim tek başına sinyal değildir,
-      * hacim güçlenmesi ve momentum ivmesi ayrıca ödüllendirilir,
-      * 8x+ hacim zayıf momentumla gelirse aday RED edilir.
-
-    Radar'da EMA/MACD/RSI yerine çoklu-coin yapısına özgü BTC üstünlüğü,
-    liderlik ve mikro-basamak teyitleri kullanılır. Mikro basamak zorunlu değildir;
-    yalnızca erken hazırlık teyididir.
+    Fark: İlk güçlü görüntüde mesaj yok. Coin önce güç havuzuna alınır.
+    En az bir sonraki taramada hacim/momentum/BTC/liderlik tarafında gücünü
+    koruyup artırırsa GÜÇLENEN ADAY onayı alır. Böylece anlık 20-25 aday yağmuru
+    yerine gerçekten devam eden hazırlıklar Roket Adayı olur.
     """
-    score = 0.0
+    simdi = time.time()
 
-    # 1) Kısa momentum - Assistant ile aynı eşik mantığı.
-    if degisim1 >= 0.60:
-        score += 13
-    elif degisim1 >= 0.25:
-        score += 8
-    elif degisim1 <= -0.50:
-        score -= 10
-
-    if degisim3 >= 1.50:
-        score += 18
-    elif degisim3 >= 0.70:
-        score += 12
-    elif degisim3 <= 0:
-        score -= 8
-
-    # Assistant'taki acceleration karşılığı: Radar'ın taramalar arası momentum güçlenmesi.
-    if momentum_gucleniyor:
-        score += 9
-
-    # 2) Hacim - tek başına karar vermez.
-    if 1.5 <= hacim_kat < 3:
-        score += 8
-    elif 3 <= hacim_kat < 8:
-        score += 12
-    elif hacim_kat >= 8:
-        score += 8
-
-    if hacim_gucleniyor:
-        score += 10
-
-    volume_without_momentum = hacim_kat >= 8 and degisim3 < 0.70
-    if volume_without_momentum:
-        score -= 18
-
-    # 3) Radar'a özgü teknik/market teyitleri.
-    if btcden_guclu:
-        score += 10
-    if lider_skoru >= 7:
-        score += 12
-    elif lider_skoru >= 5:
-        score += 8
-    if mikro_basamak:
-        score += 5
-
-    score = round(max(0.0, min(100.0, score)), 1)
+    # Süresi dolan kayıtları hafifçe temizle.
+    for _sym, _st in list(al_assistant_guc_havuzu.items()):
+        if simdi - float(_st.get("son_zaman", simdi)) > AL_GUC_HAVUZU_SURESI:
+            al_assistant_guc_havuzu.pop(_sym, None)
 
     positive_momentum = (degisim1 >= 0.20) or (degisim3 >= 0.60)
-    confirmation_count = sum([
+    hacim_canli = hacim_kat >= 1.50
+    liderlik = lider_skoru >= 4
+
+    # İlk havuz kapısı: gevşek ama mesaj üretmez. AL Assistant'taki gibi izleme amacı taşır.
+    ilk_teyit = sum([
         bool(positive_momentum),
-        bool(hacim_gucleniyor or hacim_kat >= 1.5),
+        bool(hacim_canli or hacim_gucleniyor),
         bool(btcden_guclu),
-        bool(lider_skoru >= 5),
+        bool(liderlik),
         bool(momentum_gucleniyor),
         bool(mikro_basamak),
     ])
-
-    guclenen_aday = (
-        not volume_without_momentum
-        and positive_momentum
-        and score >= 70
-        and confirmation_count >= 4
+    havuza_girebilir = (
+        positive_momentum
+        and degisim3 >= 0.50
+        and hacim_kat >= 1.35
+        and degisim1 > -0.20
+        and ilk_teyit >= 3
     )
-    return guclenen_aday, score, confirmation_count
+
+    state = al_assistant_guc_havuzu.get(symbol)
+    if state is None:
+        if havuza_girebilir:
+            al_assistant_guc_havuzu[symbol] = {
+                "ilk_zaman": simdi, "son_zaman": simdi,
+                "hacim": hacim_kat, "degisim1": degisim1, "degisim3": degisim3,
+                "lider": lider_skoru, "btc_guclu": bool(btcden_guclu),
+                "gorulme": 1,
+            }
+        return False, 0.0, ilk_teyit, "HAVUZA_ALINDI" if havuza_girebilir else "IZLEME"
+
+    yas = simdi - float(state.get("ilk_zaman", simdi))
+    onceki_hacim = float(state.get("hacim", hacim_kat) or hacim_kat)
+    onceki_m3 = float(state.get("degisim3", degisim3) or degisim3)
+    onceki_lider = float(state.get("lider", lider_skoru) or lider_skoru)
+
+    # AL Assistant'ın taramalar arası güçlenme fikri: sadece mevcut seviye değil yön önemli.
+    havuz_hacim_guclu = hacim_gucleniyor or (onceki_hacim > 0 and hacim_kat >= onceki_hacim * 1.10)
+    havuz_momentum_guclu = momentum_gucleniyor or (degisim3 >= onceki_m3 + 0.20)
+    havuz_lider_guclu = lider_skoru >= max(4, onceki_lider)
+    momentum_korundu = degisim3 >= max(0.60, onceki_m3 - 0.15) and degisim1 > -0.10
+
+    # Assistant benzeri kalite skoru: momentum ve devam yönü hacimden daha ağır.
+    score = 0.0
+    if degisim1 >= 0.80: score += 12
+    elif degisim1 >= 0.25: score += 8
+    if degisim3 >= 2.00: score += 20
+    elif degisim3 >= 1.00: score += 15
+    elif degisim3 >= 0.60: score += 10
+    if havuz_momentum_guclu: score += 16
+    if 1.5 <= hacim_kat < 3: score += 8
+    elif 3 <= hacim_kat < 8: score += 12
+    elif hacim_kat >= 8: score += 8
+    if havuz_hacim_guclu: score += 12
+    if btcden_guclu: score += 10
+    if lider_skoru >= 7: score += 10
+    elif lider_skoru >= 5: score += 7
+    elif lider_skoru >= 4: score += 4
+    if mikro_basamak: score += 4
+    if not momentum_korundu: score -= 20
+    if hacim_kat >= 8 and degisim3 < 0.70: score -= 20
+    score = round(max(0.0, min(100.0, score)), 1)
+
+    confirmation_count = sum([
+        bool(momentum_korundu),
+        bool(hacim_kat >= 1.50),
+        bool(havuz_hacim_guclu),
+        bool(havuz_momentum_guclu),
+        bool(btcden_guclu),
+        bool(lider_skoru >= 4),
+        bool(mikro_basamak),
+    ])
+
+    # Kritik kalite farkı: 60+ devam gücü kategori_belirle'de ayrıca zorunlu.
+    # Burada ise mutlaka en az bir GERÇEK güçlenme ve 2. gözlem istenir.
+    guclenme_yonu = havuz_hacim_guclu or havuz_momentum_guclu
+    guclenen_aday = (
+        yas >= AL_GUC_HAVUZU_MIN_BEKLEME
+        and int(state.get("gorulme", 1)) >= 1
+        and momentum_korundu
+        and btcden_guclu
+        and lider_skoru >= 4
+        and hacim_kat >= 1.50
+        and guclenme_yonu
+        and score >= 72
+        and confirmation_count >= 5
+        and not (hacim_kat >= 8 and degisim3 < 0.70)
+    )
+
+    # Havuzu güncelle; güç kaybında kayıt kısa sürede doğal olarak söner.
+    if havuza_girebilir or guclenen_aday:
+        state.update({
+            "son_zaman": simdi, "hacim": hacim_kat, "degisim1": degisim1,
+            "degisim3": degisim3, "lider": lider_skoru,
+            "btc_guclu": bool(btcden_guclu), "gorulme": int(state.get("gorulme", 1)) + 1,
+        })
+        al_assistant_guc_havuzu[symbol] = state
+    elif not momentum_korundu or degisim3 < 0.30:
+        al_assistant_guc_havuzu.pop(symbol, None)
+
+    return guclenen_aday, score, confirmation_count, "GUCLENEN_ADAY" if guclenen_aday else "HAVUZDA"
 
 def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, btc_fark, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0, btc_guc_skoru=0, lider_skoru=0, guc_skoru=0, yeni_zirve=False, mikro_basamak=False, mikro_basamak_skor=0, mikro_hacim_ivmesi=1.0, hizli_lider_rank=0, hizli_fiyat_ivme=0.0, hizli_hacim_ivme=0.0, hacim_gucleniyor=False, momentum_gucleniyor=False, devam_gucu=0):
     """
@@ -2070,12 +2116,13 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
             return "📊 TRADER HACİM", "15x+ hacim + BTC gücü + zirve teyidi"
         return "📊 TRADER HACİM", "15x+ hacim + BTC gücü"
 
-    # 4) 🚀 ROKET ADAYI - AL Assistant'taki GÜÇLENEN_ADAY mantığına göre.
+    # 4) 🚀 ROKET ADAYI - son AL Assistant Çoklu Güç Havuzu mantığına göre.
     # Artık mikro-basamak tek başına kapı değildir ve zorunlu da değildir.
-    # Assistant'taki gibi: skor >=70 + en az 4 teyit + pozitif momentum gerekir.
+    # İlk görüntü mesaj üretmez; ikinci gözlemde güçlenme yönü + skor >=72 + en az 5 teyit gerekir.
     # Radar teyitleri: hacim/hacim güçlenmesi, BTC üstünlüğü, liderlik,
     # momentum güçlenmesi ve mikro basamak. Devam Gücü >=60 ayrıca korunur.
-    guclenen_aday, assistant_aday_skoru, assistant_teyit = al_assistant_guclenen_aday_hesapla(
+    guclenen_aday, assistant_aday_skoru, assistant_teyit, assistant_havuz_durumu = al_assistant_guclenen_aday_hesapla(
+        symbol=symbol,
         hacim_kat=hacim_kat,
         degisim1=degisim1,
         degisim3=degisim3,
@@ -4871,7 +4918,7 @@ def hizli_on_tarama_adaylari(ticker, onceki):
 while True:
     try:
         print()
-        print("COIN RADAR V5.4.6 ADAY+ROKET+ELIT+DEVAM")
+        print("COIN RADAR V5.5.0 AL ASSISTANT GUC HAVUZU")
         print("--------------------------------")
 
         hedef_stop_kontrol()
@@ -4917,7 +4964,18 @@ while True:
             print("🔎 Tam piyasa taraması (5 dk)")
         else:
             anlik_hizli_hedefler = {x[1] for x in hizli_adaylar}
-            hizli_hedefler = anlik_hizli_hedefler | set(hizli_izleme_havuzu.keys())
+
+            # V5.5.0: AL Assistant güç havuzuna alınan coinleri de her 60 sn derin analiz et.
+            # Böylece ilk güçlenme işaretinden sonra 5 dakikalık tam taramayı beklemiyoruz.
+            al_assistant_guc_havuzu = {
+                sym: st for sym, st in al_assistant_guc_havuzu.items()
+                if simdi_tarama - float(st.get("son_zaman", simdi_tarama)) <= AL_GUC_HAVUZU_SURESI
+            }
+            hizli_hedefler = (
+                anlik_hizli_hedefler
+                | set(hizli_izleme_havuzu.keys())
+                | set(al_assistant_guc_havuzu.keys())
+            )
             if hizli_adaylar:
                 ozet = ", ".join(
                     f"{sym}(fiyat %{fp:+.2f}, hacim %{vp:+.2f})"
@@ -4931,6 +4989,11 @@ while True:
                 print(
                     "👀 Sessiz hızlı izleme: "
                     + ", ".join(sorted(hizli_izleme_havuzu.keys()))
+                )
+            if al_assistant_guc_havuzu:
+                print(
+                    "🧠 AL güç havuzu: "
+                    + ", ".join(sorted(al_assistant_guc_havuzu.keys()))
                 )
 
         adaylar = []
@@ -5469,7 +5532,7 @@ while True:
                 print("Yeni gönderilecek aday yok.")
 
             else:
-                # V5.4.9: Her coin ayrı Telegram mesajı alır; riskli/orta devam gücündeki adaylar gönderilmez.
+                # V5.5.0: Her coin ayrı Telegram mesajı alır; Roket Adayı AL Assistant güç havuzundan doğrulanır.
                 # Başlık doğrudan coin adı + kategori olur; "SYMBOL" gibi sabit metin kullanılmaz.
                 baslik_map = {
                     "📊 TRADER HACİM": "TRADER HACİM",
@@ -5535,7 +5598,7 @@ while True:
 
                     mesaj = (
                         f"{bildirim_basligi}\n"
-                        f"COIN RADAR V5.4.9\n"
+                        f"COIN RADAR V5.5.0\n"
                         f"BTC 3s: %{round(btc, 2)}\n\n"
                         f"{ortak_sinyal_ozeti_olustur(a)}\n\n"
                     )
