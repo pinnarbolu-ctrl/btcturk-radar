@@ -20,9 +20,9 @@ HIZLI_HACIM_ESIK = 0.35  # ticker hacmindeki 60 sn pozitif artış (%)
 HIZLI_MAX_ADAY = 15       # API yükünü sınırlamak için dakikada en fazla tam analiz
 HIZLI_IZLEME_SURESI = 3 * 60    # Ön taramanın yakaladığı coin 3 dk sessiz takipte kalır
 
-# V5.4.6 ADAY + ROKET + ELİT + DEVAM GÜCÜ:
+# V5.4.9 AL ASSISTANT GÜÇLENEN ADAY + ROKET + ELİT:
 # 3 katmanlı yapı korunur: Roket Adayı erken hazırlık, Roket doğrulanmış hareket, Elit en güçlü grup.
-# V5.4.8: Roket Adayı dahil Telegram'a giden tüm roket sinyallerinde Devam Gücü en az 60 olmalıdır.
+# V5.4.9: Roket Adayı, AL Assistant'ın GÜÇLENEN_ADAY yaklaşımına göre seçilir; Devam Gücü en az 60 kalır.
 # Erken yakalama korunur; yalnızca yüksek hacim görmek üst kategori için artık yeterli değildir.
 MIKRO_BASAMAK_MIN_SKOR = 60
 MIKRO_BASAMAK_MIN_HACIM = 1.35
@@ -1913,6 +1913,91 @@ def mikro_basamak_hesapla(o, h, l, c, v):
         return 0, False, {"mum_sayisi": 0, "hacim_ivmesi": 1.0, "neden": str(e)}
 
 
+
+
+def al_assistant_guclenen_aday_hesapla(
+    hacim_kat, degisim1, degisim3, btcden_guclu, lider_skoru,
+    mikro_basamak=False, hacim_gucleniyor=False, momentum_gucleniyor=False
+):
+    """
+    V5.4.9 - AL Assistant GÜÇLENEN_ADAY mantığının Radar uyarlaması.
+
+    Humanity/AL Assistant'taki temel fikir korunur:
+      * yalnız skor yetmez, pozitif momentum + en az 4 teyit gerekir,
+      * hacim tek başına sinyal değildir,
+      * hacim güçlenmesi ve momentum ivmesi ayrıca ödüllendirilir,
+      * 8x+ hacim zayıf momentumla gelirse aday RED edilir.
+
+    Radar'da EMA/MACD/RSI yerine çoklu-coin yapısına özgü BTC üstünlüğü,
+    liderlik ve mikro-basamak teyitleri kullanılır. Mikro basamak zorunlu değildir;
+    yalnızca erken hazırlık teyididir.
+    """
+    score = 0.0
+
+    # 1) Kısa momentum - Assistant ile aynı eşik mantığı.
+    if degisim1 >= 0.60:
+        score += 13
+    elif degisim1 >= 0.25:
+        score += 8
+    elif degisim1 <= -0.50:
+        score -= 10
+
+    if degisim3 >= 1.50:
+        score += 18
+    elif degisim3 >= 0.70:
+        score += 12
+    elif degisim3 <= 0:
+        score -= 8
+
+    # Assistant'taki acceleration karşılığı: Radar'ın taramalar arası momentum güçlenmesi.
+    if momentum_gucleniyor:
+        score += 9
+
+    # 2) Hacim - tek başına karar vermez.
+    if 1.5 <= hacim_kat < 3:
+        score += 8
+    elif 3 <= hacim_kat < 8:
+        score += 12
+    elif hacim_kat >= 8:
+        score += 8
+
+    if hacim_gucleniyor:
+        score += 10
+
+    volume_without_momentum = hacim_kat >= 8 and degisim3 < 0.70
+    if volume_without_momentum:
+        score -= 18
+
+    # 3) Radar'a özgü teknik/market teyitleri.
+    if btcden_guclu:
+        score += 10
+    if lider_skoru >= 7:
+        score += 12
+    elif lider_skoru >= 5:
+        score += 8
+    if mikro_basamak:
+        score += 5
+
+    score = round(max(0.0, min(100.0, score)), 1)
+
+    positive_momentum = (degisim1 >= 0.20) or (degisim3 >= 0.60)
+    confirmation_count = sum([
+        bool(positive_momentum),
+        bool(hacim_gucleniyor or hacim_kat >= 1.5),
+        bool(btcden_guclu),
+        bool(lider_skoru >= 5),
+        bool(momentum_gucleniyor),
+        bool(mikro_basamak),
+    ])
+
+    guclenen_aday = (
+        not volume_without_momentum
+        and positive_momentum
+        and score >= 70
+        and confirmation_count >= 4
+    )
+    return guclenen_aday, score, confirmation_count
+
 def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, btc_fark, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0, btc_guc_skoru=0, lider_skoru=0, guc_skoru=0, yeni_zirve=False, mikro_basamak=False, mikro_basamak_skor=0, mikro_hacim_ivmesi=1.0, hizli_lider_rank=0, hizli_fiyat_ivme=0.0, hizli_hacim_ivme=0.0, hacim_gucleniyor=False, momentum_gucleniyor=False, devam_gucu=0):
     """
     V4.25 kategori mantığı.
@@ -1985,43 +2070,29 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
             return "📊 TRADER HACİM", "15x+ hacim + BTC gücü + zirve teyidi"
         return "📊 TRADER HACİM", "15x+ hacim + BTC gücü"
 
-    # 4) 🚀 ERKEN ROKET ADAYI - mikro basamak + GERÇEK LİDERLİK + DEVAM GÜCÜ >=60 teyidi.
-    # Erkenliği korur (hacim 1.35x seviyesinde açılabilir) ama artık sadece mikro yapı
-    # veya tek bir zayıf teyitle geçmez. Aşağıdaki üç liderlik yolundan biri gerekir:
-    #   A) 60 sn hızlananlar içinde ilk 10,
-    #   B) lider skoru >=5 + BTC'den 3s bazda >=%1 güçlü,
-    #   C) lider skoru >=4 + mikro hacim ivmesi >=1.20 + BTC farkı pozitif.
-    hizli_lider = (
-        hizli_lider_rank > 0
-        and hizli_lider_rank <= ERKEN_LIDER_MAX_RANK
-        and (hizli_fiyat_ivme >= 0.15 or hizli_hacim_ivme >= HIZLI_HACIM_ESIK)
+    # 4) 🚀 ROKET ADAYI - AL Assistant'taki GÜÇLENEN_ADAY mantığına göre.
+    # Artık mikro-basamak tek başına kapı değildir ve zorunlu da değildir.
+    # Assistant'taki gibi: skor >=70 + en az 4 teyit + pozitif momentum gerekir.
+    # Radar teyitleri: hacim/hacim güçlenmesi, BTC üstünlüğü, liderlik,
+    # momentum güçlenmesi ve mikro basamak. Devam Gücü >=60 ayrıca korunur.
+    guclenen_aday, assistant_aday_skoru, assistant_teyit = al_assistant_guclenen_aday_hesapla(
+        hacim_kat=hacim_kat,
+        degisim1=degisim1,
+        degisim3=degisim3,
+        btcden_guclu=btcden_guclu,
+        lider_skoru=lider_skoru,
+        mikro_basamak=mikro_basamak,
+        hacim_gucleniyor=hacim_gucleniyor,
+        momentum_gucleniyor=momentum_gucleniyor,
     )
-    guclu_lider = (
-        lider_skoru >= ERKEN_LIDER_MIN_SKOR
-        and btc_fark >= ERKEN_LIDER_MIN_BTC_FARK3
-    )
-    ivmeli_lider = (
-        lider_skoru >= 4
-        and mikro_hacim_ivmesi >= ERKEN_LIDER_MIN_MIKRO_IVME
-        and btc_fark >= 0.5
-    )
-    erken_lider_onayi = hizli_lider or guclu_lider or ivmeli_lider
 
     if (
-        mikro_basamak
-        and mikro_basamak_skor >= MIKRO_BASAMAK_MIN_SKOR
-        and guc_skoru >= 48
-        and kalite_skoru >= 6
-        and hacim_kat >= MIKRO_BASAMAK_MIN_HACIM
-        and degisim1 > 0
-        and degisim1 <= MIKRO_BASAMAK_MAX_DEGISIM1
-        and degisim3 >= 0.7
-        and degisim3 <= MIKRO_BASAMAK_MAX_DEGISIM3
-        and btcden_guclu
-        and erken_lider_onayi
+        guclenen_aday
         and devam_gucu >= 60
+        and degisim1 <= MIKRO_BASAMAK_MAX_DEGISIM1
+        and degisim3 <= MIKRO_BASAMAK_MAX_DEGISIM3
     ):
-        return "🚀 Roket Adayı", "Erken güçlü lider aday"
+        return "🚀 Roket Adayı", f"Güçlenen aday {assistant_aday_skoru}/100 • {assistant_teyit} teyit"
 
     # 5) 🚀 ROKET - artık "aday" değil; hareket hacim + momentum ile doğrulanmış olmalı.
     # Erken Roket Adayı %1-2 civarında hazırlığı haber verir. Hacim 5x+ açılıp
@@ -5398,7 +5469,7 @@ while True:
                 print("Yeni gönderilecek aday yok.")
 
             else:
-                # V5.4.8: Her coin ayrı Telegram mesajı alır; riskli/orta devam gücündeki adaylar gönderilmez.
+                # V5.4.9: Her coin ayrı Telegram mesajı alır; riskli/orta devam gücündeki adaylar gönderilmez.
                 # Başlık doğrudan coin adı + kategori olur; "SYMBOL" gibi sabit metin kullanılmaz.
                 baslik_map = {
                     "📊 TRADER HACİM": "TRADER HACİM",
@@ -5464,7 +5535,7 @@ while True:
 
                     mesaj = (
                         f"{bildirim_basligi}\n"
-                        f"COIN RADAR V5.4.8\n"
+                        f"COIN RADAR V5.4.9\n"
                         f"BTC 3s: %{round(btc, 2)}\n\n"
                         f"{ortak_sinyal_ozeti_olustur(a)}\n\n"
                     )
