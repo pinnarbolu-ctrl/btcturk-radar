@@ -20,9 +20,9 @@ HIZLI_HACIM_ESIK = 0.35  # ticker hacmindeki 60 sn pozitif artış (%)
 HIZLI_MAX_ADAY = 15       # API yükünü sınırlamak için dakikada en fazla tam analiz
 HIZLI_IZLEME_SURESI = 3 * 60    # Ön taramanın yakaladığı coin 3 dk sessiz takipte kalır
 
-# V5.5.0 AL ASSISTANT GÜÇ HAVUZU + ROKET + ELİT:
+# V5.5.1 MAIN13 KALİTELİ ROKET ADAYI + ROKET + ELİT:
 # 3 katmanlı yapı korunur: Roket Adayı erken hazırlık, Roket doğrulanmış hareket, Elit en güçlü grup.
-# V5.5.0: Roket Adayı, son AL Assistant'taki Çoklu Güç Havuzu gibi iki aşamalı seçilir; Devam Gücü en az 60 kalır.
+# V5.5.1: Roket Adayı, main_13_coklu_guc_havuzu.py içindeki gerçek AL teknik kapısıyla süzülür; Devam Gücü en az 60 kalır.
 # Erken yakalama korunur; yalnızca yüksek hacim görmek üst kategori için artık yeterli değildir.
 MIKRO_BASAMAK_MIN_SKOR = 60
 MIKRO_BASAMAK_MIN_HACIM = 1.35
@@ -2044,6 +2044,226 @@ def al_assistant_guclenen_aday_hesapla(
 
     return guclenen_aday, score, confirmation_count, "GUCLENEN_ADAY" if guclenen_aday else "HAVUZDA"
 
+
+# -----------------------------------------------------------------------------
+# V5.5.1 - main_13_coklu_guc_havuzu.py kalite kapısı
+# Roket Adayı, güç havuzundan çıkmakla yetinmez. main_13'te Telegram'a yalnızca
+# gerçek AL teknik teyidi geçen coinler düştüğü için aynı kalite kapısı burada da
+# Roket Adayı seviyesine uygulanır: EMA trendi + RSI + MACD + ADX + AI skoru.
+# -----------------------------------------------------------------------------
+MAIN13_ADAY_AI_MIN = 80.0
+MAIN13_ADAY_ADX_MIN = 30.0
+MAIN13_ADAY_RSI_MIN = 48.0
+MAIN13_ADAY_RSI_MAX = 70.0
+main13_teknik_cache = {}
+MAIN13_TEKNIK_CACHE_SURESI = 55
+
+
+def _main13_ema(veriler, periyot):
+    if len(veriler) < periyot:
+        return None
+    ema = sum(veriler[:periyot]) / periyot
+    k = 2 / (periyot + 1)
+    for fiyat in veriler[periyot:]:
+        ema = fiyat * k + ema * (1 - k)
+    return ema
+
+
+def _main13_ema_serisi(veriler, periyot):
+    if len(veriler) < periyot:
+        return []
+    sonuc = [None] * (periyot - 1)
+    ema = sum(veriler[:periyot]) / periyot
+    sonuc.append(ema)
+    k = 2 / (periyot + 1)
+    for fiyat in veriler[periyot:]:
+        ema = fiyat * k + ema * (1 - k)
+        sonuc.append(ema)
+    return sonuc
+
+
+def _main13_rsi(kapanislar, periyot=14):
+    if len(kapanislar) < periyot + 1:
+        return None
+    farklar = [kapanislar[i] - kapanislar[i - 1] for i in range(1, len(kapanislar))]
+    kazanclar = [max(x, 0) for x in farklar]
+    kayiplar = [max(-x, 0) for x in farklar]
+    ort_kazanc = sum(kazanclar[:periyot]) / periyot
+    ort_kayip = sum(kayiplar[:periyot]) / periyot
+    for i in range(periyot, len(farklar)):
+        ort_kazanc = ((ort_kazanc * (periyot - 1)) + kazanclar[i]) / periyot
+        ort_kayip = ((ort_kayip * (periyot - 1)) + kayiplar[i] / 1) / periyot
+    if ort_kayip == 0:
+        return 100.0
+    rs = ort_kazanc / ort_kayip
+    return 100 - (100 / (1 + rs))
+
+
+def _main13_macd(kapanislar):
+    ema12 = _main13_ema_serisi(kapanislar, 12)
+    ema26 = _main13_ema_serisi(kapanislar, 26)
+    if not ema12 or not ema26:
+        return None, None, None
+    macd_seri = []
+    for i in range(len(kapanislar)):
+        if i < len(ema12) and i < len(ema26) and ema12[i] is not None and ema26[i] is not None:
+            macd_seri.append(ema12[i] - ema26[i])
+    if len(macd_seri) < 9:
+        return None, None, None
+    sinyal = _main13_ema(macd_seri, 9)
+    macd = macd_seri[-1]
+    histogram = macd - sinyal if sinyal is not None else None
+    return macd, sinyal, histogram
+
+
+def _main13_atr_adx(yuksekler, dusukler, kapanislar, periyot=14):
+    if len(kapanislar) < (periyot * 2) + 1:
+        return None, None
+    tr, arti_dm, eksi_dm = [], [], []
+    for i in range(1, len(kapanislar)):
+        yukari = yuksekler[i] - yuksekler[i - 1]
+        asagi = dusukler[i - 1] - dusukler[i]
+        arti_dm.append(yukari if yukari > asagi and yukari > 0 else 0)
+        eksi_dm.append(asagi if asagi > yukari and asagi > 0 else 0)
+        tr.append(max(
+            yuksekler[i] - dusukler[i],
+            abs(yuksekler[i] - kapanislar[i - 1]),
+            abs(dusukler[i] - kapanislar[i - 1])
+        ))
+    atr = sum(tr[:periyot]) / periyot
+    arti_s = sum(arti_dm[:periyot])
+    eksi_s = sum(eksi_dm[:periyot])
+    dxler = []
+    for i in range(periyot, len(tr)):
+        atr = ((atr * (periyot - 1)) + tr[i]) / periyot
+        arti_s = arti_s - (arti_s / periyot) + arti_dm[i]
+        eksi_s = eksi_s - (eksi_s / periyot) + eksi_dm[i]
+        arti_di = 100 * (arti_s / (atr * periyot)) if atr else 0
+        eksi_di = 100 * (eksi_s / (atr * periyot)) if atr else 0
+        toplam = arti_di + eksi_di
+        dxler.append(100 * abs(arti_di - eksi_di) / toplam if toplam else 0)
+    if len(dxler) < periyot:
+        return atr, None
+    adx = sum(dxler[:periyot]) / periyot
+    for dx in dxler[periyot:]:
+        adx = ((adx * (periyot - 1)) + dx) / periyot
+    return atr, adx
+
+
+def _main13_teknik_getir(symbol):
+    simdi = time.time()
+    cache = main13_teknik_cache.get(symbol)
+    if cache and simdi - cache.get("zaman", 0) <= MAIN13_TEKNIK_CACHE_SURESI:
+        return cache.get("veri")
+    try:
+        d = veri_getir(symbol, 120)
+        c = [float(x) for x in d.get("c", [])]
+        h = [float(x) for x in d.get("h", [])]
+        l = [float(x) for x in (d.get("l") or [])]
+        if len(c) < 55 or len(h) != len(c) or len(l) != len(c):
+            return None
+        ema20 = _main13_ema(c, 20)
+        ema50 = _main13_ema(c, 50)
+        rsi = _main13_rsi(c, 14)
+        _, _, macd_hist = _main13_macd(c)
+        atr, adx = _main13_atr_adx(h, l, c, 14)
+        atr_yuzde = (atr / c[-1] * 100) if atr is not None and c[-1] else None
+        veri = {
+            "fiyat": c[-1], "ema20": ema20, "ema50": ema50, "rsi": rsi,
+            "macd_hist": macd_hist, "adx": adx, "atr_yuzde": atr_yuzde,
+        }
+        main13_teknik_cache[symbol] = {"zaman": simdi, "veri": veri}
+        return veri
+    except Exception as e:
+        print(f"MAIN13 teknik hata {symbol}: {e}")
+        return None
+
+
+def main13_roket_adayi_teknik_onayi(symbol, radar_skoru, lider_skoru, btcden_guclu, degisim1, degisim3, degisim24):
+    """main_13 AI karar motorunun erken/kaliteli AL kapısını Roket Adayı için uygular."""
+    teknik = _main13_teknik_getir(symbol)
+    if not teknik:
+        return False, 0.0, {"neden": "teknik veri yetersiz"}
+
+    fiyat = teknik.get("fiyat") or 0
+    ema20 = teknik.get("ema20")
+    ema50 = teknik.get("ema50")
+    rsi = teknik.get("rsi")
+    macd_hist = teknik.get("macd_hist")
+    adx = teknik.get("adx")
+    atr_yuzde = teknik.get("atr_yuzde")
+
+    skor = 20.0
+    skor += max(0, min((radar_skoru - 55) * 0.50, 20))
+
+    ema_yukari = bool(ema20 is not None and ema50 is not None and ema20 > ema50 and fiyat > ema20)
+    if ema20 is not None and ema50 is not None:
+        skor += 12 if ema20 > ema50 else -8
+        if fiyat and ema20:
+            skor += 4 if fiyat > ema20 else -5
+
+    if rsi is not None:
+        if 50 <= rsi <= 65: skor += 12
+        elif 45 <= rsi < 50: skor += 5
+        elif 65 < rsi <= 72: skor += 6
+        elif 72 < rsi <= 78: skor += 1
+        elif 78 < rsi <= 85: skor -= 7
+        elif rsi > 85: skor -= 12
+        elif rsi < 40: skor -= 10
+
+    macd_pozitif = macd_hist is not None and macd_hist > 0
+    if macd_hist is not None:
+        skor += 12 if macd_pozitif else -14
+
+    if adx is not None:
+        if adx >= 40: skor += 18
+        elif adx >= 30: skor += 14
+        elif adx >= 25: skor += 9
+        elif adx >= 20: skor += 3
+        else: skor -= 8
+
+    if atr_yuzde is not None:
+        if 1 <= atr_yuzde <= 4.5: skor += 5
+        elif atr_yuzde > 7: skor -= 10
+        elif atr_yuzde > 5: skor -= 5
+
+    if btcden_guclu: skor += 4
+    if lider_skoru >= 7: skor += 5
+    elif lider_skoru >= 5: skor += 2
+
+    if 1 <= degisim1 <= 4: skor += 5
+    elif 4 < degisim1 <= 8: skor += 2
+    elif degisim1 > 8: skor -= 4
+
+    if 3 <= degisim3 <= 8: skor += 7
+    elif 8 < degisim3 <= 15: skor += 4
+    elif degisim3 > 15: skor += 1
+    if degisim24 > 30: skor -= 5
+
+    if adx is not None:
+        if adx < 20: skor = min(skor, 74)
+        elif adx < 25: skor = min(skor, 82)
+        elif adx < 30: skor = min(skor, 90)
+
+    skor = round(max(0, min(skor, 100)), 1)
+
+    # main_13'te erken aday için kullanılan en seçici teknik kapı.
+    onay = (
+        ema_yukari
+        and rsi is not None and MAIN13_ADAY_RSI_MIN <= rsi <= MAIN13_ADAY_RSI_MAX
+        and macd_pozitif
+        and adx is not None and adx >= MAIN13_ADAY_ADX_MIN
+        and skor >= MAIN13_ADAY_AI_MIN
+    )
+    return onay, skor, {
+        "ema_ok": ema_yukari,
+        "rsi": None if rsi is None else round(rsi, 1),
+        "macd_ok": macd_pozitif,
+        "adx": None if adx is None else round(adx, 1),
+        "ai_skor": skor,
+    }
+
+
 def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, btcden_guclu, btc_fark, degisim1, degisim3, degisim24, zirve_yakin, guclenme_bonus=0, btc_guc_skoru=0, lider_skoru=0, guc_skoru=0, yeni_zirve=False, mikro_basamak=False, mikro_basamak_skor=0, mikro_hacim_ivmesi=1.0, hizli_lider_rank=0, hizli_fiyat_ivme=0.0, hizli_hacim_ivme=0.0, hacim_gucleniyor=False, momentum_gucleniyor=False, devam_gucu=0):
     """
     V4.25 kategori mantığı.
@@ -2116,9 +2336,9 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
             return "📊 TRADER HACİM", "15x+ hacim + BTC gücü + zirve teyidi"
         return "📊 TRADER HACİM", "15x+ hacim + BTC gücü"
 
-    # 4) 🚀 ROKET ADAYI - son AL Assistant Çoklu Güç Havuzu mantığına göre.
+    # 4) 🚀 ROKET ADAYI - main_13 Çoklu Güç Havuzu + gerçek AL teknik kapısı.
     # Artık mikro-basamak tek başına kapı değildir ve zorunlu da değildir.
-    # İlk görüntü mesaj üretmez; ikinci gözlemde güçlenme yönü + skor >=72 + en az 5 teyit gerekir.
+    # İlk görüntü mesaj üretmez; güç havuzu onayından sonra EMA+RSI+MACD+ADX+AI>=80 teknik kapısı da gerekir.
     # Radar teyitleri: hacim/hacim güçlenmesi, BTC üstünlüğü, liderlik,
     # momentum güçlenmesi ve mikro basamak. Devam Gücü >=60 ayrıca korunur.
     guclenen_aday, assistant_aday_skoru, assistant_teyit, assistant_havuz_durumu = al_assistant_guclenen_aday_hesapla(
@@ -2133,13 +2353,34 @@ def kategori_belirle(symbol, genel_skor, kalite_skoru, hacim_kat, haber_skoru, b
         momentum_gucleniyor=momentum_gucleniyor,
     )
 
+    main13_teknik_onay = False
+    main13_ai_skoru = 0.0
+    main13_detay = {}
     if (
         guclenen_aday
         and devam_gucu >= 60
         and degisim1 <= MIKRO_BASAMAK_MAX_DEGISIM1
         and degisim3 <= MIKRO_BASAMAK_MAX_DEGISIM3
     ):
-        return "🚀 Roket Adayı", f"Güçlenen aday {assistant_aday_skoru}/100 • {assistant_teyit} teyit"
+        main13_teknik_onay, main13_ai_skoru, main13_detay = main13_roket_adayi_teknik_onayi(
+            symbol, guc_skoru, lider_skoru, btcden_guclu, degisim1, degisim3, degisim24
+        )
+        if not main13_teknik_onay:
+            print(
+                f"MAIN13 aday filtresi: {symbol} PAS | "
+                f"AI {main13_ai_skoru}/100 | RSI {main13_detay.get('rsi')} | "
+                f"ADX {main13_detay.get('adx')} | EMA {main13_detay.get('ema_ok')} | "
+                f"MACD {main13_detay.get('macd_ok')}"
+            )
+
+    if (
+        guclenen_aday
+        and devam_gucu >= 60
+        and degisim1 <= MIKRO_BASAMAK_MAX_DEGISIM1
+        and degisim3 <= MIKRO_BASAMAK_MAX_DEGISIM3
+        and main13_teknik_onay
+    ):
+        return "🚀 Roket Adayı", f"MAIN13 güçlü aday • AI {main13_ai_skoru}/100 • {assistant_teyit} teyit"
 
     # 5) 🚀 ROKET - artık "aday" değil; hareket hacim + momentum ile doğrulanmış olmalı.
     # Erken Roket Adayı %1-2 civarında hazırlığı haber verir. Hacim 5x+ açılıp
@@ -4918,7 +5159,7 @@ def hizli_on_tarama_adaylari(ticker, onceki):
 while True:
     try:
         print()
-        print("COIN RADAR V5.5.0 AL ASSISTANT GUC HAVUZU")
+        print("COIN RADAR V5.5.1 MAIN13 KALITELI ROKET ADAYI")
         print("--------------------------------")
 
         hedef_stop_kontrol()
@@ -5532,7 +5773,7 @@ while True:
                 print("Yeni gönderilecek aday yok.")
 
             else:
-                # V5.5.0: Her coin ayrı Telegram mesajı alır; Roket Adayı AL Assistant güç havuzundan doğrulanır.
+                # V5.5.1: Her coin ayrı Telegram mesajı alır; Roket Adayı main_13 teknik AL kapısından da geçer.
                 # Başlık doğrudan coin adı + kategori olur; "SYMBOL" gibi sabit metin kullanılmaz.
                 baslik_map = {
                     "📊 TRADER HACİM": "TRADER HACİM",
@@ -5598,7 +5839,7 @@ while True:
 
                     mesaj = (
                         f"{bildirim_basligi}\n"
-                        f"COIN RADAR V5.5.0\n"
+                        f"COIN RADAR V5.5.1\n"
                         f"BTC 3s: %{round(btc, 2)}\n\n"
                         f"{ortak_sinyal_ozeti_olustur(a)}\n\n"
                     )
