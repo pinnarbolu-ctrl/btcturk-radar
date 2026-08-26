@@ -1,5 +1,5 @@
 # ==========================================
-# AI COIN ASSISTANT - 13 TABANLI BIRLESIK V5 | 13 DIREKT KARAR + DIGERLERI VETO
+# AI COIN ASSISTANT - 13 TABANLI BIRLESIK V6 | AKILLI VETOT KARAR + DIGERLERI VETO
 # Taban: main_20_coklu_guc_siklastirilmis.py
 # Fast Scan V1: 60 sn hızlı ön tarama + 5 dk tam tarama
 # AL Relax V1: normal AL için ADX 27 / AI 80
@@ -1420,7 +1420,7 @@ def canli_kazananlari_bul(btc_3s, simdi=None):
 while True:
     try:
         print()
-        print("AI COIN ASSISTANT - 13 TABANLI BIRLESIK V5 | 13 DIREKT KARAR + DIGERLERI VETO")
+        print("AI COIN ASSISTANT - 13 TABANLI BIRLESIK V6 | AKILLI VETOT KARAR + DIGERLERI VETO")
         print("--------------------------------")
 
         btc_d = btc_degisimleri()
@@ -2041,22 +2041,30 @@ while True:
                 ema50 = teknik.get("ema50")
                 macd_hist = teknik.get("macd_hist")
 
-                # Sert veto: 13'ün AL'ını yalnız gerçekten kötü yapı iptal eder.
-                teknik_veto = (
-                    gec
-                    or adx < 24
-                    or rsi > 74
-                    or hacim < 0.50
-                    or ema20 is None
-                    or ema50 is None
-                    or ema20 <= ema50
-                    or macd_hist is None
-                    or macd_hist <= 0
-                )
-                if teknik_veto:
+                # Akıllı teknik veto:
+                # Hacim burada veto sebebi değildir; hacim aşağıdaki ayrı hacim motorunda değerlendirilir.
+                # Böylece güçlü 13 sinyali tek bir yan filtre yüzünden sessiz kalmaz.
+                veto_nedenleri = []
+                if gec:
+                    veto_nedenleri.append("giriş geç")
+                if adx < 24:
+                    veto_nedenleri.append(f"ADX {adx:.1f}<24")
+                if rsi > 74:
+                    veto_nedenleri.append(f"RSI {rsi:.1f}>74")
+                if ema20 is None or ema50 is None:
+                    veto_nedenleri.append("EMA verisi eksik")
+                elif ema20 <= ema50:
+                    veto_nedenleri.append("EMA20<=EMA50")
+                if macd_hist is None:
+                    veto_nedenleri.append("MACD verisi eksik")
+                elif macd_hist <= 0:
+                    veto_nedenleri.append("MACD negatif")
+
+                if veto_nedenleri:
                     print(
-                        f"[13 + TEKNIK VETO] {symbol} | "
-                        f"ADX={adx} RSI={rsi} Hacim={hacim} Giris={giris_k} Devam={devam_g}"
+                        f"[13 + TEKNIK VETO] {symbol} | Sebep: {', '.join(veto_nedenleri)} | "
+                        f"ADX={adx:.2f} RSI={rsi:.2f} Hacim={hacim:.2f} "
+                        f"Giris={giris_k:.1f} Devam={devam_g:.1f}"
                     )
                     continue
 
@@ -2109,11 +2117,16 @@ while True:
                 momentum_ok = not (d1m < 0 and d3m < 0)
 
                 if not hacim_ok or not momentum_ok:
-                    print(
-                        f"[HACIM VETO] {symbol} | "
-                        f"Genel={genel_hacim:.2f}x | 1dk={hacim1x:.2f}x | "
-                        f"Ivme={hacim_ivme:.2f}x | d1={d1m:.3f} | d3={d3m:.3f}"
-                    )
+                    hacim_sebepleri = []
+                    if not hacim_ok:
+                        hacim_sebepleri.append(
+                            f"hacim teyidi yok (genel {genel_hacim:.2f}x, 1dk {hacim1x:.2f}x, ivme {hacim_ivme:.2f}x)"
+                        )
+                    if not momentum_ok:
+                        hacim_sebepleri.append(
+                            f"1dk ve 3dk momentum negatif ({d1m:.3f}/{d3m:.3f})"
+                        )
+                    print(f"[HACIM VETO] {symbol} | Sebep: {'; '.join(hacim_sebepleri)}")
                     continue
 
                 # Etiketler sadece kaliteyi anlatır; AL kararını 13 vermiştir.
@@ -2133,7 +2146,7 @@ while True:
                 print("13 AL + birleşik filtrelerden geçen yeni aday yok. Telegram sessiz.")
             else:
                 mesaj = (
-                    "🤖 13 TABANLI BIRLESIK AL - V5\n"
+                    "🤖 13 TABANLI BIRLESIK AL - V6\n"
                     f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
