@@ -14,19 +14,9 @@ import requests
 import feedparser
 
 
-BOT_TOKEN = (
-    os.getenv("BOT_TOKEN")
-    or os.getenv("TELEGRAM_BOT_TOKEN")
-    or ""
-).strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
-_ENV_CHAT_ID = (
-    os.getenv("TELEGRAM_CHAT_ID")
-    or os.getenv("CHAT_ID")
-    or ""
-).strip()
-
-CHAT_IDS = [_ENV_CHAT_ID] if _ENV_CHAT_ID else [2097448038]
+CHAT_IDS = [1877715122, 2097448038]
 
 TARAMA_SURESI = 60
 TAM_TARAMA_DONGUSU = 5          # 5 x 60 sn = yaklaşık 5 dk
