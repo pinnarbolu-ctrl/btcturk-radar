@@ -1,5 +1,5 @@
 # ==========================================
-# AI COIN ASSISTANT - 13 TABANLI BIRLESIK V4 | HACIM TEYITLI ILK AL
+# AI COIN ASSISTANT - 13 TABANLI BIRLESIK V5 | 13 DIREKT KARAR + DIGERLERI VETO
 # Taban: main_20_coklu_guc_siklastirilmis.py
 # Fast Scan V1: 60 sn hızlı ön tarama + 5 dk tam tarama
 # AL Relax V1: normal AL için ADX 27 / AI 80
@@ -1420,7 +1420,7 @@ def canli_kazananlari_bul(btc_3s, simdi=None):
 while True:
     try:
         print()
-        print("AI COIN ASSISTANT - 13 TABANLI BIRLESIK V4 | HACIM TEYITLI ILK AL")
+        print("AI COIN ASSISTANT - 13 TABANLI BIRLESIK V5 | 13 DIREKT KARAR + DIGERLERI VETO")
         print("--------------------------------")
 
         btc_d = btc_degisimleri()
@@ -1980,22 +1980,38 @@ while True:
         if not top10:
             print("Şu an uygun aday yok.")
         else:
-            # V21: AL kararı tek başına mesaj değildir. Önce canlı yarışta 3-10 dk olgunlaşır.
+            # V5: 13 ana karar motoru.
+            # 13 AL dediyse canlı yarış beklemek AL'ı geciktirmez.
+            # 21C yarışı sadece destek skoru olarak kullanılır.
             kazananlar = canli_kazananlari_bul(btc, time.time())
+            yaris_haritasi = {}
+            for sira, (yaris_skoru, _ai, symbol, _a, kayit) in enumerate(kazananlar, start=1):
+                yaris_haritasi[symbol] = {
+                    "sira": sira,
+                    "skor": yaris_skoru,
+                    "sure": round((time.time() - kayit.get("ilk_zaman", time.time())) / 60, 1),
+                    "gozlem": kayit.get("gozlem", 0),
+                }
+
             gonderilecekler = []
 
-            for sira, (yaris_skoru, _ai, symbol, a, kayit) in enumerate(kazananlar, start=1):
-                onceki_karar = son_ai_kararlar.get(symbol)
-
-                # Aynı gerçek gönderimi yeniden yollama.
-                if onceki_karar == "GONDERILDI":
+            for a in top10:
+                symbol = a.get("symbol")
+                if not symbol:
+                    continue
+                if son_ai_kararlar.get(symbol) == "GONDERILDI":
                     continue
 
-                a["yaris_skoru"] = yaris_skoru
-                a["yaris_sirasi"] = sira
-                a["yaris_suresi_dk"] = round((time.time() - kayit.get("ilk_zaman", time.time())) / 60, 1)
-                a["yaris_gozlem"] = kayit.get("gozlem", 0)
+                # 13 AL değilse birleşik bot da AL vermez.
+                if "🟢 AL" not in str(a.get("karar", "")):
+                    continue
 
+                _yr = yaris_haritasi.get(symbol, {})
+                yaris_skoru = float(_yr.get("skor", 0) or 0)
+                a["yaris_skoru"] = yaris_skoru
+                a["yaris_sirasi"] = _yr.get("sira", "-")
+                a["yaris_suresi_dk"] = _yr.get("sure", 0)
+                a["yaris_gozlem"] = _yr.get("gozlem", 0)
                 # 13 TABANLI BIRLESIK KARAR
                 # 13 AL demediyse birleşik bot AL vermez.
                 # 21C erkenlik/sıralama sağlar; Radar kalite verir; Radar+AL yalnız veto eder.
@@ -2114,10 +2130,10 @@ while True:
                 gonderilecekler.append(a)
 
             if not gonderilecekler:
-                print("Canlı yarışta olgunlaşmış yeni AL kazananı yok. Telegram sessiz.")
+                print("13 AL + birleşik filtrelerden geçen yeni aday yok. Telegram sessiz.")
             else:
                 mesaj = (
-                    "🤖 13 TABANLI BIRLESIK AL\n"
+                    "🤖 13 TABANLI BIRLESIK AL - V5\n"
                     f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
