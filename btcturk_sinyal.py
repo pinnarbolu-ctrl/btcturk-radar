@@ -1,5 +1,5 @@
 # ==========================================
-# AI COIN ASSISTANT - SADE BIRLESIK V3 | ASSISTANT ANA KARAR
+# AI COIN ASSISTANT - V4 | ERKEN UYARI + ASSISTANT ANA AL
 # Taban: main (21).py
 # 21 sadeligi + 13 AL/SAT/Kar Koru + 1-3-5-10 dk erken yakalama
 # Giris/Devam skorları sadece bilgi, AL için veto DEGIL
@@ -36,11 +36,13 @@ GUC_IZLEME_SURESI = 5 * 60
 
 # Aynı kararın tekrar Telegram gönderimini engeller.
 son_ai_kararlar = {}
+son_erken_uyarilar = {}
+ERKEN_UYARI_COOLDOWN = 20 * 60
 
 # Sade birleşik: açık AL takibi
 AL_TAKIP = {}
 POZISYON_TAKIP_SURESI = 15
-KAR_KORU_ESIK = 3.0
+KAR_BILDIR_ESIK = 4.0
 KAR_KORU_ORAN = 40
 ILK_ZARAR_KES = -0.8
 TEPE_GERI_VERME = -1.4
@@ -179,21 +181,28 @@ def destek_skorlari(aday):
 
 
 def al_takip_baslat(aday):
+    """Gerçek AL mesajı gönderilen coini yalnızca +%4 kâr bildirimi için takip eder."""
     symbol = aday.get("symbol")
     fiyat = float(aday.get("fiyat", 0) or 0)
     if not symbol or fiyat <= 0:
         return
-    if AL_TAKIP.get(symbol, {}).get("durum") == "ACIK":
+
+    mevcut = AL_TAKIP.get(symbol)
+    if mevcut and mevcut.get("aktif"):
         return
+
     AL_TAKIP[symbol] = {
-        "durum": "ACIK",
+        "aktif": True,
         "giris": fiyat,
-        "max_fiyat": fiyat,
-        "kar_koru": False,
+        "kar_bildirildi": False,
     }
 
 
 def al_takip_guncelle(ticker):
+    """
+    Otomatik SAT/ÇIK yok.
+    Sadece ilk AL fiyatına göre +%4 görülünce tek seferlik ara kâr mesajı yollar.
+    """
     if not AL_TAKIP:
         return
 
@@ -207,51 +216,82 @@ def al_takip_guncelle(ticker):
         except Exception:
             pass
 
-    mesajlar = []
-    for symbol, p in list(AL_TAKIP.items()):
-        if p.get("durum") != "ACIK":
+    for symbol, p in AL_TAKIP.items():
+        if not p.get("aktif") or p.get("kar_bildirildi"):
             continue
+
         fiyat = fiyatlar.get(symbol)
         if not fiyat:
             continue
 
         giris = float(p.get("giris", fiyat))
-        p["max_fiyat"] = max(float(p.get("max_fiyat", fiyat)), fiyat)
-        tepe = p["max_fiyat"]
         getiri = _pct(fiyat, giris)
-        tepeden = _pct(fiyat, tepe)
 
-        if not p.get("kar_koru") and getiri >= KAR_KORU_ESIK:
-            p["kar_koru"] = True
-            mesajlar.append(
-                f"🟠 KÂR KORU - {symbol}\n"
-                f"Fiyat: {fiyat:.4f} | İlk AL'a göre: %{getiri:+.2f}\n"
-                f"Plan: %{KAR_KORU_ORAN} kârı koru, %{100-KAR_KORU_ORAN} taşımaya devam et\n"
-                f"Tepe: {tepe:.4f}"
+        if getiri >= KAR_BILDIR_ESIK:
+            p["kar_bildirildi"] = True
+            mesaj = (
+                f"💰 +%4 KÂR BÖLGESİ - {symbol}\n"
+                f"İlk AL: {giris:.4f} | Güncel: {fiyat:.4f}\n"
+                f"Getiri: %{getiri:+.2f}\n"
+                f"Not: Çık emri değil; kârı değerlendirmek / çıkışa hazırlanmak için ara uyarı."
             )
+            print(mesaj)
+            telegram_gonder(mesaj)
 
-        ilk_bozulma = (not p.get("kar_koru")) and getiri <= ILK_ZARAR_KES
-        karli_bozulma = p.get("kar_koru") and getiri >= MIN_KAR_KORUMA and tepeden <= TEPE_GERI_VERME
 
-        if ilk_bozulma or karli_bozulma:
-            p["durum"] = "KAPALI"
-            if p.get("kar_koru"):
-                baslik = "🔴 SAT KALAN"
-                sebep = "kâr sonrası tepeden geri verme"
-            else:
-                baslik = "🔴 BOZULMA / ÇIK"
-                sebep = "ilk AL bozuldu; -%0.8 sınırı aşıldı"
+def erken_uyari_gonder(aday):
+    """Mikro güçlenme var ama Assistant ana AL kapısı henüz açılmadıysa sadece izleme uyarısı."""
+    symbol = aday.get("symbol")
+    if not symbol:
+        return
 
-            mesajlar.append(
-                f"{baslik} - {symbol}\n"
-                f"Fiyat: {fiyat:.4f} | İlk AL'a göre: %{getiri:+.2f}\n"
-                f"Tepe: {tepe:.4f} | Tepeden: %{tepeden:+.2f}\n"
-                f"Sebep: {sebep}"
-            )
+    now = time.time()
+    if now - son_erken_uyarilar.get(symbol, 0) < ERKEN_UYARI_COOLDOWN:
+        return
 
-    for mesaj in mesajlar:
-        print(mesaj)
-        telegram_gonder(mesaj)
+    m = aday.get("mikro") or {}
+    if not m or m.get("sisti"):
+        return
+
+    d1 = float(m.get("d1", 0) or 0)
+    d3 = float(m.get("d3", 0) or 0)
+    d5 = float(m.get("d5", 0) or 0)
+    d10 = float(m.get("d10", 0) or 0)
+    h1 = float(m.get("hacim1x", 0) or 0)
+    hi = float(m.get("hacim_ivme", 0) or 0)
+    ms = float(m.get("skor", 0) or 0)
+    gh = float(aday.get("hacim", 0) or 0)
+
+    if ms < 60 or d3 < 0.25 or d5 < 0.35:
+        return
+    if not (m.get("fiyat_ivme") or m.get("basamak")):
+        return
+    if not (m.get("hacim_ivmeleniyor") or h1 >= 1.30):
+        return
+    if not (gh >= 0.50 or h1 >= 1.50 or hi >= 1.50):
+        return
+
+    t = aday.get("teknik") or {}
+    ema20 = t.get("ema20")
+    ema50 = t.get("ema50")
+    macd_hist = t.get("macd_hist")
+    fiyat = float(aday.get("fiyat", 0) or 0)
+    ema_txt = "✅" if (ema20 is not None and ema50 is not None and ema20 > ema50 and fiyat > ema20) else "⚠️"
+    macd_txt = "✅" if (macd_hist is not None and macd_hist > 0) else "⚠️"
+
+    mesaj = (
+        f"🌱 ERKEN UYARI - {symbol}\n"
+        f"AL değil, izleme sinyali.\n"
+        f"Fiyat: {fiyat:.4f} | Radar: {aday.get('radar_skoru', 0)}/100\n"
+        f"1dk: %{d1:+.2f} | 3dk: %{d3:+.2f} | 5dk: %{d5:+.2f} | 10dk: %{d10:+.2f}\n"
+        f"Hacim: {gh:.2f}x | 1dk hacim: {h1:.2f}x | İvme: {hi:.2f}x\n"
+        f"EMA {ema_txt} | MACD {macd_txt} | RSI {t.get('rsi')} | ADX {t.get('adx')}\n"
+        f"Neden: kısa vadeli fiyat/hacim ivmesi güçleniyor; Assistant AL şartları henüz tamamlanmadı."
+    )
+    print(mesaj)
+    telegram_gonder(mesaj)
+    son_erken_uyarilar[symbol] = now
+
 
 
 
@@ -1244,7 +1284,17 @@ while True:
                     and (haber_skoru > 0 or lider_skoru >= 5)
                 )
 
-                if not (erken_aday or guc_havuzu_adayi or yildiz_adayi or elit_adayi or trader_adayi or roket_adayi):
+                assistant_ana_aday = (
+                    erken_aday
+                    or guc_havuzu_adayi
+                    or yildiz_adayi
+                    or elit_adayi
+                    or trader_adayi
+                    or roket_adayi
+                )
+
+                # Mikro aday tek başına AL kapısını açmaz; yalnız erken uyarı için analize girer.
+                if not (assistant_ana_aday or mikro_aday):
                     continue
 
                 if yildiz_adayi:
@@ -1257,6 +1307,8 @@ while True:
                     radar_kategori = "🚀 Roket Adayı"
                 elif erken_aday:
                     radar_kategori = "🌱 Erken Aday"
+                elif mikro_aday:
+                    radar_kategori = "🌱 Mikro İzleme"
                 else:
                     radar_kategori = "⚡ Güçleniyor"
 
@@ -1267,6 +1319,7 @@ while True:
                     "radar_kategori": radar_kategori,
                     "orijinal_erken_aday": erken_aday,
                     "erken_aday": erken_aday,
+                    "assistant_ana_aday": assistant_ana_aday,
                     "mikro_aday": mikro_aday,
                     "mikro": mikro,
                     "guc_havuzu_adayi": guc_havuzu_adayi,
@@ -1338,6 +1391,14 @@ while True:
             a["giris_kalitesi"] = giris_k
             a["devam_gucu"] = devam_g
 
+            # Mikro aday tek başına gerçek AL üretemez.
+            if not a.get("assistant_ana_aday", False) and a.get("karar") == "🟢 AL":
+                a["karar"] = "🟡 BEKLE"
+
+            # Assistant henüz AL değilken mikro güçlenmeyi erken haber ver.
+            if a.get("karar") != "🟢 AL" and a.get("mikro_aday"):
+                erken_uyari_gonder(a)
+
             # --------------------------------------------------
             # AL DEBUG LOG
             # Telegram'a hiçbir şey göndermez.
@@ -1403,6 +1464,29 @@ while True:
                     f"[AL DEBUG] {a['symbol']} | 🟡 BEKLE | "
                     f"Teknik veri alınamadı"
                 )
+
+        # AL kalite koruması: Assistant AL bekletilmez.
+        # Yalnızca çok düşük hacim + kısa vade aynı anda sönüyorsa bariz zayıflık veto edilir.
+        for _a in top10:
+            if _a.get("karar") == "🟢 AL":
+                _m = _a.get("mikro") or {}
+                if _m:
+                    _gh = float(_a.get("hacim", 0) or 0)
+                    _d1 = float(_m.get("d1", 0) or 0)
+                    _d3 = float(_m.get("d3", 0) or 0)
+                    _h1 = float(_m.get("hacim1x", 0) or 0)
+                    _hi = float(_m.get("hacim_ivme", 0) or 0)
+
+                    cok_zayif_hacim = _gh < 0.30 and _h1 < 0.80 and _hi < 1.00
+                    mikro_sonuyor = _d1 < -0.15 and _d3 <= 0.10
+
+                    if cok_zayif_hacim and mikro_sonuyor:
+                        print(
+                            f"[AL MIKRO VETO] {_a.get('symbol')} | "
+                            f"Hacim={_gh:.2f}x | 1dkHacim={_h1:.2f}x | İvme={_hi:.2f}x | "
+                            f"1dk={_d1:+.2f}% | 3dk={_d3:+.2f}%"
+                        )
+                        _a["karar"] = "🟡 BEKLE"
 
         # İlk aday sıralamasını Radar yapar; H motorundan sonra en güçlü teknik fırsat üste çıkar.
         top10.sort(
@@ -1486,30 +1570,33 @@ while True:
                         f"Radar {a['radar_skoru']}/100 | Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x\n"
                         f"{mikro_satir}"
                         f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n"
-                        f"📌 Plan: ilk giriş max %33 | Kâr koru +%3 | Bozulma uyarısı -%0.8\n"
+                        f"📌 Takip: AL anlık | +%4'te sadece kâr ara uyarısı\n"
                         f"{neden_alarm}Neden: {neden}\n\n"
                     )
 
                 print(mesaj)
                 telegram_gonder(mesaj)
 
-                # Yalnız gerçekten Telegram'a seçilen AL'ları takip et.
+                # Yalnızca gerçekten gönderilen AL'ları +%4 kâr bildirimi için takip et.
                 for _a in gonderilecekler:
                     al_takip_baslat(_a)
 
-        # Genel tarama 60 sn; açık AL pozisyonları 15 sn'de bir izlenir.
-        print("60 sn bekleniyor; açık AL'lar 15 sn'de bir izlenecek...")
+        # Ana tarama 60 sn; kâr bildirimi için açık AL'lar 15 sn'de bir kontrol edilir.
         beklenen = 0
         while beklenen < TARAMA_SURESI:
             sure = min(POZISYON_TAKIP_SURESI, TARAMA_SURESI - beklenen)
             time.sleep(sure)
             beklenen += sure
+
             if AL_TAKIP:
                 try:
                     r = requests.get("https://api.btcturk.com/api/v2/ticker", timeout=10)
                     r.raise_for_status()
                     al_takip_guncelle(r.json().get("data", []))
                 except Exception as e:
+                    print("Kâr bildirim takip hatası:", e)
+
+    except Exception as e:
                     print("Hızlı AL takip hatası:", e)
 
     except Exception as e:
