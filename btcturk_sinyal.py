@@ -1,5 +1,5 @@
 # ==========================================
-# AI COIN ASSISTANT - V4 | ERKEN UYARI + ASSISTANT ANA AL
+# AI COIN ASSISTANT - V6 | ERKEN PUAN + ASSISTANT ANA AL + %4 KAR
 # Taban: main (21).py
 # 21 sadeligi + 13 AL/SAT/Kar Koru + 1-3-5-10 dk erken yakalama
 # Giris/Devam skorları sadece bilgi, AL için veto DEGIL
@@ -36,8 +36,6 @@ GUC_IZLEME_SURESI = 5 * 60
 
 # Aynı kararın tekrar Telegram gönderimini engeller.
 son_ai_kararlar = {}
-son_erken_uyarilar = {}
-ERKEN_UYARI_COOLDOWN = 20 * 60
 
 # Sade birleşik: açık AL takibi
 AL_TAKIP = {}
@@ -237,62 +235,6 @@ def al_takip_guncelle(ticker):
             )
             print(mesaj)
             telegram_gonder(mesaj)
-
-
-def erken_uyari_gonder(aday):
-    """Mikro güçlenme var ama Assistant ana AL kapısı henüz açılmadıysa sadece izleme uyarısı."""
-    symbol = aday.get("symbol")
-    if not symbol:
-        return
-
-    now = time.time()
-    if now - son_erken_uyarilar.get(symbol, 0) < ERKEN_UYARI_COOLDOWN:
-        return
-
-    m = aday.get("mikro") or {}
-    if not m or m.get("sisti"):
-        return
-
-    d1 = float(m.get("d1", 0) or 0)
-    d3 = float(m.get("d3", 0) or 0)
-    d5 = float(m.get("d5", 0) or 0)
-    d10 = float(m.get("d10", 0) or 0)
-    h1 = float(m.get("hacim1x", 0) or 0)
-    hi = float(m.get("hacim_ivme", 0) or 0)
-    ms = float(m.get("skor", 0) or 0)
-    gh = float(aday.get("hacim", 0) or 0)
-
-    if ms < 60 or d3 < 0.25 or d5 < 0.35:
-        return
-    if not (m.get("fiyat_ivme") or m.get("basamak")):
-        return
-    if not (m.get("hacim_ivmeleniyor") or h1 >= 1.30):
-        return
-    if not (gh >= 0.50 or h1 >= 1.50 or hi >= 1.50):
-        return
-
-    t = aday.get("teknik") or {}
-    ema20 = t.get("ema20")
-    ema50 = t.get("ema50")
-    macd_hist = t.get("macd_hist")
-    fiyat = float(aday.get("fiyat", 0) or 0)
-    ema_txt = "✅" if (ema20 is not None and ema50 is not None and ema20 > ema50 and fiyat > ema20) else "⚠️"
-    macd_txt = "✅" if (macd_hist is not None and macd_hist > 0) else "⚠️"
-
-    mesaj = (
-        f"🌱 ERKEN UYARI - {symbol}\n"
-        f"AL değil, izleme sinyali.\n"
-        f"Fiyat: {fiyat:.4f} | Radar: {aday.get('radar_skoru', 0)}/100\n"
-        f"1dk: %{d1:+.2f} | 3dk: %{d3:+.2f} | 5dk: %{d5:+.2f} | 10dk: %{d10:+.2f}\n"
-        f"Hacim: {gh:.2f}x | 1dk hacim: {h1:.2f}x | İvme: {hi:.2f}x\n"
-        f"EMA {ema_txt} | MACD {macd_txt} | RSI {t.get('rsi')} | ADX {t.get('adx')}\n"
-        f"Neden: kısa vadeli fiyat/hacim ivmesi güçleniyor; Assistant AL şartları henüz tamamlanmadı."
-    )
-    print(mesaj)
-    telegram_gonder(mesaj)
-    son_erken_uyarilar[symbol] = now
-
-
 
 
 
@@ -1293,8 +1235,8 @@ while True:
                     or roket_adayi
                 )
 
-                # Mikro aday tek başına AL kapısını açmaz; yalnız erken uyarı için analize girer.
-                if not (assistant_ana_aday or mikro_aday):
+                # Mikro veri yalnız puan/destek bilgisidir; tek başına aday kapısını açmaz.
+                if not assistant_ana_aday:
                     continue
 
                 if yildiz_adayi:
@@ -1307,8 +1249,6 @@ while True:
                     radar_kategori = "🚀 Roket Adayı"
                 elif erken_aday:
                     radar_kategori = "🌱 Erken Aday"
-                elif mikro_aday:
-                    radar_kategori = "🌱 Mikro İzleme"
                 else:
                     radar_kategori = "⚡ Güçleniyor"
 
@@ -1390,14 +1330,8 @@ while True:
             giris_k, devam_g = destek_skorlari(a)
             a["giris_kalitesi"] = giris_k
             a["devam_gucu"] = devam_g
+            a["erken_puan"] = round(float((a.get("mikro") or {}).get("skor", 0) or 0), 1)
 
-            # Mikro aday tek başına gerçek AL üretemez.
-            if not a.get("assistant_ana_aday", False) and a.get("karar") == "🟢 AL":
-                a["karar"] = "🟡 BEKLE"
-
-            # Assistant henüz AL değilken mikro güçlenmeyi erken haber ver.
-            if a.get("karar") != "🟢 AL" and a.get("mikro_aday"):
-                erken_uyari_gonder(a)
 
             # --------------------------------------------------
             # AL DEBUG LOG
@@ -1566,7 +1500,7 @@ while True:
                     mesaj += (
                         f"{a['symbol']} | {a.get('radar_kategori', '')}\n"
                         f"{a.get('karar')} | AI {a.get('ai_skoru', 0)}/100 | Risk: {a.get('risk', 'Bilinmiyor')}\n"
-                        f"🎯 Giriş {a.get('giris_kalitesi', 0)}/100 | 🚀 Devam {a.get('devam_gucu', 0)}/100\n"
+                        f"🌱 Erken {a.get('erken_puan', 0)}/100 | 🎯 Giriş {a.get('giris_kalitesi', 0)}/100 | 🚀 Devam {a.get('devam_gucu', 0)}/100\n"
                         f"Radar {a['radar_skoru']}/100 | Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x\n"
                         f"{mikro_satir}"
                         f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n"
