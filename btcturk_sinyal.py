@@ -42,7 +42,7 @@ AL_TAKIP = {}
 POZISYON_TAKIP_SURESI = 15
 KAR_KORU_ESIK = 3.0
 KAR_KORU_ORAN = 40
-ILK_ZARAR_KES = -1.5
+ILK_ZARAR_KES = -0.8
 TEPE_GERI_VERME = -1.4
 MIN_KAR_KORUMA = 2.5
 
@@ -239,8 +239,8 @@ def al_takip_guncelle(ticker):
                 baslik = "🔴 SAT KALAN"
                 sebep = "kâr sonrası tepeden geri verme"
             else:
-                baslik = "🔴 AL İPTAL / ÇIK"
-                sebep = "ilk AL doğrulanmadı; zarar sınırı aşıldı"
+                baslik = "🔴 BOZULMA / ÇIK"
+                sebep = "ilk AL bozuldu; -%0.8 sınırı aşıldı"
 
             mesajlar.append(
                 f"{baslik} - {symbol}\n"
@@ -1267,6 +1267,7 @@ while True:
                     "fiyat": fiyat,
                     "radar_skoru": radar_skoru,
                     "radar_kategori": radar_kategori,
+                    "orijinal_erken_aday": erken_aday,
                     "erken_aday": (erken_aday or mikro_aday),
                     "mikro_aday": mikro_aday,
                     "mikro": mikro,
@@ -1463,7 +1464,7 @@ while True:
                         hizlar.append("basamaklı trend korunuyor")
 
                     if hizlar:
-                        baslik = "Erken yakalama" if a.get("erken_aday") else "Hareket teyidi"
+                        baslik = "Erken yakalama" if a.get("orijinal_erken_aday") else "Hareket teyidi"
                         nedenler.insert(0, baslik + ": " + ", ".join(hizlar))
 
                     # 6+ gerçek olumlu neden varsa yalnızca Neden başına alarm koy.
@@ -1487,7 +1488,7 @@ while True:
                         f"Radar {a['radar_skoru']}/100 | Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x\n"
                         f"{mikro_satir}"
                         f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n"
-                        f"📌 Plan: ilk giriş max %33 | Kâr koru +%3 | Zarar sınırı -%1.5\n"
+                        f"📌 Plan: ilk giriş max %33 | Kâr koru +%3 | Bozulma uyarısı -%0.8\n"
                         f"{neden_alarm}Neden: {neden}\n\n"
                     )
 
