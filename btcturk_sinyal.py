@@ -1,5 +1,5 @@
 # ==========================================
-# AI COIN ASSISTANT - SADE BIRLESIK V1
+# AI COIN ASSISTANT - SADE BIRLESIK V3 | ASSISTANT ANA KARAR
 # Taban: main (21).py
 # 21 sadeligi + 13 AL/SAT/Kar Koru + 1-3-5-10 dk erken yakalama
 # Giris/Devam skorları sadece bilgi, AL için veto DEGIL
@@ -1186,7 +1186,7 @@ while True:
                     )
                 )
 
-                # 1-3-5-10 dk erken aday: ana 21 yapısını bozmadan teknik havuza erken sokar.
+                # 1-3-5-10 dk mikro analiz: sadece destek/bilgi amaçlıdır; tek başına AL kapısını açmaz.
                 mikro_aday = (
                     bool(mikro)
                     and not mikro.get("sisti", False)
@@ -1199,7 +1199,7 @@ while True:
                     and not satis_baskisi
                 )
 
-                if erken_aday or guc_havuzu_adayi or mikro_aday:
+                if erken_aday or guc_havuzu_adayi:
                     guc_izleme_havuzu[symbol] = time.time() + GUC_IZLEME_SURESI
 
                 yildiz_adayi = (
@@ -1244,7 +1244,7 @@ while True:
                     and (haber_skoru > 0 or lider_skoru >= 5)
                 )
 
-                if not (mikro_aday or erken_aday or guc_havuzu_adayi or yildiz_adayi or elit_adayi or trader_adayi or roket_adayi):
+                if not (erken_aday or guc_havuzu_adayi or yildiz_adayi or elit_adayi or trader_adayi or roket_adayi):
                     continue
 
                 if yildiz_adayi:
@@ -1255,8 +1255,6 @@ while True:
                     radar_kategori = "📊 Trader Hacim"
                 elif roket_adayi:
                     radar_kategori = "🚀 Roket Adayı"
-                elif mikro_aday:
-                    radar_kategori = "🌱 Mikro Güçleniyor"
                 elif erken_aday:
                     radar_kategori = "🌱 Erken Aday"
                 else:
@@ -1268,7 +1266,7 @@ while True:
                     "radar_skoru": radar_skoru,
                     "radar_kategori": radar_kategori,
                     "orijinal_erken_aday": erken_aday,
-                    "erken_aday": (erken_aday or mikro_aday),
+                    "erken_aday": erken_aday,
                     "mikro_aday": mikro_aday,
                     "mikro": mikro,
                     "guc_havuzu_adayi": guc_havuzu_adayi,
