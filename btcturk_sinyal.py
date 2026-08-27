@@ -1,5 +1,5 @@
 # ==========================================
-# AI COIN ASSISTANT - 13 TABANLI BIRLESIK V6 | AKILLI VETOT KARAR + DIGERLERI VETO
+# AI COIN ASSISTANT - 13 TABANLI BIRLESIK V7 | RSI ESNEK + HACIM TEYITLIT KARAR + DIGERLERI VETO
 # Taban: main_20_coklu_guc_siklastirilmis.py
 # Fast Scan V1: 60 sn hızlı ön tarama + 5 dk tam tarama
 # AL Relax V1: normal AL için ADX 27 / AI 80
@@ -1420,7 +1420,7 @@ def canli_kazananlari_bul(btc_3s, simdi=None):
 while True:
     try:
         print()
-        print("AI COIN ASSISTANT - 13 TABANLI BIRLESIK V6 | AKILLI VETOT KARAR + DIGERLERI VETO")
+        print("AI COIN ASSISTANT - 13 TABANLI BIRLESIK V7 | RSI ESNEK + HACIM TEYITLIT KARAR + DIGERLERI VETO")
         print("--------------------------------")
 
         btc_d = btc_degisimleri()
@@ -2049,8 +2049,11 @@ while True:
                     veto_nedenleri.append("giriş geç")
                 if adx < 24:
                     veto_nedenleri.append(f"ADX {adx:.1f}<24")
-                if rsi > 74:
-                    veto_nedenleri.append(f"RSI {rsi:.1f}>74")
+                # RSI V7:
+                # 74-77 arası artık otomatik veto değil.
+                # Güçlü hacim + güçlü AI + MACD pozitif + ADX yeterliyse geçebilir.
+                if rsi > 77:
+                    veto_nedenleri.append(f"RSI {rsi:.1f}>77")
                 if ema20 is None or ema50 is None:
                     veto_nedenleri.append("EMA verisi eksik")
                 elif ema20 <= ema50:
@@ -2116,6 +2119,28 @@ while True:
 
                 momentum_ok = not (d1m < 0 and d3m < 0)
 
+                # RSI 74-77 arası "ısınmış ama hâlâ alınabilir" bölge:
+                # sadece destekler gerçekten güçlü ise geçsin.
+                if 74 < rsi <= 77:
+                    rsi_esnek_ok = (
+                        float(a.get("ai_skoru", 0) or 0) >= 88
+                        and adx >= 27
+                        and macd_hist is not None
+                        and macd_hist > 0
+                        and (
+                            (genel_hacim >= 1.50 and hacim1x >= 0.50)
+                            or (hacim_ivme >= 2.20 and genel_hacim >= 0.80)
+                        )
+                    )
+                    if not rsi_esnek_ok:
+                        print(
+                            f"[RSI ESNEK VETO] {symbol} | RSI={rsi:.2f} | "
+                            f"AI={float(a.get('ai_skoru', 0) or 0):.1f} | ADX={adx:.1f} | "
+                            f"GenelHacim={genel_hacim:.2f}x | 1dk={hacim1x:.2f}x | "
+                            f"Ivme={hacim_ivme:.2f}x"
+                        )
+                        continue
+
                 if not hacim_ok or not momentum_ok:
                     hacim_sebepleri = []
                     if not hacim_ok:
@@ -2146,7 +2171,7 @@ while True:
                 print("13 AL + birleşik filtrelerden geçen yeni aday yok. Telegram sessiz.")
             else:
                 mesaj = (
-                    "🤖 13 TABANLI BIRLESIK AL - V6\n"
+                    "🤖 13 TABANLI BIRLESIK AL - V7\n"
                     f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
