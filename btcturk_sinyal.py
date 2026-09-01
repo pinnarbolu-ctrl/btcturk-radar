@@ -40,7 +40,7 @@ son_ai_kararlar = {}
 # Sade birleşik: açık AL takibi
 AL_TAKIP = {}
 POZISYON_TAKIP_SURESI = 15
-KAR_BILDIR_ESIK = 4.0
+KAR_BILDIR_ESIK = 5.0
 KAR_KORU_ORAN = 40
 ILK_ZARAR_KES = -0.8
 TEPE_GERI_VERME = -1.4
@@ -179,7 +179,7 @@ def destek_skorlari(aday):
 
 
 def al_takip_baslat(aday):
-    """Gerçek AL mesajı gönderilen coini yalnızca +%4 kâr bildirimi için takip eder."""
+    """Gerçek AL mesajı gönderilen coini yalnızca +%5 kâr bildirimi için takip eder."""
     symbol = aday.get("symbol")
     fiyat = float(aday.get("fiyat", 0) or 0)
     if not symbol or fiyat <= 0:
@@ -199,7 +199,7 @@ def al_takip_baslat(aday):
 def al_takip_guncelle(ticker):
     """
     Otomatik SAT/ÇIK yok.
-    Sadece ilk AL fiyatına göre +%4 görülünce tek seferlik ara kâr mesajı yollar.
+    Sadece ilk AL fiyatına göre +%5 görülünce tek seferlik ara kâr mesajı yollar.
     """
     if not AL_TAKIP:
         return
@@ -228,7 +228,7 @@ def al_takip_guncelle(ticker):
         if getiri >= KAR_BILDIR_ESIK:
             p["kar_bildirildi"] = True
             mesaj = (
-                f"💰 +%4 KÂR BÖLGESİ - {symbol}\n"
+                f"💰 +%5 KÂR BÖLGESİ - {symbol}\n"
                 f"İlk AL: {giris:.4f} | Güncel: {fiyat:.4f}\n"
                 f"Getiri: %{getiri:+.2f}\n"
                 f"Not: Çık emri değil; kârı değerlendirmek / çıkışa hazırlanmak için ara uyarı."
@@ -1504,14 +1504,14 @@ while True:
                         f"Radar {a['radar_skoru']}/100 | Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x\n"
                         f"{mikro_satir}"
                         f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n"
-                        f"📌 Takip: AL anlık | +%4'te sadece kâr ara uyarısı\n"
+                        f"📌 Takip: AL anlık | +%5'te sadece kâr ara uyarısı\n"
                         f"{neden_alarm}Neden: {neden}\n\n"
                     )
 
                 print(mesaj)
                 telegram_gonder(mesaj)
 
-                # Yalnızca gerçekten gönderilen AL'ları +%4 kâr bildirimi için takip et.
+                # Yalnızca gerçekten gönderilen AL'ları +%5 kâr bildirimi için takip et.
                 for _a in gonderilecekler:
                     al_takip_baslat(_a)
 
