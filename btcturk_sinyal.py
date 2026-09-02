@@ -29,6 +29,10 @@ tarama_sayaci = 0
 # Early Capture V1: önceki taramadaki hızlanmayı ölçmek için hafıza.
 onceki_tarama = {}
 
+# Kalıcılık V1: yalnızca bilgi amaçlıdır; Radar/AL filtrelerini DEĞİŞTİRMEZ.
+kalicilik_gecmisi = {}
+KALICILIK_GECMIS_UZUNLUK = 5
+
 # Çoklu Güç Havuzu:
 # Güçlenme işareti veren coin 5 dakika boyunca, 1 dk fiyat hareketi %0.40 altında kalsa bile izlenir.
 guc_izleme_havuzu = {}
@@ -176,6 +180,125 @@ def destek_skorlari(aday):
     if aday.get("hacim_hizlaniyor"): devam += 4
 
     return round(max(0, min(100, giris)), 1), round(max(0, min(100, devam)), 1)
+
+
+def kalicilik_skoru_hesapla(aday):
+    """Kalıcılık skoru yalnızca bilgi üretir; karar ve filtreleri değiştirmez."""
+    symbol = aday.get("symbol", "")
+    t = aday.get("teknik") or {}
+    m = aday.get("mikro") or {}
+
+    fiyat = float(aday.get("fiyat", 0) or 0)
+    hacim = float(aday.get("hacim", 0) or 0)
+    d1 = float(m.get("d1", 0) or 0)
+    d3m = float(m.get("d3", 0) or 0)
+    d5m = float(m.get("d5", 0) or 0)
+    d10m = float(m.get("d10", 0) or 0)
+    degisim3 = float(aday.get("degisim3", 0) or 0)
+    btc_fark3 = float(aday.get("btc_fark3", 0) or 0)
+    adx = t.get("adx")
+    rsi = t.get("rsi")
+    macd = t.get("macd_hist")
+    ema20, ema50 = t.get("ema20"), t.get("ema50")
+
+    ema_ok = ema20 is not None and ema50 is not None and fiyat > 0 and ema20 > ema50 and fiyat > ema20
+    macd_ok = macd is not None and macd > 0
+
+    skor = 35.0
+    nedenler = []
+
+    if ema_ok:
+        skor += 8; nedenler.append("EMA trendi korunuyor")
+    if macd_ok:
+        skor += 7; nedenler.append("MACD pozitif")
+    if adx is not None:
+        if adx >= 40:
+            skor += 14; nedenler.append("ADX çok güçlü")
+        elif adx >= 30:
+            skor += 10; nedenler.append("ADX güçlü")
+        elif adx >= 25:
+            skor += 5
+        elif adx < 20:
+            skor -= 8
+
+    if hacim >= 8:
+        skor += 10; nedenler.append("hacim çok güçlü")
+    elif hacim >= 5:
+        skor += 8; nedenler.append("hacim güçlü")
+    elif hacim >= 2:
+        skor += 4
+    elif hacim < 0.8:
+        skor -= 6
+
+    if aday.get("hacim_hizlaniyor"):
+        skor += 5; nedenler.append("hacim hızlanıyor")
+    if aday.get("momentum_hizlaniyor"):
+        skor += 4; nedenler.append("momentum hızlanıyor")
+    if aday.get("btc_farki_aciliyor"):
+        skor += 4; nedenler.append("BTC farkı açılıyor")
+    if aday.get("lider_gucleniyor"):
+        skor += 4; nedenler.append("liderlik güçleniyor")
+    if aday.get("basamakli_trend"):
+        skor += 6; nedenler.append("basamaklı yapı")
+
+    if btc_fark3 >= 2:
+        skor += 7; nedenler.append("BTC'den belirgin güçlü")
+    elif btc_fark3 >= 0.5:
+        skor += 4
+    elif btc_fark3 < -1:
+        skor -= 7
+
+    if d3m > 0 and d5m > 0 and d10m > 0:
+        skor += 5
+    if 0.5 <= d10m <= 5.5:
+        skor += 4
+    if m.get("basamak"):
+        skor += 4
+    if m.get("sisti") or d10m >= 7 or d5m >= 5:
+        skor -= 12; nedenler.append("kısa vadede şişme riski")
+    if d1 < -0.8 and d3m < 0:
+        skor -= 5
+
+    if rsi is not None:
+        if 52 <= rsi <= 70:
+            skor += 5
+        elif 70 < rsi <= 77:
+            skor += 1
+        elif rsi > 82:
+            skor -= 10; nedenler.append("RSI aşırı sıcak")
+        elif rsi < 45:
+            skor -= 6
+
+    hist = kalicilik_gecmisi.setdefault(symbol, [])
+    if hist:
+        sonlar = hist[-3:]
+        hacim_koruma = sum(1 for x in sonlar if hacim >= x.get("hacim", hacim) * 0.80)
+        trend_koruma = sum(1 for x in sonlar if degisim3 >= x.get("degisim3", degisim3) - 0.50)
+        btc_koruma = sum(1 for x in sonlar if btc_fark3 >= x.get("btc_fark3", btc_fark3) - 0.40)
+        n = len(sonlar)
+        if n >= 2 and hacim_koruma >= n - 1:
+            skor += 6; nedenler.append("hacim birkaç taramadır korunuyor")
+        if n >= 2 and trend_koruma >= n - 1:
+            skor += 7; nedenler.append("3s güç birkaç taramadır korunuyor")
+        if n >= 2 and btc_koruma >= n - 1:
+            skor += 4
+        if n >= 2 and hacim_koruma == 0 and trend_koruma == 0:
+            skor -= 8; nedenler.append("güç hızlı sönüyor")
+
+    hist.append({"zaman": time.time(), "hacim": hacim, "degisim3": degisim3, "btc_fark3": btc_fark3, "d1": d1, "d3m": d3m})
+    if len(hist) > KALICILIK_GECMIS_UZUNLUK:
+        del hist[:-KALICILIK_GECMIS_UZUNLUK]
+
+    skor = round(max(0, min(100, skor)), 1)
+    if skor >= 80:
+        etiket = "Uzun devam adayı"
+    elif skor >= 68:
+        etiket = "Devam güçlü"
+    elif skor >= 55:
+        etiket = "Orta / izle"
+    else:
+        etiket = "Hızlı hareket / dönüş riski"
+    return skor, etiket, nedenler[:4]
 
 
 def al_takip_baslat(aday):
@@ -1331,6 +1454,10 @@ while True:
             a["giris_kalitesi"] = giris_k
             a["devam_gucu"] = devam_g
             a["erken_puan"] = round(float((a.get("mikro") or {}).get("skor", 0) or 0), 1)
+            kal_skor, kal_etiket, kal_nedenler = kalicilik_skoru_hesapla(a)
+            a["kalicilik_skoru"] = kal_skor
+            a["kalicilik_etiket"] = kal_etiket
+            a["kalicilik_nedenler"] = kal_nedenler
 
 
             # --------------------------------------------------
@@ -1454,7 +1581,7 @@ while True:
                 print("Yeni AL kararı yok. Telegram sessiz.")
             else:
                 mesaj = (
-                    "🤖 AI COIN ASSISTANT - KARAR GÜNCELLEMESİ\n"
+                    "📡 RADAR + 🤖 RADAR AL - EŞ ZAMANLI\n"
                     f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
@@ -1498,9 +1625,10 @@ while True:
                         )
 
                     mesaj += (
-                        f"{a['symbol']} | {a.get('radar_kategori', '')}\n"
-                        f"{a.get('karar')} | AI {a.get('ai_skoru', 0)}/100 | Risk: {a.get('risk', 'Bilinmiyor')}\n"
+                        f"📡 RADAR: {a['symbol']} | {a.get('radar_kategori', '')} | Radar {a.get('radar_skoru', 0)}/100\n"
+                        f"🤖 RADAR AL: {a.get('karar')} | AI {a.get('ai_skoru', 0)}/100 | Risk: {a.get('risk', 'Bilinmiyor')}\n"
                         f"🌱 Erken {a.get('erken_puan', 0)}/100 | 🎯 Giriş {a.get('giris_kalitesi', 0)}/100 | 🚀 Devam {a.get('devam_gucu', 0)}/100\n"
+                        f"🧲 Kalıcılık {a.get('kalicilik_skoru', 0)}/100 | {a.get('kalicilik_etiket', '')}\n"
                         f"Radar {a['radar_skoru']}/100 | Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x\n"
                         f"{mikro_satir}"
                         f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n"
