@@ -1499,12 +1499,12 @@ while True:
                     risk = risk.replace("🟢 ", "").replace("🟡 ", "").replace("🔴 ", "")
 
                     mesaj += (
-                        f"{gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 Radar AL\n"
+                        f"{gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 AL\n\n"
                         f"AI {a.get('ai_skoru', 0)} | Risk {risk} | Erken {a.get('erken_puan', 0)} | "
-                        f"Giriş {a.get('giris_kalitesi', 0)} | Devam {a.get('devam_gucu', 0)}\n"
+                        f"Giriş {a.get('giris_kalitesi', 0)} | Devam {a.get('devam_gucu', 0)}\n\n"
                         f"Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x | Radar {a['radar_skoru']}/100 | BTC 3s %{round(btc, 2)}\n"
                         f"{mikro_satir}"
-                        f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n"
+                        f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n\n"
                         f"📌 Takip: AL anlık | +%5'te sadece kâr ara uyarısı\n"
                         f"{neden_alarm}Neden: {neden}\n\n"
                     )
