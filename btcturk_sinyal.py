@@ -1453,10 +1453,7 @@ while True:
             if not gonderilecekler:
                 print("Yeni AL kararı yok. Telegram sessiz.")
             else:
-                mesaj = (
-                    "🤖 AI COIN ASSISTANT - KARAR GÜNCELLEMESİ\n"
-                    f"BTC 3s: %{round(btc, 2)}\n\n"
-                )
+                mesaj = ""
 
                 for a in gonderilecekler:
                     teknik = a.get("teknik")
@@ -1497,11 +1494,15 @@ while True:
                             f"5dk %{mikro.get('d5', 0)} | 10dk %{mikro.get('d10', 0)}\n"
                         )
 
+                    gorunen_coin = a['symbol'][:-3] if a['symbol'].endswith("TRY") else a['symbol']
+                    risk = a.get('risk', 'Bilinmiyor')
+                    risk = risk.replace("🟢 ", "").replace("🟡 ", "").replace("🔴 ", "")
+
                     mesaj += (
-                        f"{a['symbol']} | {a.get('radar_kategori', '')}\n"
-                        f"{a.get('karar')} | AI {a.get('ai_skoru', 0)}/100 | Risk: {a.get('risk', 'Bilinmiyor')}\n"
-                        f"🌱 Erken {a.get('erken_puan', 0)}/100 | 🎯 Giriş {a.get('giris_kalitesi', 0)}/100 | 🚀 Devam {a.get('devam_gucu', 0)}/100\n"
-                        f"Radar {a['radar_skoru']}/100 | Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x\n"
+                        f"{gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 Radar AL\n"
+                        f"AI {a.get('ai_skoru', 0)} | Risk {risk} | Erken {a.get('erken_puan', 0)} | "
+                        f"Giriş {a.get('giris_kalitesi', 0)} | Devam {a.get('devam_gucu', 0)}\n"
+                        f"Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x | Radar {a['radar_skoru']}/100 | BTC 3s %{round(btc, 2)}\n"
                         f"{mikro_satir}"
                         f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n"
                         f"📌 Takip: AL anlık | +%5'te sadece kâr ara uyarısı\n"
