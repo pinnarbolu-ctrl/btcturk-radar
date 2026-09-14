@@ -2153,6 +2153,11 @@ while True:
         ]
 
         # H mantığı: Radar Top10 + Çoklu Güç + teyitli Mikro Erken üzerinde teknik analiz + karar motoru.
+        # AL tanı sayacı: yalnız Railway logu içindir; kararları DEĞİŞTİRMEZ.
+        _al_diag = {
+            "teknik": 0, "ema": 0, "rsi": 0, "macd": 0,
+            "adx": 0, "ai": 0, "al": 0, "teknik_yok": 0
+        }
         for a in top10:
             teknik = teknik_analiz_hesapla(a["symbol"])
             a["teknik"] = teknik
@@ -2220,6 +2225,14 @@ while True:
                 adx_txt = "NA" if adx is None else f"{adx:.1f}"
                 macd_txt = "NA" if macd_hist is None else f"{macd_hist:.5f}"
 
+                _al_diag["teknik"] += 1
+                _al_diag["ema"] += int(bool(ema_ok))
+                _al_diag["rsi"] += int(bool(rsi_ok))
+                _al_diag["macd"] += int(bool(macd_ok))
+                _al_diag["adx"] += int(bool(adx_ok))
+                _al_diag["ai"] += int(bool(skor_ok))
+                _al_diag["al"] += int("🟢 AL" in a.get("karar", ""))
+
                 print(
                     f"[AL DEBUG] {a['symbol']} | {a.get('karar', '🟡 BEKLE')} | "
                     f"{kategori} | "
@@ -2231,10 +2244,20 @@ while True:
                     f"Radar {a.get('radar_skoru', 0)}"
                 )
             else:
+                _al_diag["teknik_yok"] += 1
                 print(
                     f"[AL DEBUG] {a['symbol']} | 🟡 BEKLE | "
                     f"Teknik veri alınamadı"
                 )
+
+        print(
+            "[AL DIAG] "
+            f"aday={len(top10)} | teknik={_al_diag['teknik']} | "
+            f"EMA_OK={_al_diag['ema']} | RSI_OK={_al_diag['rsi']} | "
+            f"MACD_OK={_al_diag['macd']} | ADX_OK={_al_diag['adx']} | "
+            f"AI_OK={_al_diag['ai']} | AL_KARAR={_al_diag['al']} | "
+            f"teknik_yok={_al_diag['teknik_yok']}"
+        )
 
         # AL kalite koruması: Assistant AL bekletilmez.
         # Yalnızca çok düşük hacim + kısa vade aynı anda sönüyorsa bariz zayıflık veto edilir.
@@ -2269,6 +2292,8 @@ while True:
             print("Şu an uygun aday yok.")
         else:
             gonderilecekler = []
+            _diag_al_toplam = 0
+            _diag_al_tekrar = 0
 
             for a in top10:
                 symbol = a["symbol"]
@@ -2281,11 +2306,19 @@ while True:
                 if "🟢 AL" not in karar:
                     continue
 
+                _diag_al_toplam += 1
+
                 # Aynı AL kararını tekrar gönderme.
                 if onceki_karar == karar:
+                    _diag_al_tekrar += 1
                     continue
 
                 gonderilecekler.append(a)
+
+            print(
+                f"[AL DIAG TELEGRAM] AL_toplam={_diag_al_toplam} | "
+                f"yeni_AL={len(gonderilecekler)} | tekrar_AL={_diag_al_tekrar}"
+            )
 
             if not gonderilecekler:
                 print("Yeni AL kararı yok. Telegram sessiz.")
