@@ -1,5 +1,5 @@
 # ==========================================
-# AI COIN ASSISTANT - V6 | MAIN 30 RADAR AL + GERÇEK İŞLEM
+# AI COIN ASSISTANT - DENGELİ GİRİŞ KORUMASI + GERÇEK İŞLEM
 # Taban: main (21).py
 # 21 sadeligi + 13 AL/SAT/Kar Koru + 1-3-5-10 dk erken yakalama
 # Giris/Devam skorları sadece bilgi, AL için veto DEGIL
@@ -40,6 +40,24 @@ onceki_tarama = {}
 kalicilik_gecmisi = {}
 KALICILIK_GECMIS_UZUNLUK = 5
 
+# Fiyat Yonu Koruma V1:
+# Guclu skorlar gecmisi bir sure tasiyabildigi icin, AL aninda fiyat yonunu ayri izler.
+# Amaç: tepe sonrasi dusen coine tekrar AL vermemek ve yeniden yukari donusu beklemek.
+fiyat_yon_gecmisi = {}
+FIYAT_YON_GECMIS_UZUNLUK = 6
+
+# Ilk AL Giris Zamanlama V1:
+# Dengeli giris: normal hizda guclenen coin direkt AL yolunda kalir; yalniz asiri kosmus/tepeye yapismis coin pullback + donus bekler.
+# Bu katman yalniz ILK AL zamanlamasini etkiler; AI/Radar/Devam/Kalicilik skorlarini degistirmez.
+giris_zamanlama_durumu = {}
+GIRIS_BEKLEME_MAX_SURE = 30 * 60
+GIRIS_HIZLI_D1 = 1.20
+GIRIS_HIZLI_D3 = 2.40
+GIRIS_HIZLI_D5 = 4.00
+GIRIS_MIN_GERI_CEKILME = -0.30
+GIRIS_MAX_GERI_CEKILME = -3.50
+GIRIS_YENIDEN_DONUS_D1 = 0.05
+
 # Çoklu Güç Havuzu:
 # Güçlenme işareti veren coin 5 dakika boyunca, 1 dk fiyat hareketi %0.40 altında kalsa bile izlenir.
 guc_izleme_havuzu = {}
@@ -49,7 +67,8 @@ GUC_IZLEME_SURESI = 5 * 60
 son_ai_kararlar = {}
 
 # GERÇEK İŞLEM KATMANI
-# Radar / AL karar motorunu değiştirmez; yalnızca gerçek 🟢 AL sonrası emir yönetir.
+# Dengeli giriş koruması ve Radar/AL karar motorunu değiştirmez;
+# yalnızca gerçek 🟢 AL sonrası emir yönetir.
 AL_TAKIP = {}
 POZISYON_TAKIP_SURESI = 15
 
@@ -60,18 +79,12 @@ MAKS_ACIK_POZISYON = 3
 KAR_AL_ESIK = 4.0
 STOP_ESIK = -1.5
 
-# Gerçek emir güvenlik kilidi. Railway Variables: LIVE_TRADING=1
+# Railway güvenlik kilidi
 LIVE_TRADING = os.getenv("LIVE_TRADING", "0").strip() == "1"
 BTCTURK_API_KEY = os.getenv("BTCTURK_API_KEY", "").strip()
 BTCTURK_API_SECRET = os.getenv("BTCTURK_API_SECRET", "").strip()
 BTCTURK_API_BASE = "https://api.btcturk.com"
-
-# Main 30'da zaten kullanılan Railway Volume'u açık pozisyon kaydı için de kullan.
-_LIVE_DEFAULT_DIR = _RAILWAY_VOLUME if '_RAILWAY_VOLUME' in globals() and _RAILWAY_VOLUME else "/data"
-LIVE_STATE_PATH = os.getenv(
-    "LIVE_STATE_PATH",
-    os.path.join(_LIVE_DEFAULT_DIR, "live_positions.json")
-).strip()
+LIVE_STATE_PATH = os.getenv("LIVE_STATE_PATH", "/data/live_positions.json").strip()
 LAST_PRIVATE_NONCE = 0
 
 # AL Rejim / Seçicilik Öğrenmesi
@@ -80,8 +93,6 @@ LAST_PRIVATE_NONCE = 0
 _RAILWAY_VOLUME = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
 _AL_DEFAULT_DIR = _RAILWAY_VOLUME if _RAILWAY_VOLUME else "."
 AL_OGRENME_DOSYA = os.getenv("AL_OGRENME_DOSYA", os.path.join(_AL_DEFAULT_DIR, "al_ogrenme_rejim.json"))
-if not os.getenv("LIVE_STATE_PATH", "").strip():
-    LIVE_STATE_PATH = os.path.join(_RAILWAY_VOLUME if _RAILWAY_VOLUME else "/data", "live_positions.json")
 AL_OGRENME_SURESI = 3 * 60 * 60
 REJIM_RAPOR_ARALIGI = 24 * 60 * 60
 SON_REJIM_RAPOR_ZAMANI = time.time()
@@ -1201,6 +1212,173 @@ def haber_puani(symbol):
 
 
 # ==========================================
+def fiyat_yonu_guncelle(symbol, fiyat):
+    try:
+        fiyat = float(fiyat)
+    except Exception:
+        return []
+    if fiyat <= 0:
+        return []
+    hist = fiyat_yon_gecmisi.setdefault(symbol, [])
+    hist.append({"fiyat": fiyat, "zaman": time.time()})
+    if len(hist) > FIYAT_YON_GECMIS_UZUNLUK:
+        del hist[:-FIYAT_YON_GECMIS_UZUNLUK]
+    return hist
+
+
+def ilk_al_giris_zamanlama_koruma(aday):
+    """
+    Ilk AL icin giris zamanlama korumasi.
+
+    Mantik:
+    - Coin ilk sinyal aninda zaten hizli kosmussa AL'i hemen verme, "kur" ve geri cekilmeyi bekle.
+    - Yalniz hizli kosmus/tepeye yapismis coinlerde ~%0.30 geri cekilme + yeniden yukari donus beklenir.
+    - Geri cekilme fazla derinse veya kisa vade halen negatife donukse beklemeye devam et.
+    - Coin daha once gercek AL mesaji aldiysa bu katman tekrar devreye girmez; sonraki kararlar fiyat yonu korumasina kalir.
+    """
+    symbol = aday.get("symbol", "")
+    fiyat = float(aday.get("fiyat", 0) or 0)
+    if not symbol or fiyat <= 0:
+        return True, ""
+
+    # Bu coin icin daha once gercek AL takibi baslamissa ilk-giris korumasi tekrar uygulanmaz.
+    mevcut_al = AL_TAKIP.get(symbol)
+    if mevcut_al and mevcut_al.get("aktif"):
+        giris_zamanlama_durumu.pop(symbol, None)
+        return True, ""
+
+    m = aday.get("mikro") or {}
+    d1 = float(m.get("d1", 0) or 0)
+    d3 = float(m.get("d3", 0) or 0)
+    d5 = float(m.get("d5", 0) or 0)
+    d10 = float(m.get("d10", 0) or 0)
+    simdi = time.time()
+
+    hist = fiyat_yon_gecmisi.get(symbol, [])
+    fiyatlar = [float(x.get("fiyat", 0) or 0) for x in hist if float(x.get("fiyat", 0) or 0) > 0]
+
+    durum = giris_zamanlama_durumu.get(symbol)
+
+    # Ilk kez AL seviyesine geldigi anda, hizli kosmus / yerel tepeye yakin ise hemen AL verme.
+    if durum is None:
+        hizli_kosu = (
+            d1 >= GIRIS_HIZLI_D1
+            or d3 >= GIRIS_HIZLI_D3
+            or d5 >= GIRIS_HIZLI_D5
+            or d10 >= 6.0
+            or bool(m.get("sisti", False))
+        )
+
+        # Aday son birkac teknik taramada hizla yukari tasindiysa da ilk AL'i kur.
+        yerel_kosu = False
+        if len(fiyatlar) >= 3:
+            taban = min(fiyatlar[-3:])
+            tepe = max(fiyatlar[-3:])
+            if taban > 0:
+                yerel_kosu = ((tepe / taban) - 1.0) * 100.0 >= 1.40 and fiyat >= tepe * 0.9985
+
+        if hizli_kosu or yerel_kosu:
+            giris_zamanlama_durumu[symbol] = {
+                "baslangic": simdi,
+                "tepe": fiyat,
+                "dip": fiyat,
+                "geri_cekilme_goruldu": False,
+            }
+            return False, (
+                f"ilk AL icin fiyat hizli kosmus; geri cekilme + yeniden yukari donus bekleniyor "
+                f"(1dk {d1:+.2f}% | 3dk {d3:+.2f}% | 5dk {d5:+.2f}%)"
+            )
+
+        # Hizli kosu yoksa mevcut ana AL motorunun kararina dokunma.
+        return True, ""
+
+    # Kurulu ilk-giris adayi.
+    tepe = max(float(durum.get("tepe", fiyat) or fiyat), fiyat)
+    dip = min(float(durum.get("dip", fiyat) or fiyat), fiyat)
+    durum["tepe"] = tepe
+    durum["dip"] = dip
+
+    geri = ((fiyat / tepe) - 1.0) * 100.0 if tepe > 0 else 0.0
+    if geri <= GIRIS_MIN_GERI_CEKILME:
+        durum["geri_cekilme_goruldu"] = True
+
+    # 30 dk icinde saglikli pullback olusmazsa eski kurulum gecersiz sayilir.
+    if simdi - float(durum.get("baslangic", simdi)) > GIRIS_BEKLEME_MAX_SURE:
+        giris_zamanlama_durumu.pop(symbol, None)
+        # Hala hizli kosuyorsa yeniden hemen alma; bir sonraki taramada tekrar degerlendir.
+        if d1 >= GIRIS_HIZLI_D1 or d3 >= GIRIS_HIZLI_D3:
+            return False, "ilk AL zamanlama penceresi doldu ama fiyat hala hizli; yeni denge bekleniyor"
+        return True, ""
+
+    # Fazla derin geri cekilmede bounce gelse bile acele AL verme.
+    if geri <= GIRIS_MAX_GERI_CEKILME:
+        return False, f"ilk AL geri cekilmesi fazla derin ({geri:+.2f}%); yeni taban olusumu bekleniyor"
+
+    son_tarama_yukari = len(fiyatlar) >= 2 and fiyatlar[-1] > fiyatlar[-2]
+    yeniden_yukari = (
+        bool(durum.get("geri_cekilme_goruldu"))
+        and son_tarama_yukari
+        and d1 >= GIRIS_YENIDEN_DONUS_D1
+        and d3 >= -0.10
+        and not bool(m.get("sisti", False))
+    )
+
+    if yeniden_yukari:
+        # Tepeyi neredeyse tamamen geri aldiysa yine kovalamaya donmus olabilir.
+        tepeye_mesafe = ((fiyat / tepe) - 1.0) * 100.0 if tepe > 0 else 0.0
+        if tepeye_mesafe > -0.10:
+            return False, f"fiyat eski tepeye neredeyse yapismis ({tepeye_mesafe:+.2f}%); kisa teyit bekleniyor"
+
+        giris_zamanlama_durumu.pop(symbol, None)
+        aday["giris_zamanlama_onay"] = True
+        aday["giris_zamanlama_nedeni"] = f"geri cekilme sonrasi yukari donus ({geri:+.2f}%)"
+        return True, aday["giris_zamanlama_nedeni"]
+
+    return False, f"ilk AL beklemede; tepeden geri cekilme {geri:+.2f}% ve yukari donus henuz teyitli degil"
+
+
+def fiyat_yonu_koruma(aday):
+    """
+    AL icin anlik fiyat yonu korumasi.
+    Donus: (al_uygun_mu, neden)
+    Skorlari degistirmez; yalniz AL'i BEKLE'ye cevirebilir.
+    """
+    symbol = aday.get("symbol", "")
+    hist = fiyat_yon_gecmisi.get(symbol, [])
+    m = aday.get("mikro") or {}
+
+    d1 = float(m.get("d1", 0) or 0)
+    d3 = float(m.get("d3", 0) or 0)
+    d5 = float(m.get("d5", 0) or 0)
+
+    # 1) Kisa vade hem 1dk hem 3dk asagiysa guc skoru yuksek olsa da giris ertelenir.
+    if d1 < 0 and d3 < 0:
+        return False, f"1dk ve 3dk fiyat yonu negatif ({d1:+.2f}% / {d3:+.2f}%)"
+
+    fiyatlar = [float(x.get("fiyat", 0) or 0) for x in hist if float(x.get("fiyat", 0) or 0) > 0]
+
+    # 2) Son 3 teknik taramada fiyat arka arkaya dusuyorsa yeni AL yok.
+    if len(fiyatlar) >= 3 and fiyatlar[-3] > fiyatlar[-2] > fiyatlar[-1]:
+        dusus = (fiyatlar[-1] / fiyatlar[-3] - 1.0) * 100.0
+        return False, f"fiyat 3 taramadir dusuyor ({dusus:+.2f}%)"
+
+    # 3) Yakın tepe yapip geri cekildiyse, yeniden toparlanma teyidi gelmeden AL verme.
+    if len(fiyatlar) >= 4:
+        son = fiyatlar[-1]
+        yakin_tepe = max(fiyatlar[-4:])
+        geri = (son / yakin_tepe - 1.0) * 100.0 if yakin_tepe > 0 else 0.0
+        yeniden_yukari = fiyatlar[-1] > fiyatlar[-2] and d1 > 0 and d3 >= 0
+        if geri <= -0.80 and not yeniden_yukari:
+            return False, f"yakın tepeden %{abs(geri):.2f} geri cekilmis; yeniden yukari donus bekleniyor"
+
+    # 4) Cok hizli kosmus coini tepesinden kovalamama korumasi.
+    # Mikro 'sisti' zaten kullaniliyor; burada daha okunakli ek bir giris freni var.
+    if d1 >= 2.20 or d3 >= 4.50 or d5 >= 7.00:
+        return False, f"gec giris/kovalama riski (1dk {d1:+.2f}% | 3dk {d3:+.2f}% | 5dk {d5:+.2f}%)"
+
+    return True, ""
+
+
 # H MANTIĞI - TEKNİK ANALİZ KATMANI
 # Commit: AI AL V3.2 - Roket RSI ust siniri 75
 # Bu katman aday seçimini değiştirmez; Top 10 adayı analiz için zenginleştirir.
@@ -1603,6 +1781,34 @@ def h_karar_hesapla(aday):
         karar = "🟡 BEKLE"
     else:
         karar = "🔴 SAT / PAS"
+
+    # Fiyat Yonu Koruma V1:
+    # Gecmisten tasinan guc/kalicilik skorlari fiyat dusmeye basladiginda AL'i zorlayamaz.
+    # Fiyat yeniden yukari donerse sonraki taramada AL yolu tekrar acilir.
+    if karar == "🟢 AL":
+        fiyat_uygun, fiyat_nedeni = fiyat_yonu_koruma(aday)
+        if not fiyat_uygun:
+            karar = "🟡 BEKLE"
+            nedenler.insert(0, "Fiyat yönü koruması: " + fiyat_nedeni)
+            aday["fiyat_yonu_veto"] = True
+            aday["fiyat_yonu_veto_nedeni"] = fiyat_nedeni
+        else:
+            aday["fiyat_yonu_veto"] = False
+
+    # Ilk AL Giris Zamanlama V1:
+    # Ana motor AL dese bile coin ilk sinyal aninda hizli kosmussa tepeyi kovalamaz.
+    # Pullback + yeniden yukari donus teyidinden sonra ilk AL'e izin verir.
+    if karar == "🟢 AL":
+        giris_uygun, giris_nedeni = ilk_al_giris_zamanlama_koruma(aday)
+        if not giris_uygun:
+            karar = "🟡 BEKLE"
+            nedenler.insert(0, "Giriş zamanlama: " + giris_nedeni)
+            aday["giris_zamanlama_veto"] = True
+            aday["giris_zamanlama_veto_nedeni"] = giris_nedeni
+        else:
+            aday["giris_zamanlama_veto"] = False
+            if giris_nedeni:
+                nedenler.insert(0, "Giriş zamanlama: " + giris_nedeni)
 
     # Risk sadece bilgilendirme; Telegram yalnızca AL kararında konuşuyor.
     if atr_yuzde is None:
@@ -2176,6 +2382,9 @@ while True:
 
         # H mantığı: Radar Top10 + Çoklu Güç + teyitli Mikro Erken üzerinde teknik analiz + karar motoru.
         for a in top10:
+            # Her teknik adayda fiyat yonu hafizasini guncelle. Bu hafiza skoru degistirmez;
+            # yalniz AL aninda fiyat dusuyor mu / yeniden yukari dondu mu sorusunu cevaplar.
+            fiyat_yonu_guncelle(a.get("symbol", ""), a.get("fiyat", 0))
             teknik = teknik_analiz_hesapla(a["symbol"])
             a["teknik"] = teknik
             karar = h_karar_hesapla(a)
@@ -2248,7 +2457,8 @@ while True:
                     f"MACD {macd_txt} {durum(macd_ok)} | "
                     f"ADX {adx_txt} {durum(adx_ok)} | "
                     f"AI {ai_skor}/100 {durum(skor_ok)} | "
-                    f"Radar {a.get('radar_skoru', 0)}"
+                    f"Radar {a.get('radar_skoru', 0)} | "
+                    f"FiyatYon {'VETO' if a.get('fiyat_yonu_veto') else 'OK'} | GirisZaman {'VETO' if a.get('giris_zamanlama_veto') else 'OK'}"
                 )
             else:
                 print(
