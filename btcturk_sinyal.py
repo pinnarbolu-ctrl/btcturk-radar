@@ -17,7 +17,7 @@ import feedparser
 import statistics
 
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
 CHAT_IDS = [2097448038]
 
@@ -928,7 +928,7 @@ NEGATIF = [
 
 def telegram_gonder(mesaj):
     if not BOT_TOKEN:
-        print("BOT_TOKEN bulunamadı. Railway Variables kontrol et.")
+        print("TELEGRAM_BOT_TOKEN bulunamadı. Railway Variables kontrol et.")
         return
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
