@@ -61,6 +61,9 @@ KAR_KORU_BASLANGIC = 7.0
 CIKIS_MIKRO_YENILEME = 60
 CIKIS_KORU_SKORU = 55
 CIKIS_SAT_SKORU = 75
+# PAPER/LIVE gerçek pozisyon zarar kesme sınırı.
+# Kâr kilidinden bağımsızdır; işlem girişinden %-1.5 düşüşte pozisyon kapatılır.
+ZARAR_KES_YUZDE = -1.5
 
 # AL Rejim / Seçicilik Öğrenmesi
 # AL öğrenme verisini Railway Volume varsa kalıcı alanda tut.
@@ -984,6 +987,38 @@ def al_takip_guncelle(ticker):
         p["cikis_yorgunluk"] = yorgun
         p["cikis_donus"] = donus
         p["cikis_skoru"] = cikis
+
+        # ZARAR KES:
+        # Yalnız PAPER/LIVE portföyüne gerçekten alınmış pozisyonlarda çalışır.
+        # Sinyal fiyatını değil, işlem katmanında kaydedilen gerçek/PAPER girişini baz alır.
+        islem_giris = float(p.get("islem_giris", giris) or giris)
+        islem_getiri = _pct(fiyat, islem_giris) if islem_giris > 0 else getiri
+        zarar_kes = p.get("portfoyde") and islem_getiri <= ZARAR_KES_YUZDE
+
+        if zarar_kes and not p.get("sat_bildirildi"):
+            sat_sebebi = (
+                f"zarar kes: işlem getirisi %{islem_getiri:+.2f} "
+                f"<= %{ZARAR_KES_YUZDE:.2f}"
+            )
+            kapandi = islem_sat_kapat(symbol, fiyat, sebep=sat_sebebi)
+
+            # PAPER'da veya LIVE emri başarıyla gönderildiyse takibi kapat.
+            # LIVE SAT başarısız olursa sonraki turda yeniden denenebilmesi için açık bırak.
+            if kapandi:
+                p["sat_bildirildi"] = True
+                p["aktif"] = False
+                mesaj = (
+                    f"🛑 ZARAR KES - {symbol}\n"
+                    f"İşlem girişi: {islem_giris:.4f} | Güncel: {fiyat:.4f}\n"
+                    f"Sonuç: %{islem_getiri:+.2f} | Stop: %{ZARAR_KES_YUZDE:.2f}\n"
+                    f"Neden: -%1.5 zarar kes sınırı aşıldı.\n"
+                    f"Not: {'GERÇEK pozisyon otomatik kapatma emri gönderildi.' if LIVE_MODE else 'PAPER pozisyon otomatik kapatıldı.'}"
+                )
+                print(mesaj)
+                telegram_gonder(mesaj)
+                continue
+            else:
+                print(f"[STOP RETRY] {symbol} | SAT başarısız; pozisyon takibi açık tutuluyor.")
 
         if getiri >= KAR_BILDIR_ESIK and not p.get("kar_bildirildi"):
             p["kar_bildirildi"] = True
@@ -2003,6 +2038,62 @@ def h_karar_hesapla(aday):
 # Railway deploy / restart kontrolu: Telegram baglantisini aninda dogrula.
 telegram_gonder("✅ BTCTÜRK RADAR AL/SAT başladı ve aktif. Tarama başlıyor.")
 trading_startup_kontrol()
+
+
+
+def restart_sonrasi_pozisyon_takibini_geri_kur():
+    """Railway restart/deploy sonrası persist edilmiş açık PAPER/LIVE pozisyonları çıkış motoruna geri bağlar."""
+    restored = 0
+    kaynaklar = []
+    if not LIVE_MODE:
+        kaynaklar.append(("PAPER", PAPER_POZISYONLAR))
+    else:
+        kaynaklar.append(("LIVE", LIVE_POZISYONLAR))
+
+    for mod, pozisyonlar in kaynaklar:
+        for symbol, pos in list(pozisyonlar.items()):
+            if not isinstance(pos, dict):
+                continue
+            try:
+                giris = float(pos.get("entry_price") or pos.get("giris") or pos.get("price") or 0)
+            except Exception:
+                giris = 0.0
+            if giris <= 0:
+                print(f"[RESTART TAKIP] {symbol} atlandı: giriş fiyatı bulunamadı.")
+                continue
+
+            # Varsa mevcut takip kaydını koru; yoksa normal AL takip yardımcısıyla oluştur.
+            if symbol not in AL_TAKIP or not AL_TAKIP.get(symbol, {}).get("aktif"):
+                al_takip_baslat(symbol, giris)
+                restored += 1
+
+            p = AL_TAKIP.get(symbol, {})
+            p["aktif"] = True
+            p["portfoyde"] = True
+            p["islem_giris"] = giris
+
+            # Persist edilmiş tepe bilgisi varsa restart sonrası kâr kilidini sıfırlama.
+            for src_key, dst_key in (
+                ("max_fiyat", "max_fiyat"),
+                ("peak_price", "max_fiyat"),
+                ("max_getiri", "max_getiri"),
+                ("peak_return", "max_getiri"),
+            ):
+                if src_key in pos and pos.get(src_key) is not None:
+                    try:
+                        p[dst_key] = float(pos[src_key])
+                    except Exception:
+                        pass
+
+            print(f"[RESTART TAKIP] {mod} {symbol} geri bağlandı | giriş={giris:.8f}")
+
+    if restored:
+        print(f"[RESTART TAKIP] {restored} açık pozisyon için AL_TAKIP yeniden oluşturuldu.")
+    return restored
+
+
+
+restart_sonrasi_pozisyon_takibini_geri_kur()
 
 while True:
     try:
