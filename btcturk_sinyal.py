@@ -1,5 +1,5 @@
 # ==========================================
-# MAIN 30 | MIKRO ON ALARM + DINAMIK CIKIS + 4000 TL PAPER
+# MAIN 30 | ASSISTANT + DINAMIK CIKIS + RISK VETO + KAR KILIDI + PAPER/LIVE AL-SAT
 # Taban: main (21).py
 # 21 sadeligi + 13 AL/SAT/Kar Koru + 1-3-5-10 dk erken yakalama
 # Giris/Devam skorları sadece bilgi, AL için veto DEGIL
@@ -15,6 +15,11 @@ import json
 import requests
 import feedparser
 import statistics
+import base64
+import hmac
+import hashlib
+import uuid
+from decimal import Decimal, ROUND_DOWN
 
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -66,6 +71,370 @@ AL_OGRENME_DOSYA = os.getenv("AL_OGRENME_DOSYA", os.path.join(_AL_DEFAULT_DIR, "
 AL_OGRENME_SURESI = 3 * 60 * 60
 REJIM_RAPOR_ARALIGI = 24 * 60 * 60
 SON_REJIM_RAPOR_ZAMANI = time.time()
+
+
+# =========================
+# GERÇEK AL/SAT MODU
+# Varsayılan PAPER. Railway'de TRADING_MODE=LIVE yapılmadan gerçek emir göndermez.
+# API anahtarlarını KODA YAZMA; Railway Variables:
+#   BTCTURK_API_KEY
+#   BTCTURK_API_SECRET
+# =========================
+TRADING_MODE = os.getenv("TRADING_MODE", "PAPER").strip().upper()
+LIVE_MODE = TRADING_MODE == "LIVE"
+BTCTURK_API_KEY = os.getenv("BTCTURK_API_KEY", "").strip()
+BTCTURK_API_SECRET = os.getenv("BTCTURK_API_SECRET", "").strip()
+
+LIVE_TOPLAM_SERMAYE_TL = float(os.getenv("LIVE_TOPLAM_SERMAYE_TL", "4000") or 4000)
+LIVE_ISLEM_TUTARI_TL = float(os.getenv("LIVE_ISLEM_TUTARI_TL", "1000") or 1000)
+LIVE_MAX_AKTIF = int(os.getenv("LIVE_MAX_AKTIF", "4") or 4)
+LIVE_MIN_TRY_TAMPON = float(os.getenv("LIVE_MIN_TRY_TAMPON", "5") or 5)
+
+_LIVE_DEFAULT_DIR = _RAILWAY_VOLUME if _RAILWAY_VOLUME else "."
+LIVE_DURUM_DOSYA = os.getenv(
+    "LIVE_DURUM_DOSYA",
+    os.path.join(_LIVE_DEFAULT_DIR, "live_pozisyonlari.json")
+)
+LIVE_POZISYONLAR = {}
+
+
+def _btcturk_sayi(x, default=0.0):
+    try:
+        if isinstance(x, str):
+            x = x.replace(",", ".")
+        return float(x)
+    except Exception:
+        return default
+
+
+def _btcturk_auth_headers():
+    if not BTCTURK_API_KEY or not BTCTURK_API_SECRET:
+        raise RuntimeError("BTCTURK_API_KEY / BTCTURK_API_SECRET eksik")
+    stamp = str(int(time.time() * 1000))
+    secret = base64.b64decode(BTCTURK_API_SECRET)
+    payload = f"{BTCTURK_API_KEY}{stamp}".encode("utf-8")
+    signature = base64.b64encode(
+        hmac.new(secret, payload, hashlib.sha256).digest()
+    ).decode("utf-8")
+    return {
+        "X-PCK": BTCTURK_API_KEY,
+        "X-Stamp": stamp,
+        "X-Signature": signature,
+        "Content-Type": "application/json",
+    }
+
+
+def _btcturk_private_get(path, timeout=12):
+    url = "https://api.btcturk.com" + path
+    r = requests.get(url, headers=_btcturk_auth_headers(), timeout=timeout)
+    try:
+        data = r.json()
+    except Exception:
+        data = {"success": False, "message": r.text[:300]}
+    if r.status_code != 200 or not data.get("success", False):
+        raise RuntimeError(
+            f"BTCTurk GET hata {r.status_code}: "
+            f"{data.get('message') or data.get('code') or 'bilinmeyen hata'}"
+        )
+    return data
+
+
+def _btcturk_bakiyeler():
+    return _btcturk_private_get("/api/v1/users/balances").get("data", []) or []
+
+
+def _btcturk_bakiye(asset):
+    asset = str(asset or "").upper()
+    for b in _btcturk_bakiyeler():
+        if str(b.get("asset", "")).upper() == asset:
+            return {
+                "free": _btcturk_sayi(b.get("free")),
+                "balance": _btcturk_sayi(b.get("balance")),
+                "locked": _btcturk_sayi(b.get("locked")),
+                "precision": int(b.get("precision", 8) or 8),
+            }
+    return {"free": 0.0, "balance": 0.0, "locked": 0.0, "precision": 8}
+
+
+def _btcturk_market_emir(symbol, taraf, quantity):
+    symbol = str(symbol or "").upper()
+    taraf = str(taraf or "").lower()
+    if taraf not in ("buy", "sell"):
+        raise ValueError("taraf buy/sell olmalı")
+    q = float(quantity)
+    if q <= 0:
+        raise ValueError("quantity > 0 olmalı")
+
+    payload = {
+        "quantity": q,
+        "price": 0,
+        "stopPrice": 0,
+        "newOrderClientId": str(uuid.uuid4()),
+        "orderMethod": "market",
+        "orderType": taraf,
+        "pairSymbol": symbol,
+    }
+    r = requests.post(
+        "https://api.btcturk.com/api/v1/order",
+        headers=_btcturk_auth_headers(),
+        json=payload,
+        timeout=15,
+    )
+    try:
+        data = r.json()
+    except Exception:
+        data = {"success": False, "message": r.text[:300]}
+    if r.status_code != 200 or not data.get("success", False):
+        raise RuntimeError(
+            f"BTCTurk emir reddedildi {r.status_code}: "
+            f"{data.get('message') or data.get('code') or 'bilinmeyen hata'}"
+        )
+    return data.get("data") or {}
+
+
+def _live_yukle():
+    global LIVE_POZISYONLAR
+    try:
+        if os.path.exists(LIVE_DURUM_DOSYA):
+            with open(LIVE_DURUM_DOSYA, "r", encoding="utf-8") as f:
+                d = json.load(f)
+                if isinstance(d, dict):
+                    LIVE_POZISYONLAR = d
+    except Exception as e:
+        print("[LIVE] durum yükleme hatası:", e)
+
+
+def _live_kaydet():
+    try:
+        klasor = os.path.dirname(LIVE_DURUM_DOSYA)
+        if klasor:
+            os.makedirs(klasor, exist_ok=True)
+        tmp = LIVE_DURUM_DOSYA + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(LIVE_POZISYONLAR, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, LIVE_DURUM_DOSYA)
+    except Exception as e:
+        print("[LIVE] durum kaydetme hatası:", e)
+
+
+def _live_aktifler():
+    return [p for p in LIVE_POZISYONLAR.values() if p.get("aktif")]
+
+
+def _coin_asset(symbol):
+    symbol = str(symbol or "").upper()
+    if symbol.endswith("TRY"):
+        return symbol[:-3]
+    return symbol
+
+
+def _poll_balance_delta(asset, before, timeout=12):
+    son = before
+    bas = time.time()
+    while time.time() - bas < timeout:
+        try:
+            son = _btcturk_bakiye(asset)["free"]
+            if abs(son - before) > 1e-12:
+                return son - before, son
+        except Exception:
+            pass
+        time.sleep(1)
+    return son - before, son
+
+
+def _floor_precision(value, precision):
+    q = Decimal("1").scaleb(-int(max(0, precision)))
+    return float(Decimal(str(max(0.0, value))).quantize(q, rounding=ROUND_DOWN))
+
+
+def live_al_ac(symbol, sinyal_fiyat):
+    """Gerçek AL sinyalini 1000 TL market alış emrine çevirir."""
+    if not LIVE_MODE:
+        return None
+    if not BTCTURK_API_KEY or not BTCTURK_API_SECRET:
+        print("[LIVE AL] API anahtarı eksik; emir gönderilmedi.")
+        telegram_gonder("⛔ LIVE AL durdu: BTCTURK_API_KEY / BTCTURK_API_SECRET eksik.")
+        return None
+
+    eski = LIVE_POZISYONLAR.get(symbol)
+    if eski and eski.get("aktif"):
+        print(f"[LIVE AL] {symbol} zaten açık; ikinci kez alınmadı.")
+        return eski
+
+    aktifler = _live_aktifler()
+    kullanilan = sum(float(p.get("tl", 0) or 0) for p in aktifler)
+    kalan_limit = LIVE_TOPLAM_SERMAYE_TL - kullanilan
+
+    if len(aktifler) >= LIVE_MAX_AKTIF or kalan_limit + 1e-9 < LIVE_ISLEM_TUTARI_TL:
+        print(
+            f"[LIVE AL] Bütçe/pozisyon limiti dolu | "
+            f"aktif={len(aktifler)}/{LIVE_MAX_AKTIF} | "
+            f"kullanılan={kullanilan:.2f}/{LIVE_TOPLAM_SERMAYE_TL:.2f} TL"
+        )
+        return None
+
+    try:
+        try_bakiye = _btcturk_bakiye("TRY")["free"]
+        if try_bakiye < LIVE_ISLEM_TUTARI_TL + LIVE_MIN_TRY_TAMPON:
+            raise RuntimeError(
+                f"Yetersiz serbest TRY: {try_bakiye:.2f} TL "
+                f"(gerekli en az {LIVE_ISLEM_TUTARI_TL + LIVE_MIN_TRY_TAMPON:.2f})"
+            )
+
+        asset = _coin_asset(symbol)
+        coin_before = _btcturk_bakiye(asset)["free"]
+
+        emir = _btcturk_market_emir(symbol, "buy", round(LIVE_ISLEM_TUTARI_TL, 2))
+        order_id = emir.get("id")
+        delta, coin_after = _poll_balance_delta(asset, coin_before)
+        alinmis = max(0.0, delta)
+
+        # Bakiye gecikirse tahmini miktar kullanma: canlı SAT için gerçek miktar şart.
+        if alinmis <= 0:
+            raise RuntimeError(
+                f"AL emri gönderildi (order={order_id}) fakat alınan {asset} miktarı "
+                "bakiyeden doğrulanamadı. Otomatik SAT güvenlik nedeniyle açılmadı."
+            )
+
+        efektif_giris = LIVE_ISLEM_TUTARI_TL / alinmis if alinmis > 0 else float(sinyal_fiyat)
+        poz = {
+            "aktif": True,
+            "symbol": symbol,
+            "asset": asset,
+            "giris_fiyat": efektif_giris,
+            "sinyal_fiyat": float(sinyal_fiyat),
+            "tl": LIVE_ISLEM_TUTARI_TL,
+            "coin_miktar": alinmis,
+            "order_id_al": order_id,
+            "acilis_zamani": time.time(),
+        }
+        LIVE_POZISYONLAR[symbol] = poz
+        _live_kaydet()
+
+        yeni_kullanilan = kullanilan + LIVE_ISLEM_TUTARI_TL
+        print(
+            f"[LIVE AL] {symbol} | {LIVE_ISLEM_TUTARI_TL:.0f} TL | "
+            f"miktar={alinmis:.12f} | efektif giriş≈{efektif_giris:.6f}"
+        )
+        telegram_gonder(
+            f"🟢 GERÇEK AL - {symbol}\n"
+            f"Tutar: {LIVE_ISLEM_TUTARI_TL:.0f} TL | Miktar: {alinmis:.8f}\n"
+            f"Yaklaşık giriş: {efektif_giris:.6f}\n"
+            f"Aktif sermaye: {yeni_kullanilan:.0f}/{LIVE_TOPLAM_SERMAYE_TL:.0f} TL\n"
+            f"Order ID: {order_id}"
+        )
+        return poz
+
+    except Exception as e:
+        print(f"[LIVE AL HATA] {symbol}: {e}")
+        telegram_gonder(f"⛔ GERÇEK AL HATASI - {symbol}\n{e}")
+        return None
+
+
+def live_sat_kapat(symbol, sinyal_fiyat, sebep="dinamik çıkış"):
+    """Dinamik çıkış tetiklenince yalnız botun aldığı kayıtlı miktarı market satar."""
+    if not LIVE_MODE:
+        return False
+
+    poz = LIVE_POZISYONLAR.get(symbol)
+    if not poz or not poz.get("aktif"):
+        print(f"[LIVE SAT] {symbol} için bot kayıtlı açık pozisyon bulamadı; SAT gönderilmedi.")
+        return False
+
+    try:
+        asset = poz.get("asset") or _coin_asset(symbol)
+        bakiye = _btcturk_bakiye(asset)
+        kayitli = float(poz.get("coin_miktar", 0) or 0)
+        satilabilir = min(kayitli, float(bakiye.get("free", 0) or 0))
+        satilabilir = _floor_precision(satilabilir, int(bakiye.get("precision", 8) or 8))
+        if satilabilir <= 0:
+            raise RuntimeError(f"Satılabilir {asset} bakiyesi yok")
+
+        try_before = _btcturk_bakiye("TRY")["free"]
+        emir = _btcturk_market_emir(symbol, "sell", satilabilir)
+        order_id = emir.get("id")
+        try_delta, try_after = _poll_balance_delta("TRY", try_before)
+        gelir = max(0.0, try_delta)
+
+        giris_tl = float(poz.get("tl", LIVE_ISLEM_TUTARI_TL) or LIVE_ISLEM_TUTARI_TL)
+        kar_tl = gelir - giris_tl if gelir > 0 else None
+        getiri = (kar_tl / giris_tl * 100.0) if kar_tl is not None and giris_tl else None
+
+        poz.update({
+            "aktif": False,
+            "kapanis_fiyat_sinyal": float(sinyal_fiyat),
+            "kapanis_zamani": time.time(),
+            "order_id_sat": order_id,
+            "satilan_miktar": satilabilir,
+            "gelir_tl": gelir,
+            "kar_tl": kar_tl,
+            "getiri_yuzde": getiri,
+            "kapanis_sebebi": sebep,
+        })
+        _live_kaydet()
+
+        sonuc = (
+            f"%{getiri:+.2f} | {kar_tl:+.2f} TL"
+            if getiri is not None else
+            "TRY bakiye değişimi henüz doğrulanamadı"
+        )
+        print(f"[LIVE SAT] {symbol} | miktar={satilabilir:.12f} | {sonuc} | {sebep}")
+        telegram_gonder(
+            f"🔴 GERÇEK SAT - {symbol}\n"
+            f"Miktar: {satilabilir:.8f} | Sinyal fiyatı: {float(sinyal_fiyat):.6f}\n"
+            f"Sonuç: {sonuc}\n"
+            f"Sebep: {sebep}\n"
+            f"Order ID: {order_id}"
+        )
+        return True
+
+    except Exception as e:
+        print(f"[LIVE SAT HATA] {symbol}: {e}")
+        telegram_gonder(f"⛔ GERÇEK SAT HATASI - {symbol}\n{e}")
+        return False
+
+
+def islem_al_ac(symbol, fiyat):
+    if LIVE_MODE:
+        return live_al_ac(symbol, fiyat)
+    return paper_al_ac(symbol, fiyat)
+
+
+def islem_sat_kapat(symbol, fiyat, sebep="dinamik çıkış"):
+    if LIVE_MODE:
+        return live_sat_kapat(symbol, fiyat, sebep)
+    return paper_sat_kapat(symbol, fiyat, sebep)
+
+
+def trading_startup_kontrol():
+    """Başlangıçta mod ve private API erişimini güvenli biçimde doğrular."""
+    if not LIVE_MODE:
+        print("[TRADING] PAPER modu aktif. Gerçek emir gönderilmeyecek.")
+        telegram_gonder(
+            f"🧪 AL/SAT PAPER modu aktif | "
+            f"{PAPER_ISLEM_TUTARI_TL:.0f} TL/işlem | max {PAPER_MAX_AKTIF}"
+        )
+        return True
+
+    try:
+        if not BTCTURK_API_KEY or not BTCTURK_API_SECRET:
+            raise RuntimeError("BTCTURK_API_KEY / BTCTURK_API_SECRET eksik")
+        try_free = _btcturk_bakiye("TRY")["free"]
+        print(f"[TRADING] LIVE API OK | serbest TRY={try_free:.2f}")
+        telegram_gonder(
+            f"🔴 LIVE AL/SAT AKTİF\n"
+            f"BtcTurk API bağlantısı OK | Serbest TRY: {try_free:.2f}\n"
+            f"{LIVE_ISLEM_TUTARI_TL:.0f} TL/işlem | "
+            f"toplam bot limiti {LIVE_TOPLAM_SERMAYE_TL:.0f} TL | max {LIVE_MAX_AKTIF}"
+        )
+        return True
+    except Exception as e:
+        print(f"[TRADING] LIVE BAŞLANGIÇ HATASI: {e}")
+        telegram_gonder(f"⛔ LIVE AL/SAT başlatılamadı\n{e}")
+        return False
+
+
+_live_yukle()
 
 # =========================
 # PAPER İŞLEM / SERMAYE YÖNETİMİ
@@ -462,13 +831,23 @@ def al_takip_baslat(aday):
         "rsi": teknik.get("rsi"),
         "macd_hist": teknik.get("macd_hist"),
         "max_devam": float(aday.get("devam_gucu", 0) or 0),
+        "risk": str(aday.get("risk", "Bilinmiyor") or "Bilinmiyor"),
+        "portfoyde": False,
     }
 
-    # Gerçek AL mesajı geldiğinde 4000 TL'lik PAPER portföyde sanal pozisyon aç.
-    paper_poz = paper_al_ac(symbol, fiyat)
+    # Risk Yüksek aday sinyal olarak gösterilebilir/follow edilebilir,
+    # fakat PAPER veya LIVE portföye gerçek pozisyon olarak ALINMAZ.
+    risk_etiketi = str(aday.get("risk", "Bilinmiyor") or "Bilinmiyor")
+    if "Yüksek" in risk_etiketi:
+        print(f"[İŞLEM VETO] {symbol} | Risk Yüksek -> PAPER/LIVE AL açılmadı.")
+        return
+
+    # Gerçek AL mesajı geldiğinde PAPER/LIVE işlem katmanında pozisyon aç.
+    paper_poz = islem_al_ac(symbol, fiyat)
     if paper_poz:
-        AL_TAKIP[symbol]["paper_giris"] = float(paper_poz.get("giris_fiyat", fiyat) or fiyat)
-        AL_TAKIP[symbol]["paper_tl"] = float(paper_poz.get("tl", PAPER_ISLEM_TUTARI_TL) or PAPER_ISLEM_TUTARI_TL)
+        AL_TAKIP[symbol]["portfoyde"] = True
+        AL_TAKIP[symbol]["islem_giris"] = float(paper_poz.get("giris_fiyat", fiyat) or fiyat)
+        AL_TAKIP[symbol]["islem_tl"] = float(paper_poz.get("tl", LIVE_ISLEM_TUTARI_TL if LIVE_MODE else PAPER_ISLEM_TUTARI_TL) or (LIVE_ISLEM_TUTARI_TL if LIVE_MODE else PAPER_ISLEM_TUTARI_TL))
 
 
 def al_takip_teknik_guncelle(aday):
@@ -618,30 +997,80 @@ def al_takip_guncelle(ticker):
             print(mesaj)
             telegram_gonder(mesaj)
 
-        # Güçlü devam varsa sırf küçük tepe geri çekilmesi nedeniyle SAT verme.
+        # Güçlü devam varsa küçük geri çekilmelere tolerans var.
         guclu_devam = devam >= 72 and yorgun < 45 and donus < 55
 
-        # SAT: anlamlı kâr + belirgin teknik yorgunluk/dönüş.
+        # KÂR KİLİDİ:
+        # Tepe +%7'yi geçtiğinde RED örneğindeki gibi +%9.9'dan +%2'ye kadar
+        # kârın geri verilmesini engellemek için tepe bazlı trailing sınırı sıkılaşır.
+        kar_kilidi_limit = None
+        if max_getiri >= 20.0:
+            kar_kilidi_limit = 2.25
+        elif max_getiri >= 15.0:
+            kar_kilidi_limit = 2.50
+        elif max_getiri >= 10.0:
+            kar_kilidi_limit = 2.75
+        elif max_getiri >= 7.0:
+            kar_kilidi_limit = 3.00
+
+        # Devam hâlâ çok güçlüyse yalnız 0.50 puan ek nefes payı ver.
+        efektif_kilit = (
+            kar_kilidi_limit + (0.50 if guclu_devam else 0.0)
+            if kar_kilidi_limit is not None else None
+        )
+        kar_kilidi_sat = (
+            efektif_kilit is not None
+            and tepe_geri >= efektif_kilit
+        )
+
+        # SAT: kâr kilidi VEYA belirgin teknik yorgunluk/dönüş.
         sat_kosulu = (
-            max_getiri >= 8.0
-            and not guclu_devam
-            and (
-                cikis >= CIKIS_SAT_SKORU
-                or (max_getiri >= 15.0 and tepe_geri >= 4.0 and donus >= 55)
-                or (max_getiri >= 20.0 and tepe_geri >= 3.5 and yorgun >= 55)
+            kar_kilidi_sat
+            or (
+                max_getiri >= 8.0
+                and not guclu_devam
+                and (
+                    cikis >= CIKIS_SAT_SKORU
+                    or (max_getiri >= 15.0 and tepe_geri >= 4.0 and donus >= 55)
+                    or (max_getiri >= 20.0 and tepe_geri >= 3.5 and yorgun >= 55)
+                )
             )
         )
         if sat_kosulu and not p.get("sat_bildirildi"):
             p["sat_bildirildi"] = True
-            paper_sat_kapat(symbol, fiyat, sebep=f"dinamik çıkış skoru {cikis:.0f}")
+
+            if kar_kilidi_sat:
+                sat_sebebi = (
+                    f"kâr kilidi: tepe geri %{tepe_geri:.2f} "
+                    f">= %{efektif_kilit:.2f}"
+                )
+            else:
+                sat_sebebi = f"dinamik çıkış skoru {cikis:.0f}"
+
+            if p.get("portfoyde"):
+                islem_sat_kapat(symbol, fiyat, sebep=sat_sebebi)
+
             p["aktif"] = False
+            emir_notu = (
+                "GERÇEK pozisyon otomatik kapatma emri gönderildi."
+                if LIVE_MODE and p.get("portfoyde")
+                else "PAPER pozisyon otomatik kapatıldı."
+                if p.get("portfoyde")
+                else "Bu sinyal portföye alınmamıştı; emir gönderilmedi."
+            )
+            neden_sat = (
+                f"tepe sonrası kâr kilidi çalıştı (%{efektif_kilit:.2f} trailing)."
+                if kar_kilidi_sat
+                else "devam zayıfladı ve dönüş/yorgunluk birlikte yükseldi."
+            )
+
             mesaj = (
                 f"🔴 SAT / KÂR AL - {symbol}\n"
                 f"İlk AL: {giris:.4f} | Tepe: {tepe:.4f} | Güncel: {fiyat:.4f}\n"
                 f"Maks. kâr: %{max_getiri:+.2f} | Şu an: %{getiri:+.2f} | Tepe geri: %{tepe_geri:.2f}\n"
                 f"Devam {devam:.0f} | Yorgunluk {yorgun:.0f} | Dönüş {donus:.0f} | Çıkış {cikis:.0f}\n"
-                f"Neden: devam zayıfladı ve dönüş/yorgunluk birlikte yükseldi.\n"
-                f"Not: Otomatik emir değildir."
+                f"Neden: {neden_sat}\n"
+                f"Not: {emir_notu}"
             )
             print(mesaj)
             telegram_gonder(mesaj)
@@ -1573,6 +2002,7 @@ def h_karar_hesapla(aday):
 
 # Railway deploy / restart kontrolu: Telegram baglantisini aninda dogrula.
 telegram_gonder("✅ BTCTÜRK RADAR AL/SAT başladı ve aktif. Tarama başlıyor.")
+trading_startup_kontrol()
 
 while True:
     try:
