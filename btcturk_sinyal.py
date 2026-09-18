@@ -1,5 +1,6 @@
 # ==========================================
-# MAIN 30 | ASSISTANT + 5+ PROFIL + DEVAM TEYIDI + SADECE ONAYLI ISLEM MESAJI + DINAMIK CIKIS + PAPER/LIVE AL-SAT
+# MAIN 30 | ASSISTANT + 5+ PROFIL + DEVAM TEYIDI + GIRIS FIYATI KORUMASI + SADECE ONAYLI ISLEM MESAJI + DINAMIK CIKIS + PAPER/LIVE AL-SAT
+# V54: 45sn teyit sonunda ilk sinyal fiyatinin %+0.70 ustu kovalanmaz; sinyal/teyit/gercek giris loglanir.
 # Taban: main (21).py
 # 21 sadeligi + 13 AL/SAT/Kar Koru + 1-3-5-10 dk erken yakalama
 # Giris/Devam skorları sadece bilgi, AL için veto DEGIL
@@ -65,9 +66,10 @@ CIKIS_SAT_SKORU = 75
 # Kâr kilidinden bağımsızdır; işlem girişinden %-1.5 düşüşte pozisyon kapatılır.
 ZARAR_KES_YUZDE = -1.5
 
-# DEVAM TEYIDI V1:
-# Telegram AL sinyali aninda gorunur, fakat PAPER/LIVE emir 45 sn boyunca
-# gucun korundugu dogrulanmadan acilmaz. Bu katman ek BTCTurk mum istegi yapmaz;
+# DEVAM TEYIDI V1 + GIRIS FIYATI KORUMASI V1:
+# Telegram AL mesaji yalniz gercek islem acildiktan sonra gorunur. PAPER/LIVE emir
+# 45 sn boyunca gucun korundugu dogrulanmadan acilmaz. Teyit sonunda fiyat ilk
+# sinyalin fazla ustune kacmissa kovalanmaz. Bu katman ek BTCTurk mum istegi yapmaz;
 # 15 sn ticker fiyatlarini kullanir, dolayisiyla 429 yukunu artirmaz.
 AL_ONAY_BEKLEME_SN = 45
 AL_ONAY_MIN_DEVAM = 60.0
@@ -75,6 +77,7 @@ AL_ONAY_MAX_ANLIK_GERI = -0.60      # teyit penceresinde gorulen en kotu geri ce
 AL_ONAY_MAX_KAPANIS_GERI = -0.35   # 45 sn sonunda sinyal fiyatina gore
 AL_ONAY_MAX_SON_ADIM_GERI = -0.30  # son 15 sn adiminin kotulesme limiti
 AL_ONAY_NEGATIF_MIKRO = -0.40      # ilk AL aninda 3dk+5dk birlikte bundan kotuyse veto
+AL_ONAY_MAX_KOVALAMA = 0.70        # 45 sn teyit sonunda ilk sinyalin %+0.70 ustu kovalanmaz
 
 # 5+ PROFIL V1 — +%5 ve üstü/zirve üreten sinyallerde öne çıkan ortak yapı.
 # AI/ADX tek başına değil; geniş tabanlı ve devam eden güç aranır.
@@ -906,7 +909,7 @@ def al_takip_baslat(aday):
     """
     Teknik olarak AL olan coini gizli onay takibine alir.
 
-    V53 MESAJ AKISI:
+    V54 MESAJ + GIRIS KORUMA AKISI:
     Telegram AL mesaji hemen GONDERILMEZ. Once 5+ Profil + 45 sn Devam Teyidi tamamlanir.
     Yalniz gercek PAPER/LIVE pozisyon acilirsa zengin AL mesaji Telegrama gonderilir.
     Veto edilen adaylar sadece Railway logunda kalir.
@@ -1008,6 +1011,10 @@ def _devam_teyidi_degerlendir(symbol, p, fiyat):
         nedenler.append(f"45sn içinde fazla geri çekildi (%{min_geri:+.2f})")
     if anlik <= AL_ONAY_MAX_KAPANIS_GERI:
         nedenler.append(f"teyit sonunda sinyal altı (%{anlik:+.2f})")
+    if anlik > AL_ONAY_MAX_KOVALAMA:
+        nedenler.append(
+            f"giriş fiyatı fazla kaçtı (%{anlik:+.2f} > %+{AL_ONAY_MAX_KOVALAMA:.2f}); fiyat kovalanmadı"
+        )
     if son_adim <= AL_ONAY_MAX_SON_ADIM_GERI:
         nedenler.append(f"son 15sn momentum negatif (%{son_adim:+.2f})")
     if d3 <= AL_ONAY_NEGATIF_MIKRO and d5 <= AL_ONAY_NEGATIF_MIKRO:
@@ -1026,6 +1033,9 @@ def _devam_teyidi_degerlendir(symbol, p, fiyat):
         "d3": round(d3, 3),
         "d5": round(d5, 3),
         "profil": round(float(p.get("bes_plus_profil", 0) or 0), 1),
+        "sinyal_fiyat": float(sinyal),
+        "teyit_fiyat": float(fiyat),
+        "kovalama": round(anlik, 3),
     }
     return (len(nedenler) == 0), nedenler, metrik
 
@@ -1161,23 +1171,33 @@ def al_takip_guncelle(ticker):
                 p["aktif"] = False
                 print(
                     f"[DEVAM VETO] {symbol} | 5+Profil={onay_m.get('profil', 0)} | " + "; ".join(onay_nedenler) +
-                    f" | sinyal->45sn %{onay_m['anlik']:+.2f} | min %{onay_m['min_geri']:+.2f} | "
+                    f" | sinyal={onay_m.get('sinyal_fiyat', 0):.8f} | teyit={onay_m.get('teyit_fiyat', 0):.8f} | "
+                    f"sinyal->45sn %{onay_m['anlik']:+.2f} | min %{onay_m['min_geri']:+.2f} | "
                     f"son15 %{onay_m['son_adim']:+.2f}"
                 )
                 continue
 
+            print(
+                f"[GİRİŞ KORUMA ONAY] {symbol} | sinyal={onay_m.get('sinyal_fiyat', 0):.8f} | "
+                f"teyit={float(fiyat):.8f} | fark=%{onay_m.get('kovalama', 0):+.2f} | "
+                f"limit=%+{AL_ONAY_MAX_KOVALAMA:.2f}"
+            )
             paper_poz = islem_al_ac(symbol, float(fiyat))
             if paper_poz:
                 p["portfoyde"] = True
                 p["onay_sonucu"] = "ONAY"
                 p["islem_giris"] = float(paper_poz.get("giris_fiyat", fiyat) or fiyat)
                 p["islem_tl"] = float(paper_poz.get("tl", LIVE_ISLEM_TUTARI_TL if LIVE_MODE else PAPER_ISLEM_TUTARI_TL) or (LIVE_ISLEM_TUTARI_TL if LIVE_MODE else PAPER_ISLEM_TUTARI_TL))
+                p["teyit_fiyat"] = float(fiyat)
+                p["sinyalden_gercek_girise_pct"] = _pct(p["islem_giris"], float(onay_m.get("sinyal_fiyat", p.get("giris", fiyat)) or fiyat))
                 # Cikis motoru gercek islem girisini baz alsin; sinyal fiyati Telegram referansi olarak p['giris']te kalir.
                 print(
-                    f"[DEVAM ONAY] {symbol} | 5+Profil={onay_m.get('profil', 0)} | %{onay_m['anlik']:+.2f} / 45sn | "
+                    f"[DEVAM ONAY] {symbol} | 5+Profil={onay_m.get('profil', 0)} | "
+                    f"sinyal={onay_m.get('sinyal_fiyat', 0):.8f} | teyit={float(fiyat):.8f} | "
+                    f"gerçek_giriş={p['islem_giris']:.8f} | sinyal->gerçek=%{p['sinyalden_gercek_girise_pct']:+.2f} | "
                     f"min %{onay_m['min_geri']:+.2f} | son15 %{onay_m['son_adim']:+.2f} -> PAPER/LIVE AL açıldı"
                 )
-                # V53: Kullanıcı yalnız para giren/onaylanan AL mesajlarını görmek istiyor.
+                # V54: Kullanıcı yalnız 5+ profil + devam teyidi + giriş fiyatı korumasını geçen işlemleri görmek istiyor.
                 # islem_al_ac başarılı olduktan SONRA zengin sinyal mesajını gönder.
                 _onay_msg = str(p.get("onay_telegram_mesaj", "") or "").strip()
                 if _onay_msg:
