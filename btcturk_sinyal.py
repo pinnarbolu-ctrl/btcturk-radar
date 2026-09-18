@@ -1,5 +1,5 @@
 # ==========================================
-# MAIN 30 | ASSISTANT + DINAMIK CIKIS + RISK VETO + KAR KILIDI + PAPER/LIVE AL-SAT
+# MAIN 30 | ASSISTANT + DEVAM TEYIDI + DINAMIK CIKIS + RISK VETO + KAR KILIDI + PAPER/LIVE AL-SAT
 # Taban: main (21).py
 # 21 sadeligi + 13 AL/SAT/Kar Koru + 1-3-5-10 dk erken yakalama
 # Giris/Devam skorları sadece bilgi, AL için veto DEGIL
@@ -64,6 +64,17 @@ CIKIS_SAT_SKORU = 75
 # PAPER/LIVE gerçek pozisyon zarar kesme sınırı.
 # Kâr kilidinden bağımsızdır; işlem girişinden %-1.5 düşüşte pozisyon kapatılır.
 ZARAR_KES_YUZDE = -1.5
+
+# DEVAM TEYIDI V1:
+# Telegram AL sinyali aninda gorunur, fakat PAPER/LIVE emir 45 sn boyunca
+# gucun korundugu dogrulanmadan acilmaz. Bu katman ek BTCTurk mum istegi yapmaz;
+# 15 sn ticker fiyatlarini kullanir, dolayisiyla 429 yukunu artirmaz.
+AL_ONAY_BEKLEME_SN = 45
+AL_ONAY_MIN_DEVAM = 60.0
+AL_ONAY_MAX_ANLIK_GERI = -0.60      # teyit penceresinde gorulen en kotu geri cekilme
+AL_ONAY_MAX_KAPANIS_GERI = -0.35   # 45 sn sonunda sinyal fiyatina gore
+AL_ONAY_MAX_SON_ADIM_GERI = -0.30  # son 15 sn adiminin kotulesme limiti
+AL_ONAY_NEGATIF_MIKRO = -0.40      # ilk AL aninda 3dk+5dk birlikte bundan kotuyse veto
 
 # AL Rejim / Seçicilik Öğrenmesi
 # AL öğrenme verisini Railway Volume varsa kalıcı alanda tut.
@@ -806,7 +817,13 @@ def kalicilik_skoru_hesapla(aday):
 
 
 def al_takip_baslat(aday):
-    """Gerçek AL mesajı gönderilen coini dinamik kâr koruma için takip eder."""
+    """
+    Gercek AL mesaji gonderilen coini takibe alir.
+
+    V51 DEVAM TEYIDI:
+    Telegram AL mesaji aninda gorunur; PAPER/LIVE pozisyon hemen acilmaz.
+    Once 45 saniye ticker fiyatiyla gucun geriye kacip kacmadigi dogrulanir.
+    """
     symbol = aday.get("symbol")
     fiyat = float(aday.get("fiyat", 0) or 0)
     if not symbol or fiyat <= 0:
@@ -817,6 +834,8 @@ def al_takip_baslat(aday):
         return
 
     teknik = aday.get("teknik") or {}
+    mikro = aday.get("mikro") or {}
+    devam0 = float(aday.get("devam_gucu", 0) or 0)
     AL_TAKIP[symbol] = {
         "aktif": True,
         "giris": fiyat,
@@ -826,32 +845,89 @@ def al_takip_baslat(aday):
         "kar_koru_bildirildi": False,
         "sat_bildirildi": False,
         "son_mikro_zamani": 0.0,
-        "son_mikro": aday.get("mikro") or {},
-        "devam_gucu": float(aday.get("devam_gucu", 0) or 0),
+        "son_mikro": mikro,
+        "devam_gucu": devam0,
         "kalicilik": float(aday.get("kalicilik_skoru", 0) or 0),
         "ai_skoru": float(aday.get("ai_skoru", 0) or 0),
         "adx": teknik.get("adx"),
         "rsi": teknik.get("rsi"),
         "macd_hist": teknik.get("macd_hist"),
-        "max_devam": float(aday.get("devam_gucu", 0) or 0),
+        "max_devam": devam0,
         "risk": str(aday.get("risk", "Bilinmiyor") or "Bilinmiyor"),
         "portfoyde": False,
+        # Devam teyidi hafizasi
+        "onay_bekliyor": True,
+        "onay_baslangic": time.time(),
+        "onay_sinyal_fiyat": fiyat,
+        "onay_fiyatlari": [fiyat],
+        "onay_min_fiyat": fiyat,
+        "onay_devam_ilk": devam0,
+        "onay_mikro_ilk": dict(mikro),
+        "onay_sonucu": "BEKLIYOR",
     }
 
-    # Risk Yüksek aday sinyal olarak gösterilebilir/follow edilebilir,
-    # fakat PAPER veya LIVE portföye gerçek pozisyon olarak ALINMAZ.
+    # Risk Yuksek aday sinyal olarak gosterilebilir/follow edilebilir,
+    # fakat PAPER veya LIVE portfoye gercek pozisyon olarak ALINMAZ.
     risk_etiketi = str(aday.get("risk", "Bilinmiyor") or "Bilinmiyor")
     if "Yüksek" in risk_etiketi:
+        AL_TAKIP[symbol]["onay_bekliyor"] = False
+        AL_TAKIP[symbol]["onay_sonucu"] = "RISK_VETO"
         print(f"[İŞLEM VETO] {symbol} | Risk Yüksek -> PAPER/LIVE AL açılmadı.")
         return
 
-    # Gerçek AL mesajı geldiğinde PAPER/LIVE işlem katmanında pozisyon aç.
-    paper_poz = islem_al_ac(symbol, fiyat)
-    if paper_poz:
-        AL_TAKIP[symbol]["portfoyde"] = True
-        AL_TAKIP[symbol]["islem_giris"] = float(paper_poz.get("giris_fiyat", fiyat) or fiyat)
-        AL_TAKIP[symbol]["islem_tl"] = float(paper_poz.get("tl", LIVE_ISLEM_TUTARI_TL if LIVE_MODE else PAPER_ISLEM_TUTARI_TL) or (LIVE_ISLEM_TUTARI_TL if LIVE_MODE else PAPER_ISLEM_TUTARI_TL))
+    print(
+        f"[DEVAM TEYİDİ] {symbol} | AL sinyali görüldü, emir {AL_ONAY_BEKLEME_SN} sn beklemede | "
+        f"fiyat={fiyat:.8f} | Devam={devam0:.1f}"
+    )
 
+
+def _devam_teyidi_degerlendir(symbol, p, fiyat):
+    """45 sn ticker tabanli teyit. (ok, neden, metrikler) dondurur."""
+    sinyal = float(p.get("onay_sinyal_fiyat", p.get("giris", fiyat)) or fiyat)
+    fiyatlar = list(p.get("onay_fiyatlari") or [])
+    if not fiyatlar or fiyatlar[-1] != fiyat:
+        fiyatlar.append(float(fiyat))
+    # 15 sn takipte 45 sn icin en fazla son 5 nokta yeterli.
+    fiyatlar = fiyatlar[-5:]
+    p["onay_fiyatlari"] = fiyatlar
+    p["onay_min_fiyat"] = min(float(p.get("onay_min_fiyat", sinyal) or sinyal), float(fiyat))
+
+    anlik = _pct(float(fiyat), sinyal) if sinyal > 0 else 0.0
+    min_geri = _pct(float(p["onay_min_fiyat"]), sinyal) if sinyal > 0 else 0.0
+    son_adim = _pct(fiyatlar[-1], fiyatlar[-2]) if len(fiyatlar) >= 2 and fiyatlar[-2] > 0 else 0.0
+    yukselen_adim = sum(1 for i in range(1, len(fiyatlar)) if fiyatlar[i] >= fiyatlar[i-1])
+
+    devam0 = float(p.get("onay_devam_ilk", p.get("devam_gucu", 0)) or 0)
+    m0 = p.get("onay_mikro_ilk") or {}
+    d3 = float(m0.get("d3", 0) or 0)
+    d5 = float(m0.get("d5", 0) or 0)
+
+    nedenler = []
+    if devam0 < AL_ONAY_MIN_DEVAM:
+        nedenler.append(f"Devam düşük ({devam0:.1f} < {AL_ONAY_MIN_DEVAM:.0f})")
+    if min_geri <= AL_ONAY_MAX_ANLIK_GERI:
+        nedenler.append(f"45sn içinde fazla geri çekildi (%{min_geri:+.2f})")
+    if anlik <= AL_ONAY_MAX_KAPANIS_GERI:
+        nedenler.append(f"teyit sonunda sinyal altı (%{anlik:+.2f})")
+    if son_adim <= AL_ONAY_MAX_SON_ADIM_GERI:
+        nedenler.append(f"son 15sn momentum negatif (%{son_adim:+.2f})")
+    if d3 <= AL_ONAY_NEGATIF_MIKRO and d5 <= AL_ONAY_NEGATIF_MIKRO:
+        nedenler.append(f"ilk mikro 3dk/5dk birlikte negatif ({d3:+.2f}/{d5:+.2f})")
+
+    # Fiyat sadece yatay kaldiysa veto etme; ama tamamen dusen seri de guc teyidi sayilmaz.
+    if len(fiyatlar) >= 4 and yukselen_adim == 0 and anlik < 0:
+        nedenler.append("45sn boyunca yükselen adım yok")
+
+    metrik = {
+        "anlik": round(anlik, 3),
+        "min_geri": round(min_geri, 3),
+        "son_adim": round(son_adim, 3),
+        "yukselen_adim": yukselen_adim,
+        "devam0": round(devam0, 1),
+        "d3": round(d3, 3),
+        "d5": round(d5, 3),
+    }
+    return (len(nedenler) == 0), nedenler, metrik
 
 def al_takip_teknik_guncelle(aday):
     """Aktif AL yeniden teknik taramaya girerse çıkış motoruna canlı teknik durumu taşır."""
@@ -963,6 +1039,48 @@ def al_takip_guncelle(ticker):
         fiyat = fiyatlar.get(symbol)
         if not fiyat:
             continue
+
+        # DEVAM TEYIDI: Telegram AL geldi ama PAPER/LIVE henuz acilmadiysa
+        # 15 sn ticker noktalarini biriktir; 45 sn sonunda guc korunduysa emir ac.
+        if p.get("onay_bekliyor") and not p.get("portfoyde"):
+            _of = p.setdefault("onay_fiyatlari", [])
+            if not _of or abs(float(_of[-1]) - float(fiyat)) > 1e-12:
+                _of.append(float(fiyat))
+                if len(_of) > 5:
+                    del _of[:-5]
+            p["onay_min_fiyat"] = min(float(p.get("onay_min_fiyat", fiyat) or fiyat), float(fiyat))
+
+            gecen = simdi - float(p.get("onay_baslangic", simdi) or simdi)
+            if gecen < AL_ONAY_BEKLEME_SN:
+                continue
+
+            onay_ok, onay_nedenler, onay_m = _devam_teyidi_degerlendir(symbol, p, fiyat)
+            p["onay_bekliyor"] = False
+            if not onay_ok:
+                p["onay_sonucu"] = "VETO"
+                p["aktif"] = False
+                print(
+                    f"[DEVAM VETO] {symbol} | " + "; ".join(onay_nedenler) +
+                    f" | sinyal->45sn %{onay_m['anlik']:+.2f} | min %{onay_m['min_geri']:+.2f} | "
+                    f"son15 %{onay_m['son_adim']:+.2f}"
+                )
+                continue
+
+            paper_poz = islem_al_ac(symbol, float(fiyat))
+            if paper_poz:
+                p["portfoyde"] = True
+                p["onay_sonucu"] = "ONAY"
+                p["islem_giris"] = float(paper_poz.get("giris_fiyat", fiyat) or fiyat)
+                p["islem_tl"] = float(paper_poz.get("tl", LIVE_ISLEM_TUTARI_TL if LIVE_MODE else PAPER_ISLEM_TUTARI_TL) or (LIVE_ISLEM_TUTARI_TL if LIVE_MODE else PAPER_ISLEM_TUTARI_TL))
+                # Cikis motoru gercek islem girisini baz alsin; sinyal fiyati Telegram referansi olarak p['giris']te kalir.
+                print(
+                    f"[DEVAM ONAY] {symbol} | %{onay_m['anlik']:+.2f} / 45sn | "
+                    f"min %{onay_m['min_geri']:+.2f} | son15 %{onay_m['son_adim']:+.2f} -> PAPER/LIVE AL açıldı"
+                )
+            else:
+                p["onay_sonucu"] = "EMIR_ACILMADI"
+                # Butce dolu vb. durumda yalniz sinyal takibi sursun, portfoy stopu calismasin.
+                print(f"[DEVAM ONAY] {symbol} teyit geçti fakat işlem katmanı pozisyon açmadı.")
 
         # Sadece açık AL coinlerinde dakikalık yapıyı yaklaşık dakikada bir yenile.
         if simdi - float(p.get("son_mikro_zamani", 0) or 0) >= CIKIS_MIKRO_YENILEME:
@@ -2042,50 +2160,56 @@ trading_startup_kontrol()
 
 
 def restart_sonrasi_pozisyon_takibini_geri_kur():
-    """Railway restart/deploy sonrası persist edilmiş açık PAPER/LIVE pozisyonları çıkış motoruna geri bağlar."""
+    """Railway restart/deploy sonrasi persist edilmis acik PAPER/LIVE pozisyonlari cikis motoruna geri baglar."""
     restored = 0
-    kaynaklar = []
-    if not LIVE_MODE:
-        kaynaklar.append(("PAPER", PAPER_POZISYONLAR))
-    else:
-        kaynaklar.append(("LIVE", LIVE_POZISYONLAR))
+    pozisyonlar = LIVE_POZISYONLAR if LIVE_MODE else PAPER_POZISYONLAR
+    mod = "LIVE" if LIVE_MODE else "PAPER"
 
-    for mod, pozisyonlar in kaynaklar:
-        for symbol, pos in list(pozisyonlar.items()):
-            if not isinstance(pos, dict):
-                continue
-            try:
-                giris = float(pos.get("entry_price") or pos.get("giris") or pos.get("price") or 0)
-            except Exception:
-                giris = 0.0
-            if giris <= 0:
-                print(f"[RESTART TAKIP] {symbol} atlandı: giriş fiyatı bulunamadı.")
-                continue
+    for symbol, pos in list(pozisyonlar.items()):
+        if not isinstance(pos, dict) or not pos.get("aktif"):
+            continue
+        try:
+            giris = float(
+                pos.get("giris_fiyat")
+                or pos.get("entry_price")
+                or pos.get("giris")
+                or pos.get("price")
+                or 0
+            )
+        except Exception:
+            giris = 0.0
+        if giris <= 0:
+            print(f"[RESTART TAKIP] {symbol} atlandı: giriş fiyatı bulunamadı.")
+            continue
 
-            # Varsa mevcut takip kaydını koru; yoksa normal AL takip yardımcısıyla oluştur.
-            if symbol not in AL_TAKIP or not AL_TAKIP.get(symbol, {}).get("aktif"):
-                al_takip_baslat(symbol, giris)
-                restored += 1
-
-            p = AL_TAKIP.get(symbol, {})
-            p["aktif"] = True
-            p["portfoyde"] = True
-            p["islem_giris"] = giris
-
-            # Persist edilmiş tepe bilgisi varsa restart sonrası kâr kilidini sıfırlama.
-            for src_key, dst_key in (
-                ("max_fiyat", "max_fiyat"),
-                ("peak_price", "max_fiyat"),
-                ("max_getiri", "max_getiri"),
-                ("peak_return", "max_getiri"),
-            ):
-                if src_key in pos and pos.get(src_key) is not None:
-                    try:
-                        p[dst_key] = float(pos[src_key])
-                    except Exception:
-                        pass
-
-            print(f"[RESTART TAKIP] {mod} {symbol} geri bağlandı | giriş={giris:.8f}")
+        # Restart sonrasi acik pozisyon zaten gercek/PAPER isleme alinmistir;
+        # 45 sn Devam Teyidi tekrar uygulanmaz ve ikinci AL emri gonderilmez.
+        AL_TAKIP[symbol] = {
+            "aktif": True,
+            "giris": giris,
+            "tepe": float(pos.get("max_fiyat") or pos.get("peak_price") or giris),
+            "max_getiri": float(pos.get("max_getiri") or pos.get("peak_return") or 0.0),
+            "kar_bildirildi": False,
+            "kar_koru_bildirildi": False,
+            "sat_bildirildi": False,
+            "son_mikro_zamani": 0.0,
+            "son_mikro": {},
+            "devam_gucu": 0.0,
+            "kalicilik": 0.0,
+            "ai_skoru": 0.0,
+            "adx": None,
+            "rsi": None,
+            "macd_hist": None,
+            "max_devam": 0.0,
+            "risk": "RESTORE",
+            "portfoyde": True,
+            "islem_giris": giris,
+            "islem_tl": float(pos.get("tl", LIVE_ISLEM_TUTARI_TL if LIVE_MODE else PAPER_ISLEM_TUTARI_TL) or (LIVE_ISLEM_TUTARI_TL if LIVE_MODE else PAPER_ISLEM_TUTARI_TL)),
+            "onay_bekliyor": False,
+            "onay_sonucu": "RESTORE",
+        }
+        restored += 1
+        print(f"[RESTART TAKIP] {mod} {symbol} geri bağlandı | giriş={giris:.8f}")
 
     if restored:
         print(f"[RESTART TAKIP] {restored} açık pozisyon için AL_TAKIP yeniden oluşturuldu.")
