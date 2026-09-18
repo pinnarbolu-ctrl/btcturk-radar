@@ -1,5 +1,5 @@
 # ==========================================
-# MAIN 30 | ASSISTANT + 5+ PROFIL + DEVAM TEYIDI + DINAMIK CIKIS + RISK VETO + KAR KILIDI + PAPER/LIVE AL-SAT
+# MAIN 30 | ASSISTANT + 5+ PROFIL + DEVAM TEYIDI + SADECE ONAYLI ISLEM MESAJI + DINAMIK CIKIS + PAPER/LIVE AL-SAT
 # Taban: main (21).py
 # 21 sadeligi + 13 AL/SAT/Kar Koru + 1-3-5-10 dk erken yakalama
 # Giris/Devam skorları sadece bilgi, AL için veto DEGIL
@@ -904,11 +904,12 @@ def bes_plus_profil_hesapla(aday):
 
 def al_takip_baslat(aday):
     """
-    Gercek AL mesaji gonderilen coini takibe alir.
+    Teknik olarak AL olan coini gizli onay takibine alir.
 
-    V51 DEVAM TEYIDI:
-    Telegram AL mesaji aninda gorunur; PAPER/LIVE pozisyon hemen acilmaz.
-    Once 45 saniye ticker fiyatiyla gucun geriye kacip kacmadigi dogrulanir.
+    V53 MESAJ AKISI:
+    Telegram AL mesaji hemen GONDERILMEZ. Once 5+ Profil + 45 sn Devam Teyidi tamamlanir.
+    Yalniz gercek PAPER/LIVE pozisyon acilirsa zengin AL mesaji Telegrama gonderilir.
+    Veto edilen adaylar sadece Railway logunda kalir.
     """
     symbol = aday.get("symbol")
     fiyat = float(aday.get("fiyat", 0) or 0)
@@ -956,6 +957,7 @@ def al_takip_baslat(aday):
         "onay_devam_ilk": devam0,
         "onay_mikro_ilk": dict(mikro),
         "onay_sonucu": "BEKLIYOR",
+        "onay_telegram_mesaj": str(aday.get("_onay_telegram_mesaj", "") or ""),
     }
 
     # Risk Yuksek aday sinyal olarak gosterilebilir/follow edilebilir,
@@ -1175,6 +1177,12 @@ def al_takip_guncelle(ticker):
                     f"[DEVAM ONAY] {symbol} | 5+Profil={onay_m.get('profil', 0)} | %{onay_m['anlik']:+.2f} / 45sn | "
                     f"min %{onay_m['min_geri']:+.2f} | son15 %{onay_m['son_adim']:+.2f} -> PAPER/LIVE AL açıldı"
                 )
+                # V53: Kullanıcı yalnız para giren/onaylanan AL mesajlarını görmek istiyor.
+                # islem_al_ac başarılı olduktan SONRA zengin sinyal mesajını gönder.
+                _onay_msg = str(p.get("onay_telegram_mesaj", "") or "").strip()
+                if _onay_msg:
+                    telegram_gonder(_onay_msg)
+                    p["onay_telegram_mesaj_gonderildi"] = True
             else:
                 p["onay_sonucu"] = "EMIR_ACILMADI"
                 # Butce dolu vb. durumda yalniz sinyal takibi sursun, portfoy stopu calismasin.
@@ -3106,14 +3114,63 @@ while True:
                         f"{neden_alarm}Neden: {neden}\n\n"
                     )
 
-                print(mesaj)
-                telegram_gonder(mesaj)
-
-                # Yalnızca gerçekten gönderilen AL'ları +%5 kâr bildirimi ve 3 saatlik rejim öğrenmesi için takip et.
+                # V53: AL adayı Telegrama HEMEN gönderilmez.
+                # Her adayın zengin mesajını ayrı kaydet; 5+ Profil + 45 sn Devam Teyidi
+                # geçip PAPER/LIVE pozisyon gerçekten açılırsa al_takip_guncelle() gönderecek.
                 piyasa_medyan3 = statistics.median(piyasa_degisim3leri) if piyasa_degisim3leri else 0.0
                 btc_giris_fiyati = ticker_fiyat_haritasi.get("BTCTRY", 0)
+
+                # Yukarıda 'mesaj' toplu üretildiği için aday bazında tekrar üretmeden güvenli ayırma:
+                # Tek aday varsa doğrudan kullan; birden fazla aday varsa her aday için aynı formatı ayrı kur.
+                if len(gonderilecekler) == 1:
+                    gonderilecekler[0]["_onay_telegram_mesaj"] = mesaj.strip()
+                else:
+                    # Çoklu AL aynı taramada oluşursa mesajların birbirine karışmaması için aday bazında yeniden kur.
+                    for _a in gonderilecekler:
+                        _t = _a.get("teknik") or {}
+                        if not _t:
+                            _a["_onay_telegram_mesaj"] = ""
+                            continue
+                        _ema_yon = "Yukarı" if _t.get("ema20") is not None and _t.get("ema50") is not None and _t.get("ema20") > _t.get("ema50") else "Aşağı"
+                        _macd_yon = "Pozitif" if _t.get("macd_hist") is not None and _t.get("macd_hist") > 0 else "Negatif"
+                        _nedenler = list(_a.get("nedenler", []))
+                        _hizlar = []
+                        if _a.get("hacim_hizlaniyor"): _hizlar.append("hacim hızlanıyor")
+                        if _a.get("momentum_hizlaniyor"): _hizlar.append("momentum hızlanıyor")
+                        if _a.get("btc_farki_aciliyor"): _hizlar.append("BTC farkı açılıyor")
+                        if _a.get("lider_gucleniyor"): _hizlar.append("lider güçleniyor")
+                        if _a.get("basamakli_trend"): _hizlar.append("basamaklı trend korunuyor")
+                        if _hizlar:
+                            _baslik = "Erken yakalama" if _a.get("orijinal_erken_aday") else "Hareket teyidi"
+                            _nedenler.insert(0, _baslik + ": " + ", ".join(_hizlar))
+                        _rel_bonus = int(_a.get("goreceli_guc_bonus", 0) or 0)
+                        if _rel_bonus:
+                            _nedenler.insert(0, f"60dk göreceli güç +{_rel_bonus} (BTC {_a.get('coin_btc_60', 0):+.2f} / piyasa {_a.get('coin_piyasa_60', 0):+.2f})")
+                        _neden_alarm = "🚨 🚨 " if (len(_a.get("nedenler", [])) + len(_hizlar)) >= 6 else ""
+                        _neden = " • ".join(_nedenler[:5])
+                        _mikro = _a.get("mikro") or {}
+                        _mikro_satir = ""
+                        if _mikro:
+                            _mikro_satir = (f"⏱ 1dk %{_mikro.get('d1', 0)} | 3dk %{_mikro.get('d3', 0)} | "
+                                            f"5dk %{_mikro.get('d5', 0)} | 10dk %{_mikro.get('d10', 0)}\n")
+                        _coin = _a['symbol'][:-3] if _a['symbol'].endswith("TRY") else _a['symbol']
+                        _risk = str(_a.get('risk', 'Bilinmiyor')).replace("🟢 ", "").replace("🟡 ", "").replace("🔴 ", "")
+                        _a["_onay_telegram_mesaj"] = (
+                            f"{_coin} | {_a.get('radar_kategori', '')} + 🟢 AL\n\n"
+                            f"AI {_a.get('ai_skoru', 0)} | Risk {_risk} | Erken {_a.get('erken_puan', 0)} | "
+                            f"Giriş {_a.get('giris_kalitesi', 0)} | Devam {_a.get('devam_gucu', 0)} | "
+                            f"Kalıcılık {_a.get('kalicilik_skoru', 0)} | 5+Profil {_a.get('bes_plus_profil', 0)}\n\n"
+                            f"Fiyat {round(_a['fiyat'], 4)} | Hacim {_a['hacim']}x | Radar {_a['radar_skoru']}/100 | BTC 3s %{round(btc, 2)}\n"
+                            f"{_mikro_satir}"
+                            f"EMA {_ema_yon} | RSI {_t.get('rsi')} | ADX {_t.get('adx')} | MACD {_macd_yon}\n\n"
+                            f"📌 Takip: AL onaylandı | +%5 kâr bölgesi | zirve/trailing kâr koruma\n"
+                            f"{_neden_alarm}Neden: {_neden}"
+                        ).strip()
+
                 for _a in gonderilecekler:
+                    print(f"[AL ADAY BEKLEME] {_a.get('symbol')} | Telegram sessiz | 5+Profil={_a.get('bes_plus_profil', 0)} | 45sn teyit bekleniyor")
                     al_takip_baslat(_a)
+                    # Öğrenme motoru adayları arka planda izlemeye devam eder; Telegram filtresinden bağımsızdır.
                     al_ogrenme_baslat(_a, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris_fiyati)
 
         # Ana tarama 60 sn; kâr bildirimi için açık AL'lar 15 sn'de bir kontrol edilir.
