@@ -1,5 +1,5 @@
 # ==========================================
-# MAIN 30 | ASSISTANT + DEVAM TEYIDI + DINAMIK CIKIS + RISK VETO + KAR KILIDI + PAPER/LIVE AL-SAT
+# MAIN 30 | ASSISTANT + 5+ PROFIL + DEVAM TEYIDI + DINAMIK CIKIS + RISK VETO + KAR KILIDI + PAPER/LIVE AL-SAT
 # Taban: main (21).py
 # 21 sadeligi + 13 AL/SAT/Kar Koru + 1-3-5-10 dk erken yakalama
 # Giris/Devam skorları sadece bilgi, AL için veto DEGIL
@@ -75,6 +75,16 @@ AL_ONAY_MAX_ANLIK_GERI = -0.60      # teyit penceresinde gorulen en kotu geri ce
 AL_ONAY_MAX_KAPANIS_GERI = -0.35   # 45 sn sonunda sinyal fiyatina gore
 AL_ONAY_MAX_SON_ADIM_GERI = -0.30  # son 15 sn adiminin kotulesme limiti
 AL_ONAY_NEGATIF_MIKRO = -0.40      # ilk AL aninda 3dk+5dk birlikte bundan kotuyse veto
+
+# 5+ PROFIL V1 — +%5 ve üstü/zirve üreten sinyallerde öne çıkan ortak yapı.
+# AI/ADX tek başına değil; geniş tabanlı ve devam eden güç aranır.
+BES_PLUS_MIN_PROFIL = 45.0
+BES_PLUS_MIN_DEVAM = 60.0
+BES_PLUS_ZAYIF_RADAR = 60.0
+BES_PLUS_ZAYIF_HACIM = 2.0
+BES_PLUS_NEG_D3D5 = -0.40
+BES_PLUS_NEG_D5 = -0.50
+BES_PLUS_NEG_D10 = -1.00
 
 # AL Rejim / Seçicilik Öğrenmesi
 # AL öğrenme verisini Railway Volume varsa kalıcı alanda tut.
@@ -816,6 +826,82 @@ def kalicilik_skoru_hesapla(aday):
     return skor, etiket, nedenler[:4]
 
 
+
+def bes_plus_profil_hesapla(aday):
+    """+%5 ve üstü tepe üreten sinyal profilini 0-100 puanlar."""
+    mikro = aday.get("mikro") or {}
+    teknik = aday.get("teknik") or {}
+    d1 = float(mikro.get("d1", 0) or 0)
+    d3 = float(mikro.get("d3", 0) or 0)
+    d5 = float(mikro.get("d5", 0) or 0)
+    d10 = float(mikro.get("d10", 0) or 0)
+    hacim = float(aday.get("hacim", 0) or 0)
+    radar = float(aday.get("radar_skoru", 0) or 0)
+    devam = float(aday.get("devam_gucu", 0) or 0)
+    kal = float(aday.get("kalicilik_skoru", 0) or 0)
+    rel = int(aday.get("goreceli_guc_bonus", 0) or 0)
+    adx = teknik.get("adx")
+
+    skor, nedenler, veto = 0.0, [], []
+
+    if rel >= 2:
+        skor += 20; nedenler.append("60dk göreceli güç +2")
+    elif rel == 1:
+        skor += 10; nedenler.append("60dk göreceli güç +1")
+
+    if d1 > 0 and d3 > 0 and d5 > 0 and d10 > 0:
+        skor += 18; nedenler.append("1/3/5/10dk birlikte pozitif")
+    elif d3 > 0 and d5 > 0 and d10 > 0:
+        skor += 12; nedenler.append("3/5/10dk birlikte pozitif")
+    elif d3 > 0 and d5 > 0:
+        skor += 6
+
+    if hacim >= 5 and radar >= 80:
+        skor += 18; nedenler.append("hacim+Radar çok güçlü")
+    elif hacim >= 3 and radar >= 70:
+        skor += 13; nedenler.append("hacim+Radar güçlü")
+    elif hacim >= 2 and radar >= 60:
+        skor += 7
+
+    if devam >= 85:
+        skor += 16; nedenler.append("Devam çok yüksek")
+    elif devam >= 75:
+        skor += 12; nedenler.append("Devam yüksek")
+    elif devam >= 65:
+        skor += 7
+
+    if kal >= 95:
+        skor += 10; nedenler.append("Kalıcılık çok yüksek")
+    elif kal >= 85:
+        skor += 7
+    elif kal >= 75:
+        skor += 4
+
+    if aday.get("momentum_hizlaniyor"):
+        skor += 6; nedenler.append("momentum hızlanıyor")
+    if aday.get("btc_farki_aciliyor"):
+        skor += 5; nedenler.append("BTC farkı açılıyor")
+    if aday.get("basamakli_trend"):
+        skor += 4; nedenler.append("basamaklı trend")
+    if aday.get("hacim_hizlaniyor"):
+        skor += 4; nedenler.append("hacim hızlanıyor")
+    if adx is not None and adx >= 30:
+        skor += 4
+
+    if devam < BES_PLUS_MIN_DEVAM:
+        veto.append(f"Devam düşük ({devam:.1f})")
+    if radar < BES_PLUS_ZAYIF_RADAR and hacim < BES_PLUS_ZAYIF_HACIM:
+        veto.append(f"zayıf katılım (Radar {radar:.1f}, hacim {hacim:.2f}x)")
+    if d3 <= BES_PLUS_NEG_D3D5 and d5 <= BES_PLUS_NEG_D3D5:
+        veto.append(f"3/5dk momentum dönmüş ({d3:+.2f}/{d5:+.2f})")
+    if d5 <= BES_PLUS_NEG_D5 and d10 <= BES_PLUS_NEG_D10:
+        veto.append(f"5/10dk trend aşağı ({d5:+.2f}/{d10:+.2f})")
+
+    skor = round(max(0.0, min(100.0, skor)), 1)
+    etiket = "🔥 5+ Güçlü Profil" if skor >= 75 else ("✅ 5+ Uyumlu" if skor >= BES_PLUS_MIN_PROFIL else "⚠️ 5+ Zayıf Profil")
+    return skor, etiket, nedenler[:6], veto
+
+
 def al_takip_baslat(aday):
     """
     Gercek AL mesaji gonderilen coini takibe alir.
@@ -854,6 +940,12 @@ def al_takip_baslat(aday):
         "macd_hist": teknik.get("macd_hist"),
         "max_devam": devam0,
         "risk": str(aday.get("risk", "Bilinmiyor") or "Bilinmiyor"),
+        "bes_plus_profil": float(aday.get("bes_plus_profil", 0) or 0),
+        "bes_plus_etiket": str(aday.get("bes_plus_etiket", "") or ""),
+        "bes_plus_veto": list(aday.get("bes_plus_veto", []) or []),
+        "radar_ilk": float(aday.get("radar_skoru", 0) or 0),
+        "hacim_ilk": float(aday.get("hacim", 0) or 0),
+        "rel_ilk": int(aday.get("goreceli_guc_bonus", 0) or 0),
         "portfoyde": False,
         # Devam teyidi hafizasi
         "onay_bekliyor": True,
@@ -903,6 +995,11 @@ def _devam_teyidi_degerlendir(symbol, p, fiyat):
     d5 = float(m0.get("d5", 0) or 0)
 
     nedenler = []
+    profil = float(p.get("bes_plus_profil", 0) or 0)
+    profil_veto = list(p.get("bes_plus_veto", []) or [])
+    if profil < BES_PLUS_MIN_PROFIL:
+        nedenler.append(f"5+ profil düşük ({profil:.0f} < {BES_PLUS_MIN_PROFIL:.0f})")
+    nedenler.extend(profil_veto)
     if devam0 < AL_ONAY_MIN_DEVAM:
         nedenler.append(f"Devam düşük ({devam0:.1f} < {AL_ONAY_MIN_DEVAM:.0f})")
     if min_geri <= AL_ONAY_MAX_ANLIK_GERI:
@@ -926,6 +1023,7 @@ def _devam_teyidi_degerlendir(symbol, p, fiyat):
         "devam0": round(devam0, 1),
         "d3": round(d3, 3),
         "d5": round(d5, 3),
+        "profil": round(float(p.get("bes_plus_profil", 0) or 0), 1),
     }
     return (len(nedenler) == 0), nedenler, metrik
 
@@ -1060,7 +1158,7 @@ def al_takip_guncelle(ticker):
                 p["onay_sonucu"] = "VETO"
                 p["aktif"] = False
                 print(
-                    f"[DEVAM VETO] {symbol} | " + "; ".join(onay_nedenler) +
+                    f"[DEVAM VETO] {symbol} | 5+Profil={onay_m.get('profil', 0)} | " + "; ".join(onay_nedenler) +
                     f" | sinyal->45sn %{onay_m['anlik']:+.2f} | min %{onay_m['min_geri']:+.2f} | "
                     f"son15 %{onay_m['son_adim']:+.2f}"
                 )
@@ -1074,7 +1172,7 @@ def al_takip_guncelle(ticker):
                 p["islem_tl"] = float(paper_poz.get("tl", LIVE_ISLEM_TUTARI_TL if LIVE_MODE else PAPER_ISLEM_TUTARI_TL) or (LIVE_ISLEM_TUTARI_TL if LIVE_MODE else PAPER_ISLEM_TUTARI_TL))
                 # Cikis motoru gercek islem girisini baz alsin; sinyal fiyati Telegram referansi olarak p['giris']te kalir.
                 print(
-                    f"[DEVAM ONAY] {symbol} | %{onay_m['anlik']:+.2f} / 45sn | "
+                    f"[DEVAM ONAY] {symbol} | 5+Profil={onay_m.get('profil', 0)} | %{onay_m['anlik']:+.2f} / 45sn | "
                     f"min %{onay_m['min_geri']:+.2f} | son15 %{onay_m['son_adim']:+.2f} -> PAPER/LIVE AL açıldı"
                 )
             else:
@@ -2814,6 +2912,12 @@ while True:
             a["kalicilik_skoru"] = kal_skor
             a["kalicilik_etiket"] = kal_etiket
             a["kalicilik_nedenler"] = kal_nedenler
+            bp_skor, bp_etiket, bp_neden, bp_veto = bes_plus_profil_hesapla(a)
+            a["bes_plus_profil"] = bp_skor
+            a["bes_plus_etiket"] = bp_etiket
+            a["bes_plus_neden"] = bp_neden
+            a["bes_plus_veto"] = bp_veto
+            print(f"[5+ PROFIL] {a.get('symbol')} | {bp_skor:.0f}/100 | {bp_etiket} | veto={'; '.join(bp_veto) if bp_veto else '-'}")
             # Coin daha önce AL aldıysa, canlı teknik durumunu dinamik çıkış motoruna taşı.
             al_takip_teknik_guncelle(a)
 
@@ -2994,7 +3098,7 @@ while True:
                         f"{gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 AL\n\n"
                         f"AI {a.get('ai_skoru', 0)} | Risk {risk} | Erken {a.get('erken_puan', 0)} | "
                         f"Giriş {a.get('giris_kalitesi', 0)} | Devam {a.get('devam_gucu', 0)} | "
-                        f"Kalıcılık {a.get('kalicilik_skoru', 0)}\n\n"
+                        f"Kalıcılık {a.get('kalicilik_skoru', 0)} | 5+Profil {a.get('bes_plus_profil', 0)}\n\n"
                         f"Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x | Radar {a['radar_skoru']}/100 | BTC 3s %{round(btc, 2)}\n"
                         f"{mikro_satir}"
                         f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n\n"
