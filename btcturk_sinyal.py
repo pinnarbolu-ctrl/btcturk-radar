@@ -1,5 +1,5 @@
 # ==========================================
-# MAIN 30 | ASSISTANT + 5+ PROFIL + DEVAM TEYIDI + GIRIS FIYATI KORUMASI + SADECE ONAYLI ISLEM MESAJI + DINAMIK CIKIS + PAPER/LIVE AL-SAT
+# MAIN 30 | ASSISTANT + SERT 5+ KALITE KAPISI + DEVAM TEYIDI + GIRIS FIYATI KORUMASI + SADECE ONAYLI ISLEM MESAJI + DINAMIK CIKIS + PAPER/LIVE AL-SAT
 # V54: 45sn teyit sonunda ilk sinyal fiyatinin %+0.70 ustu kovalanmaz; sinyal/teyit/gercek giris loglanir.
 # Taban: main (21).py
 # 21 sadeligi + 13 AL/SAT/Kar Koru + 1-3-5-10 dk erken yakalama
@@ -79,12 +79,22 @@ AL_ONAY_MAX_SON_ADIM_GERI = -0.30  # son 15 sn adiminin kotulesme limiti
 AL_ONAY_NEGATIF_MIKRO = -0.40      # ilk AL aninda 3dk+5dk birlikte bundan kotuyse veto
 AL_ONAY_MAX_KOVALAMA = 0.70        # 45 sn teyit sonunda ilk sinyalin %+0.70 ustu kovalanmaz
 
-# 5+ PROFIL V1 — +%5 ve üstü/zirve üreten sinyallerde öne çıkan ortak yapı.
-# AI/ADX tek başına değil; geniş tabanlı ve devam eden güç aranır.
-BES_PLUS_MIN_PROFIL = 45.0
+# V55 kalite kapısı özeti:
+# 1) 5+ Profil >= 75
+# 2) Radar >= 80
+# 3) Hacim >= 3.0x
+# 4) Devam >= 60 ve mikro momentum veto kuralları
+# 5) 45 sn devam teyidi
+# 6) Teyit sonunda %+0.70'ten fazla fiyat kovalamama
+
+# 5+ PROFIL V2 — +%5 ve üstü/zirve üreten sinyallerde öne çıkan ortak yapı.
+# V55: sermaye ancak "geniş tabanlı güç" varsa açılır.
+# Sert kalite kapıları: profil >=75, Radar >=80, Hacim >=3x.
+# Böylece yüksek Devam/Kalıcılık tek başına işlem açtıramaz.
+BES_PLUS_MIN_PROFIL = 75.0
 BES_PLUS_MIN_DEVAM = 60.0
-BES_PLUS_ZAYIF_RADAR = 60.0
-BES_PLUS_ZAYIF_HACIM = 2.0
+BES_PLUS_MIN_RADAR = 80.0
+BES_PLUS_MIN_HACIM = 3.0
 BES_PLUS_NEG_D3D5 = -0.40
 BES_PLUS_NEG_D5 = -0.50
 BES_PLUS_NEG_D10 = -1.00
@@ -847,10 +857,19 @@ def bes_plus_profil_hesapla(aday):
 
     skor, nedenler, veto = 0.0, [], []
 
+    # Göreceli güç tek başına güçlü profil sayılmaz. Katılım (Radar+Hacim)
+    # destekliyorsa tam puan, desteklemiyorsa yalnız küçük katkı verir.
+    katilim_guclu = radar >= BES_PLUS_MIN_RADAR and hacim >= BES_PLUS_MIN_HACIM
     if rel >= 2:
-        skor += 20; nedenler.append("60dk göreceli güç +2")
+        if katilim_guclu:
+            skor += 20; nedenler.append("60dk göreceli güç +2 + güçlü katılım")
+        else:
+            skor += 8; nedenler.append("60dk göreceli güç +2 (katılım zayıf)")
     elif rel == 1:
-        skor += 10; nedenler.append("60dk göreceli güç +1")
+        if katilim_guclu:
+            skor += 10; nedenler.append("60dk göreceli güç +1 + güçlü katılım")
+        else:
+            skor += 4; nedenler.append("60dk göreceli güç +1 (katılım zayıf)")
 
     if d1 > 0 and d3 > 0 and d5 > 0 and d10 > 0:
         skor += 18; nedenler.append("1/3/5/10dk birlikte pozitif")
@@ -893,15 +912,18 @@ def bes_plus_profil_hesapla(aday):
 
     if devam < BES_PLUS_MIN_DEVAM:
         veto.append(f"Devam düşük ({devam:.1f})")
-    if radar < BES_PLUS_ZAYIF_RADAR and hacim < BES_PLUS_ZAYIF_HACIM:
-        veto.append(f"zayıf katılım (Radar {radar:.1f}, hacim {hacim:.2f}x)")
+    # V55 sert kalite kapıları: üçünün de ayrı ayrı geçmesi gerekir.
+    if radar < BES_PLUS_MIN_RADAR:
+        veto.append(f"Radar yetersiz ({radar:.1f} < {BES_PLUS_MIN_RADAR:.0f})")
+    if hacim < BES_PLUS_MIN_HACIM:
+        veto.append(f"Hacim yetersiz ({hacim:.2f}x < {BES_PLUS_MIN_HACIM:.1f}x)")
     if d3 <= BES_PLUS_NEG_D3D5 and d5 <= BES_PLUS_NEG_D3D5:
         veto.append(f"3/5dk momentum dönmüş ({d3:+.2f}/{d5:+.2f})")
     if d5 <= BES_PLUS_NEG_D5 and d10 <= BES_PLUS_NEG_D10:
         veto.append(f"5/10dk trend aşağı ({d5:+.2f}/{d10:+.2f})")
 
     skor = round(max(0.0, min(100.0, skor)), 1)
-    etiket = "🔥 5+ Güçlü Profil" if skor >= 75 else ("✅ 5+ Uyumlu" if skor >= BES_PLUS_MIN_PROFIL else "⚠️ 5+ Zayıf Profil")
+    etiket = "🔥 5+ Güçlü Profil" if skor >= 85 else ("✅ 5+ Onay Profili" if skor >= BES_PLUS_MIN_PROFIL else "⚠️ 5+ Zayıf Profil")
     return skor, etiket, nedenler[:6], veto
 
 
@@ -909,8 +931,8 @@ def al_takip_baslat(aday):
     """
     Teknik olarak AL olan coini gizli onay takibine alir.
 
-    V54 MESAJ + GIRIS KORUMA AKISI:
-    Telegram AL mesaji hemen GONDERILMEZ. Once 5+ Profil + 45 sn Devam Teyidi tamamlanir.
+    V55 SERT 5+ KALITE + MESAJ + GIRIS KORUMA AKISI:
+    Telegram AL mesaji hemen GONDERILMEZ. Once sert 5+ Kalite Kapisi + 45 sn Devam Teyidi tamamlanir.
     Yalniz gercek PAPER/LIVE pozisyon acilirsa zengin AL mesaji Telegrama gonderilir.
     Veto edilen adaylar sadece Railway logunda kalir.
     """
