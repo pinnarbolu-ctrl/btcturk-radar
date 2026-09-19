@@ -2248,3 +2248,26 @@ while True:
 
                 # Yalnızca gerçekten gönderilen AL'ları +%5 kâr bildirimi ve 3 saatlik rejim öğrenmesi için takip et.
                 piyasa_medyan3 = statistics.median(piyasa_degisim3leri) if piyasa_degisim3leri else 0.0
+                btc_giris_fiyati = ticker_fiyat_haritasi.get("BTCTRY", 0)
+                for _a in gonderilecekler:
+                    al_takip_baslat(_a)
+                    al_ogrenme_baslat(_a, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris_fiyati)
+
+        # Ana tarama 60 sn; kâr bildirimi için açık AL'lar 15 sn'de bir kontrol edilir.
+        beklenen = 0
+        while beklenen < TARAMA_SURESI:
+            sure = min(POZISYON_TAKIP_SURESI, TARAMA_SURESI - beklenen)
+            time.sleep(sure)
+            beklenen += sure
+
+            if AL_TAKIP:
+                try:
+                    r = requests.get("https://api.btcturk.com/api/v2/ticker", timeout=10)
+                    r.raise_for_status()
+                    al_takip_guncelle(r.json().get("data", []))
+                except Exception as e:
+                    print("Kâr bildirim takip hatası:", e)
+
+    except Exception as e:
+        print("Bot genel hata:", e)
+        time.sleep(30)
