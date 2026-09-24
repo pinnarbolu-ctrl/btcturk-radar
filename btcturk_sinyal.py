@@ -109,6 +109,41 @@ AL_OGRENME_SURESI = 3 * 60 * 60
 REJIM_RAPOR_ARALIGI = 24 * 60 * 60
 SON_REJIM_RAPOR_ZAMANI = time.time()
 
+# 24 SAATLİK +%5 YAKALAMA BAŞARI RAPORU
+# Bu sayaç deploy edildiği andan başlar; eski kayıtları yeni test sonucuna karıştırmaz.
+YUZDE5_RAPOR_ARALIGI = 24 * 60 * 60
+YUZDE5_RAPOR_ETIKETI = "BTCTÜRK SİNYAL 49"
+_YUZDE5_META_DOSYA = os.path.join(_AL_DEFAULT_DIR, "yuzde5_basariraporu_sinyal49.json")
+
+
+def _yuzde5_meta_yukle():
+    try:
+        if os.path.exists(_YUZDE5_META_DOSYA):
+            with open(_YUZDE5_META_DOSYA, "r", encoding="utf-8") as f:
+                d = json.load(f)
+                return d if isinstance(d, dict) else {}
+    except Exception as e:
+        print("+%5 rapor meta okunamadı:", e)
+    return {}
+
+
+def _yuzde5_meta_kaydet(meta):
+    try:
+        klasor = os.path.dirname(os.path.abspath(_YUZDE5_META_DOSYA))
+        if klasor:
+            os.makedirs(klasor, exist_ok=True)
+        with open(_YUZDE5_META_DOSYA, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False)
+    except Exception as e:
+        print("+%5 rapor meta yazılamadı:", e)
+
+
+_YUZDE5_META = _yuzde5_meta_yukle()
+if not _YUZDE5_META.get("baslangic"):
+    _YUZDE5_META["baslangic"] = time.time()
+    _YUZDE5_META["son_rapor"] = _YUZDE5_META["baslangic"]
+    _yuzde5_meta_kaydet(_YUZDE5_META)
+
 
 # =========================
 # GERÇEK AL/SAT MODU
@@ -1552,6 +1587,61 @@ def al_ogrenme_guncelle(ticker):
         _al_ogrenme_kaydet()
 
 
+def yuzde5_basariraporu_gerekirse_gonder():
+    """Her 24 saatte, test başlangıcından sonraki sinyallerin +%5 yakalama oranını gönderir."""
+    global _YUZDE5_META
+
+    simdi = time.time()
+    son_rapor = float(
+        _YUZDE5_META.get("son_rapor", _YUZDE5_META.get("baslangic", simdi)) or simdi
+    )
+    if simdi - son_rapor < YUZDE5_RAPOR_ARALIGI:
+        return
+
+    pencere_bas = son_rapor
+    pencere_son = simdi
+
+    # Yalnız bu 24 saatlik test penceresinde açılan AL kayıtları.
+    tum = [
+        x for x in AL_OGRENME_KAYITLARI
+        if pencere_bas <= float(x.get("zaman", 0) or 0) < pencere_son
+    ]
+
+    tamam = [x for x in tum if x.get("tamamlandi")]
+    acik = [x for x in tum if not x.get("tamamlandi")]
+    basarili = [
+        x for x in tamam
+        if float(x.get("max_getiri", 0) or 0) >= 5.0
+    ]
+    basarisiz = [
+        x for x in tamam
+        if float(x.get("max_getiri", 0) or 0) < 5.0
+    ]
+
+    oran = (len(basarili) / len(tamam) * 100.0) if tamam else 0.0
+    ort_tepe = (
+        sum(float(x.get("max_getiri", 0) or 0) for x in tamam) / len(tamam)
+        if tamam else 0.0
+    )
+
+    mesaj = (
+        f"📊 24 SAATLİK +%5 YAKALAMA RAPORU — {YUZDE5_RAPOR_ETIKETI}\n\n"
+        f"Tamamlanan sinyal: {len(tamam)}\n"
+        f"+%5 yapan: {len(basarili)}\n"
+        f"+%5 yapamayan: {len(basarisiz)}\n"
+        f"🎯 +%5 başarı: %{oran:.1f}\n"
+        f"Ortalama tepe getiri: %{ort_tepe:+.2f}\n"
+        f"Henüz tamamlanmayan: {len(acik)}\n\n"
+        f"Not: Başarı = AL fiyatından sonra izleme süresi içinde en az +%5 tepe görmek."
+    )
+
+    print(mesaj)
+    telegram_gonder(mesaj)
+
+    _YUZDE5_META["son_rapor"] = simdi
+    _yuzde5_meta_kaydet(_YUZDE5_META)
+
+
 def _grup_satiri(baslik, kayitlar):
     if not kayitlar:
         return f"{baslik}: veri yok"
@@ -2405,6 +2495,7 @@ while True:
         # Mevcut ticker cevabını öğrenme katmanında da kullan; ekstra API isteği yok.
         al_ogrenme_guncelle(ticker)
         rejim_raporu_gerekirse_gonder()
+        yuzde5_basariraporu_gerekirse_gonder()
 
         ticker_fiyat_haritasi = {}
         for _coin in ticker:
