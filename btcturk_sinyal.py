@@ -109,9 +109,9 @@ AL_OGRENME_SURESI = 3 * 60 * 60
 REJIM_RAPOR_ARALIGI = 24 * 60 * 60
 SON_REJIM_RAPOR_ZAMANI = time.time()
 
-# 24 SAATLİK +%5 YAKALAMA BAŞARI RAPORU
+# 7 GÜNLÜK +%5 YAKALAMA BAŞARI RAPORU
 # Bu sayaç deploy edildiği andan başlar; eski kayıtları yeni test sonucuna karıştırmaz.
-YUZDE5_RAPOR_ARALIGI = 24 * 60 * 60
+YUZDE5_RAPOR_ARALIGI = 7 * 24 * 60 * 60
 YUZDE5_RAPOR_ETIKETI = "BTCTÜRK SİNYAL 49"
 _YUZDE5_META_DOSYA = os.path.join(_AL_DEFAULT_DIR, "yuzde5_basariraporu_sinyal49.json")
 
@@ -1588,7 +1588,7 @@ def al_ogrenme_guncelle(ticker):
 
 
 def yuzde5_basariraporu_gerekirse_gonder():
-    """Her 24 saatte, test başlangıcından sonraki sinyallerin +%5 yakalama oranını gönderir."""
+    """Her 7 günde, rapor penceresindeki sinyallerin +%5 yakalama oranını gönderir."""
     global _YUZDE5_META
 
     simdi = time.time()
@@ -1601,7 +1601,7 @@ def yuzde5_basariraporu_gerekirse_gonder():
     pencere_bas = son_rapor
     pencere_son = simdi
 
-    # Yalnız bu 24 saatlik test penceresinde açılan AL kayıtları.
+    # Yalnız bu 7 günlük rapor penceresinde açılan AL kayıtları.
     tum = [
         x for x in AL_OGRENME_KAYITLARI
         if pencere_bas <= float(x.get("zaman", 0) or 0) < pencere_son
@@ -1625,7 +1625,7 @@ def yuzde5_basariraporu_gerekirse_gonder():
     )
 
     mesaj = (
-        f"📊 24 SAATLİK +%5 YAKALAMA RAPORU — {YUZDE5_RAPOR_ETIKETI}\n\n"
+        f"📊 7 GÜNLÜK +%5 YAKALAMA RAPORU — {YUZDE5_RAPOR_ETIKETI}\n\n"
         f"Tamamlanan sinyal: {len(tamam)}\n"
         f"+%5 yapan: {len(basarili)}\n"
         f"+%5 yapamayan: {len(basarisiz)}\n"
