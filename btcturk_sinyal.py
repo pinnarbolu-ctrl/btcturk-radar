@@ -8,13 +8,13 @@
 # Giris/Devam skorları sadece bilgi, AL için veto DEGIL
 # Fast Scan V1: 60 sn hızlı ön tarama + 5 dk tam tarama
 # AL Relax V1: normal AL için ADX 27 / AI 80
-# Kod Önerisi V51: +%5 haftalık öğrenmeden 3dk/5dk momentum koruması
+# Kod Önerisi V52: 3dk/5dk momentum + S49'a özel Kod Öneri Kalitesi katmanı
 # 3 Günlük Keşif Motoru: ilk rapor 06.10.2026 08:00 TR; sonra her 3 günde bir 08:00.
 # AL olan/olmayan güçlü teknik adayları 3 saat izler;
 # +%5 yapan, %1-5 gidip sönen ve zayıf kalan grupları karşılaştırır.
 # Tekli eşik + ikili kombinasyon + rejim + en çok güçlenen coin profili üzerinden
 # KOD ÖNERİSİ üretir; kodu otomatik değiştirmez.
-# Not: V11 Genel Güç bileşenleri S49 ile aynı ölçek olmadığı için körlemesine taşınmadı.
+# Not: V11 Genel Güç eşiği körlemesine taşınmadı; S49 kendi ölçeğinde normalize edilerek kalite katmanına alındı.
 # Final Cleanup / Core Candidate Scanner
 # Candidate thresholds synced with latest working Coin Radar
 # ==========================================
@@ -105,6 +105,13 @@ AL_ONAY_MAX_ANLIK_GERI = -0.60      # teyit penceresinde gorulen en kotu geri ce
 AL_ONAY_MAX_KAPANIS_GERI = -0.35   # 45 sn sonunda sinyal fiyatina gore
 AL_ONAY_MAX_SON_ADIM_GERI = -0.30  # son 15 sn adiminin kotulesme limiti
 AL_ONAY_NEGATIF_MIKRO = -0.40      # ilk AL aninda 3dk+5dk birlikte bundan kotuyse veto
+
+# V52 KOD ÖNERİ KALİTESİ
+# Amaç: mevcut S49 AL'larını yeni AL üretmeden daha seçici hale getirmek.
+# 3dk/5dk momentum + S49 Genel Güç + Momentum Bloğu + güçlü rejimde Kalıcılık birlikte puanlanır.
+KOD_ONERI_KALITE_MIN = 62.0
+KOD_ONERI_D3_ESIK = 0.31
+KOD_ONERI_D5_ESIK = 0.50
 
 # AL Rejim / Seçicilik Öğrenmesi
 # AL öğrenme verisini Railway Volume varsa kalıcı alanda tut.
@@ -2274,49 +2281,161 @@ def guc_skoru_hesapla(
 
 
 
-def kod_onerisi_momentum_korumasi(aday):
+def kod_onerisi_kalite_katmani(aday, piyasa_medyan3=0.0):
     """
-    Haftalık kod önerisindeki en taşınabilir iki bulguyu S49'a uygular:
-      - 3dk mikro momentum >= +0.31%
-      - 5dk mikro momentum >= +0.50%
+    V52 - Haftalık kod önerilerini S49 ölçeğine güvenli biçimde uyarlar.
 
-    Mevcut S49 AL üretimini genişletmez. Yalnız mevcut AL kararlarında iki eşik de
-    sağlanmıyorsa zayıf kısa-vade momentumu nedeniyle AL'ı BEKLE'ye çevirir.
-    Böylece başka bottaki 'Genel Güç' ölçeğini S49'a yanlış eşleştirmeden,
-    doğrudan aynı anlamı taşıyan mikro momentum bulguları kullanılır.
+    Kullanılanlar:
+      1) 3dk momentum >= +0.31
+      2) 5dk momentum >= +0.50
+      3) S49'ın kendi Genel Güç değeri (V11 eşiği birebir kopyalanmaz; normalize edilir)
+      4) S49'a özel Momentum Bloğu
+      5) Yalnız GÜÇLÜ piyasa rejiminde Kalıcılık desteği
+
+    Yeni AL üretmez. Mevcut S49 kararı AL ise kalite düşük olduğunda BEKLE'ye çevirir.
+    Böylece mesaj sayısını azaltmayı ve +%5 aday yoğunluğunu artırmayı amaçlar.
     """
     mikro = aday.get("mikro") or {}
     d3 = float(mikro.get("d3", 0) or 0)
     d5 = float(mikro.get("d5", 0) or 0)
+    mikro_skor = float(mikro.get("skor", 0) or 0)
+    genel_raw = float(aday.get("genel_skor", 0) or 0)
+    kal = float(aday.get("kalicilik_skoru", 0) or 0)
 
-    d3_ok = d3 >= 0.31
-    d5_ok = d5 >= 0.50
-    puan = (2 if d3_ok else 0) + (2 if d5_ok else 0) + (1 if d3_ok and d5_ok else 0)
+    d3_ok = d3 >= KOD_ONERI_D3_ESIK
+    d5_ok = d5 >= KOD_ONERI_D5_ESIK
+
+    # 3dk bileşeni: rapordaki 0.31 eşiği ana kırılma noktası.
+    if d3 >= 0.80:
+        d3_puan = 25.0
+    elif d3 >= 0.50:
+        d3_puan = 22.0
+    elif d3_ok:
+        d3_puan = 18.0
+    elif d3 >= 0.15:
+        d3_puan = 8.0
+    else:
+        d3_puan = 0.0
+
+    # 5dk bileşeni: rapordaki 0.50 eşiği ana kırılma noktası.
+    if d5 >= 1.20:
+        d5_puan = 20.0
+    elif d5 >= 0.80:
+        d5_puan = 17.0
+    elif d5_ok:
+        d5_puan = 14.0
+    elif d5 >= 0.25:
+        d5_puan = 6.0
+    else:
+        d5_puan = 0.0
+
+    # S49 Genel Güç V11 ile aynı ölçek değil.
+    # Bu yüzden raw değeri 0-100'e S49 içinde normalize edip sadece 20 puanlık bileşen yapıyoruz.
+    genel_norm = max(0.0, min(100.0, genel_raw * 4.0))
+    genel_puan = genel_norm * 0.20
+
+    # Momentum Bloğu: tek eşiğe bakmak yerine kısa momentumun şiddeti + hızlanma + mikro yapı.
+    momentum_blok = 0.0
+    momentum_blok += min(40.0, max(0.0, d3) / 0.80 * 40.0)
+    momentum_blok += min(30.0, max(0.0, d5) / 1.20 * 30.0)
+    if aday.get("momentum_hizlaniyor"):
+        momentum_blok += 15.0
+    if aday.get("hacim_hizlaniyor"):
+        momentum_blok += 8.0
+    if mikro_skor >= 65:
+        momentum_blok += 7.0
+    momentum_blok = max(0.0, min(100.0, momentum_blok))
+    momentum_blok_puan = momentum_blok * 0.20
+
+    # Kalıcılık önerisi güçlü piyasa için gelmişti; yatay/zayıf piyasada sert ceza yok.
+    rejim = _rejim_etiketi(piyasa_medyan3)
+    if rejim == "Güçlü":
+        if 88 <= kal <= 96:
+            kal_puan = 15.0
+            kal_uygun = True
+        elif kal >= 80:
+            kal_puan = 11.0
+            kal_uygun = True
+        elif kal >= 70:
+            kal_puan = 7.0
+            kal_uygun = False
+        else:
+            kal_puan = 3.0
+            kal_uygun = False
+    else:
+        # Rapordaki güçlü-rejim bulgusunu başka rejimlere zorla taşımıyoruz.
+        kal_puan = 7.5
+        kal_uygun = kal >= 80
+
+    kalite = round(max(0.0, min(
+        100.0,
+        d3_puan + d5_puan + genel_puan + momentum_blok_puan + kal_puan
+    )), 1)
+
+    if kalite >= 80:
+        kalite_etiket = "🔥 ÇOK GÜÇLÜ"
+    elif kalite >= 70:
+        kalite_etiket = "🟢 GÜÇLÜ"
+    elif kalite >= KOD_ONERI_KALITE_MIN:
+        kalite_etiket = "✅ UYGUN"
+    else:
+        kalite_etiket = "🟡 ZAYIF"
 
     aday["kod_oneri_d3_ok"] = d3_ok
     aday["kod_oneri_d5_ok"] = d5_ok
-    aday["kod_oneri_momentum_puani"] = puan
+    aday["kod_oneri_genel_norm"] = round(genel_norm, 1)
+    aday["kod_oneri_momentum_blok"] = round(momentum_blok, 1)
+    aday["kod_oneri_rejim"] = rejim
+    aday["kod_oneri_kalicilik_uygun"] = kal_uygun
+    aday["kod_oneri_kalite"] = kalite
+    aday["kod_oneri_kalite_etiket"] = kalite_etiket
 
-    if aday.get("karar") == "🟢 AL" and not (d3_ok or d5_ok):
-        aday["karar"] = "🟡 BEKLE"
-        nedenler = list(aday.get("nedenler", []))
-        nedenler.append(f"Kod önerisi: kısa momentum zayıf (3dk %{d3:+.2f}, 5dk %{d5:+.2f})")
-        aday["nedenler"] = nedenler
-        aday["kod_oneri_veto"] = True
-        return False
-
-    aday["kod_oneri_veto"] = False
     if aday.get("karar") == "🟢 AL":
         nedenler = list(aday.get("nedenler", []))
+
+        # Eski V51 güvenlik: iki ana momentum eşiğinden en az biri yoksa AL gönderme.
+        if not (d3_ok or d5_ok):
+            aday["karar"] = "🟡 BEKLE"
+            nedenler.append(
+                f"Kod önerisi: kısa momentum zayıf "
+                f"(3dk %{d3:+.2f}, 5dk %{d5:+.2f})"
+            )
+            aday["nedenler"] = nedenler
+            aday["kod_oneri_veto"] = True
+            aday["kod_oneri_veto_nedeni"] = "momentum"
+            return False
+
+        # V52 kalite süzgeci: düşük birleşik kaliteyi Telegram AL'dan çıkar.
+        if kalite < KOD_ONERI_KALITE_MIN:
+            aday["karar"] = "🟡 BEKLE"
+            nedenler.append(
+                f"Kod öneri kalitesi düşük ({kalite:.1f} < {KOD_ONERI_KALITE_MIN:.0f})"
+            )
+            aday["nedenler"] = nedenler
+            aday["kod_oneri_veto"] = True
+            aday["kod_oneri_veto_nedeni"] = "kalite"
+            return False
+
         teyitler = []
         if d3_ok:
-            teyitler.append("3dk>=0.31")
+            teyitler.append("3dk")
         if d5_ok:
-            teyitler.append("5dk>=0.50")
+            teyitler.append("5dk")
+        if momentum_blok >= 55.87:
+            teyitler.append("Momentum bloğu")
+        if genel_norm >= 65.5:
+            teyitler.append("Genel Güç")
+        if rejim == "Güçlü" and kal_uygun:
+            teyitler.append("Güçlü rejim/Kalıcılık")
+
         if teyitler:
-            nedenler.append("Kod önerisi momentum teyidi: " + " + ".join(teyitler))
-            aday["nedenler"] = nedenler
+            nedenler.append("Kod öneri kalite teyidi: " + " + ".join(teyitler))
+        aday["nedenler"] = nedenler
+
+    aday["kod_oneri_veto"] = False
+    aday["kod_oneri_veto_nedeni"] = ""
     return True
+
 
 def stable_coin_mi(symbol):
     coin = symbol.replace("TRY", "")
@@ -3433,6 +3552,10 @@ while True:
             if a.get("assistant_ana_aday") and not a.get("mikro_on_alarm_reddedildi")
         ]
 
+        # O anki piyasa rejimini tüm taranan coinlerin 3 saatlik medyanından çıkar.
+        # V52 kalite katmanı güçlü rejimde Kalıcılık önerisini yalnız burada kullanır.
+        piyasa_medyan3_anlik = statistics.median(piyasa_degisim3leri) if piyasa_degisim3leri else 0.0
+
         # H mantığı: Radar Top10 + Çoklu Güç + teyitli Mikro Erken üzerinde teknik analiz + karar motoru.
         for a in top10:
             teknik = teknik_analiz_hesapla(a["symbol"])
@@ -3448,9 +3571,9 @@ while True:
             a["kalicilik_etiket"] = kal_etiket
             a["kalicilik_nedenler"] = kal_nedenler
 
-            # Haftalık kod önerisi V50: 3dk/5dk kısa-vade momentum koruması.
-            # Yeni AL üretmez; mevcut AL'ın kısa momentum gerçekten başlamış mı diye kontrol eder.
-            kod_onerisi_momentum_korumasi(a)
+            # V52: haftalık kod önerilerini S49 ölçeğinde birleşik kalite katmanına uygula.
+            # Yeni AL üretmez; mevcut AL'ı daha seçici hale getirir.
+            kod_onerisi_kalite_katmani(a, piyasa_medyan3_anlik)
 
             # Coin daha önce AL aldıysa, canlı teknik durumunu dinamik çıkış motoruna taşı.
             al_takip_teknik_guncelle(a)
@@ -3514,7 +3637,8 @@ while True:
                     f"MACD {macd_txt} {durum(macd_ok)} | "
                     f"ADX {adx_txt} {durum(adx_ok)} | "
                     f"AI {ai_skor}/100 {durum(skor_ok)} | "
-                    f"Radar {a.get('radar_skoru', 0)}"
+                    f"Radar {a.get('radar_skoru', 0)} | "
+                    f"KodKalite {a.get('kod_oneri_kalite', 0)}/100"
                 )
             else:
                 print(
@@ -3549,7 +3673,7 @@ while True:
         # gölge olarak 3 saat izler. Böylece bot sadece kendi AL'larından değil,
         # sonradan en çok güçlenen kaçırılmış coinlerden de kod önerisi çıkarabilir.
         for _kesif_aday in top10:
-            kesif_gozlem_baslat(_kesif_aday, btc_d, piyasa_medyan3)
+            kesif_gozlem_baslat(_kesif_aday, btc_d, piyasa_medyan3_anlik)
 
         # AL kalite koruması: Assistant AL bekletilmez.
         # Yalnızca çok düşük hacim + kısa vade aynı anda sönüyorsa bariz zayıflık veto edilir.
@@ -3578,7 +3702,8 @@ while True:
         # İlk aday sıralamasını Radar yapar; H motorundan sonra en güçlü teknik fırsat üste çıkar.
         top10.sort(
             key=lambda x: (
-                x.get("kod_oneri_momentum_puani", 0),
+                x.get("kod_oneri_kalite", 0),
+                x.get("kod_oneri_momentum_blok", 0),
                 x.get("ai_skoru", 0),
                 x.get("radar_skoru", 0),
             ),
@@ -3667,13 +3792,16 @@ while True:
 
                     mesaj += (
                         f"{gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 AL\n\n"
+                        f"🧠 Kod Öneri Kalitesi: {a.get('kod_oneri_kalite', 0)}/100 | {a.get('kod_oneri_kalite_etiket', '')}\n"
+                        f"⚡ 3dk {'✅' if a.get('kod_oneri_d3_ok') else '❌'} | 5dk {'✅' if a.get('kod_oneri_d5_ok') else '❌'} | "
+                        f"Momentum Bloğu {a.get('kod_oneri_momentum_blok', 0)}/100\n"
+                        f"💪 Genel Güç {a.get('kod_oneri_genel_norm', 0)}/100 | "
+                        f"🌍 {a.get('kod_oneri_rejim', 'Yatay')} / Kalıcılık {a.get('kalicilik_skoru', 0)}\n\n"
                         f"AI {a.get('ai_skoru', 0)} | Risk {risk} | Erken {a.get('erken_puan', 0)} | "
                         f"Giriş {a.get('giris_kalitesi', 0)} | Devam {a.get('devam_gucu', 0)} | "
-                        f"Kalıcılık {a.get('kalicilik_skoru', 0)} | "
                         f"5+Profil {bes_plus_profil_yumusak(a)[0]}\n\n"
                         f"Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x | Radar {a['radar_skoru']}/100 | BTC 3s %{round(btc, 2)}\n"
                         f"{mikro_satir}"
-                        f"KodÖneri: 3dk {'✅' if a.get('kod_oneri_d3_ok') else '❌'} | 5dk {'✅' if a.get('kod_oneri_d5_ok') else '❌'}\n"
                         f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n\n"
                         f"📌 Takip: +%5 karar noktası | güçlü=KÂRI KORU / zayıf=%5 KÂR SAT\n"
                         f"{neden_alarm}Neden: {neden}\n\n"
@@ -3685,7 +3813,7 @@ while True:
                     al_karar_izi(_g.get("symbol", "?"), "telegram", "GÖNDERİLDİ")
 
                 # Yalnızca gerçekten gönderilen AL'ları +%5 kâr bildirimi ve 3 saatlik rejim öğrenmesi için takip et.
-                piyasa_medyan3 = statistics.median(piyasa_degisim3leri) if piyasa_degisim3leri else 0.0
+                piyasa_medyan3 = piyasa_medyan3_anlik
                 btc_giris_fiyati = ticker_fiyat_haritasi.get("BTCTRY", 0)
                 for _a in gonderilecekler:
                     al_takip_baslat(_a)
