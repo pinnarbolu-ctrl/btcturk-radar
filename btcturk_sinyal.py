@@ -8,6 +8,13 @@
 # Giris/Devam skorları sadece bilgi, AL için veto DEGIL
 # Fast Scan V1: 60 sn hızlı ön tarama + 5 dk tam tarama
 # AL Relax V1: normal AL için ADX 27 / AI 80
+# Kod Önerisi V51: +%5 haftalık öğrenmeden 3dk/5dk momentum koruması
+# 3 Günlük Keşif Motoru: ilk rapor 06.10.2026 08:00 TR; sonra her 3 günde bir 08:00.
+# AL olan/olmayan güçlü teknik adayları 3 saat izler;
+# +%5 yapan, %1-5 gidip sönen ve zayıf kalan grupları karşılaştırır.
+# Tekli eşik + ikili kombinasyon + rejim + en çok güçlenen coin profili üzerinden
+# KOD ÖNERİSİ üretir; kodu otomatik değiştirmez.
+# Not: V11 Genel Güç bileşenleri S49 ile aynı ölçek olmadığı için körlemesine taşınmadı.
 # Final Cleanup / Core Candidate Scanner
 # Candidate thresholds synced with latest working Coin Radar
 # ==========================================
@@ -109,11 +116,36 @@ AL_OGRENME_SURESI = 3 * 60 * 60
 REJIM_RAPOR_ARALIGI = 24 * 60 * 60
 SON_REJIM_RAPOR_ZAMANI = time.time()
 
-# 7 GÜNLÜK +%5 YAKALAMA BAŞARI RAPORU
-# Bu sayaç deploy edildiği andan başlar; eski kayıtları yeni test sonucuna karıştırmaz.
-YUZDE5_RAPOR_ARALIGI = 7 * 24 * 60 * 60
+# 3 GÜNLÜK +%5 YAKALAMA BAŞARI RAPORU
+# İlk ortak rapor: 06.10.2026 08:00 (Türkiye saati, UTC+3).
+# Sonraki raporlar her 3 günde bir yine 08:00'de planlanır.
+YUZDE5_RAPOR_ARALIGI = 3 * 24 * 60 * 60
+S49_ILK_3GUN_RAPOR_TS = 1791262800.0  # 2026-10-06 05:00 UTC = 08:00 TR
 YUZDE5_RAPOR_ETIKETI = "BTCTÜRK SİNYAL 49"
 _YUZDE5_META_DOSYA = os.path.join(_AL_DEFAULT_DIR, "yuzde5_basariraporu_sinyal49.json")
+
+# 3 GÜNLÜK KEŞİF / KOD GELİŞTİRME MOTORU
+KESIF_RAPOR_ARALIGI = 3 * 24 * 60 * 60
+KESIF_IZLEME_SURESI = 3 * 60 * 60
+KESIF_ORNEKLEME_ARALIGI = 30 * 60   # aynı coin için en fazla 30 dk'da bir yeni gözlem
+KESIF_DOSYA = os.path.join(_AL_DEFAULT_DIR, "s49_guc_kesif_3gun.json")
+KESIF_META_DOSYA = os.path.join(_AL_DEFAULT_DIR, "s49_guc_kesif_meta.json")
+KESIF_MAX_KAYIT = 4000
+
+
+def _s49_planli_rapor_zamani(simdi, meta):
+    """08:00 Türkiye saatine sabitlenmiş 3 günlük rapor çevrimini yönetir.
+
+    Dönüş: (gonderilsin_mi, planli_ts). İlk rapor 06.10.2026 08:00 TR,
+    sonra her 72 saatte bir aynı saatte. Aynı çevrim ikinci kez gönderilmez.
+    """
+    if simdi < S49_ILK_3GUN_RAPOR_TS:
+        return False, S49_ILK_3GUN_RAPOR_TS
+    idx = int((simdi - S49_ILK_3GUN_RAPOR_TS) // YUZDE5_RAPOR_ARALIGI)
+    planli = S49_ILK_3GUN_RAPOR_TS + idx * YUZDE5_RAPOR_ARALIGI
+    son_planli = float(meta.get("son_planli_rapor_ts", 0) or 0)
+    return son_planli < planli, planli
+
 
 
 def _yuzde5_meta_yukle():
@@ -1462,6 +1494,311 @@ def _rejim_etiketi(x, guclu=1.0, zayif=-1.0):
     return "Yatay"
 
 
+
+def _kesif_json_yukle(path, varsayilan):
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                d = json.load(f)
+                return d
+    except Exception as e:
+        print("3 günlük keşif dosyası okunamadı:", e)
+    return varsayilan
+
+
+def _kesif_kaydet():
+    try:
+        klasor = os.path.dirname(os.path.abspath(KESIF_DOSYA))
+        if klasor:
+            os.makedirs(klasor, exist_ok=True)
+        # 7 günden eski tamamlanmış keşif kayıtlarını buda; disk büyümesini sınırla.
+        simdi = time.time()
+        esik = simdi - 7 * 24 * 60 * 60
+        temiz = [x for x in KESIF_KAYITLARI if (not x.get("tamamlandi")) or float(x.get("zaman", 0) or 0) >= esik]
+        if len(temiz) > KESIF_MAX_KAYIT:
+            temiz = temiz[-KESIF_MAX_KAYIT:]
+        KESIF_KAYITLARI[:] = temiz
+        with open(KESIF_DOSYA, "w", encoding="utf-8") as f:
+            json.dump(KESIF_KAYITLARI, f, ensure_ascii=False)
+    except Exception as e:
+        print("3 günlük keşif dosyası yazılamadı:", e)
+
+
+def _kesif_meta_kaydet():
+    try:
+        klasor = os.path.dirname(os.path.abspath(KESIF_META_DOSYA))
+        if klasor:
+            os.makedirs(klasor, exist_ok=True)
+        with open(KESIF_META_DOSYA, "w", encoding="utf-8") as f:
+            json.dump(KESIF_META, f, ensure_ascii=False)
+    except Exception as e:
+        print("3 günlük keşif meta yazılamadı:", e)
+
+
+def kesif_gozlem_baslat(aday, btc_d, piyasa_medyan3):
+    """AL şartı aramadan en güçlü teknik havuzdaki adayı gölge olarak izler."""
+    symbol = aday.get("symbol")
+    giris = float(aday.get("fiyat", 0) or 0)
+    if not symbol or giris <= 0:
+        return
+    simdi = time.time()
+    # Aynı coin için çok sık kayıt açıp aynı hareketi yüzlerce kez sayma.
+    for k in reversed(KESIF_KAYITLARI[-300:]):
+        if k.get("symbol") == symbol and simdi - float(k.get("zaman", 0) or 0) < KESIF_ORNEKLEME_ARALIGI:
+            return
+
+    m = aday.get("mikro") or {}
+    rec = {
+        "symbol": symbol, "zaman": simdi, "giris": giris,
+        "max_getiri": 0.0, "min_getiri": 0.0, "son_getiri": None, "tamamlandi": False,
+        "karar": aday.get("karar", ""), "kategori": aday.get("radar_kategori", ""),
+        "piyasa_rejim": _rejim_etiketi(piyasa_medyan3),
+        "btc_rejim": _rejim_etiketi(float(btc_d.get("3s", 0) or 0)),
+        "radar": float(aday.get("radar_skoru", 0) or 0),
+        "genel": float(aday.get("genel_skor", 0) or 0),
+        "kalite": float(aday.get("kalite_skoru", 0) or 0),
+        "ai": float(aday.get("ai_skoru", 0) or 0),
+        "devam": float(aday.get("devam_gucu", 0) or 0),
+        "kalicilik": float(aday.get("kalicilik_skoru", 0) or 0),
+        "hacim": float(aday.get("hacim", 0) or 0),
+        "degisim1": float(aday.get("degisim1", 0) or 0),
+        "degisim3": float(aday.get("degisim3", 0) or 0),
+        "btc_fark3": float(aday.get("btc_fark3", 0) or 0),
+        "btc_guc": float(aday.get("btc_guc_skoru", 0) or 0),
+        "lider": float(aday.get("lider_skoru", 0) or 0),
+        "rel": int(aday.get("goreceli_guc_bonus", 0) or 0),
+        "d1": float(m.get("d1", 0) or 0), "d3": float(m.get("d3", 0) or 0),
+        "d5": float(m.get("d5", 0) or 0), "d10": float(m.get("d10", 0) or 0),
+        "mikro_skor": float(m.get("skor", 0) or 0),
+        "hacim_hiz": bool(aday.get("hacim_hizlaniyor")),
+        "momentum_hiz": bool(aday.get("momentum_hizlaniyor")),
+        "btc_fark_ac": bool(aday.get("btc_farki_aciliyor")),
+        "lider_guc": bool(aday.get("lider_gucleniyor")),
+        "basamak": bool(aday.get("basamakli_trend")),
+    }
+    KESIF_KAYITLARI.append(rec)
+    _kesif_kaydet()
+
+
+def kesif_gozlem_guncelle(ticker):
+    if not KESIF_KAYITLARI:
+        return
+    simdi = time.time()
+    fiyatlar = {}
+    for c in ticker:
+        try:
+            sy = c.get("pair", "")
+            f = float(c.get("last", 0) or 0)
+            if sy and f > 0:
+                fiyatlar[sy] = f
+        except Exception:
+            pass
+    degisti = False
+    for k in KESIF_KAYITLARI:
+        if k.get("tamamlandi"):
+            continue
+        f = fiyatlar.get(k.get("symbol"))
+        g = float(k.get("giris", 0) or 0)
+        if f and g > 0:
+            r = _pct(f, g)
+            k["max_getiri"] = round(max(float(k.get("max_getiri", 0) or 0), r), 3)
+            k["min_getiri"] = round(min(float(k.get("min_getiri", 0) or 0), r), 3)
+            degisti = True
+        if simdi - float(k.get("zaman", simdi)) >= KESIF_IZLEME_SURESI:
+            if f and g > 0:
+                k["son_getiri"] = round(_pct(f, g), 3)
+            k["tamamlandi"] = True
+            k["tamamlanma_zamani"] = simdi
+            degisti = True
+    if degisti:
+        _kesif_kaydet()
+
+
+def _oran5(grup):
+    if not grup:
+        return 0.0
+    return sum(1 for x in grup if float(x.get("max_getiri", 0) or 0) >= 5.0) / len(grup) * 100.0
+
+
+def _ortalama(grup, alan):
+    vals = []
+    for x in grup:
+        try:
+            vals.append(float(x.get(alan, 0) or 0))
+        except Exception:
+            pass
+    return sum(vals) / len(vals) if vals else 0.0
+
+
+def _medyan(grup, alan):
+    vals = []
+    for x in grup:
+        try:
+            vals.append(float(x.get(alan, 0) or 0))
+        except Exception:
+            pass
+    return statistics.median(vals) if vals else 0.0
+
+
+def _tekli_kesifler(grup):
+    """Verinin kendi medyanında bölerek yüksek/alt grubun +%5 farkını bulur."""
+    alanlar = [
+        ("3dk momentum", "d3"), ("5dk momentum", "d5"), ("10dk momentum", "d10"),
+        ("Devam Gücü", "devam"), ("Kalıcılık", "kalicilik"), ("Genel Güç", "genel"),
+        ("Radar", "radar"), ("AI", "ai"), ("Hacim", "hacim"), ("Lider skoru", "lider"),
+        ("BTC farkı 3s", "btc_fark3"), ("Mikro skor", "mikro_skor"),
+    ]
+    out = []
+    for ad, key in alanlar:
+        esik = _medyan(grup, key)
+        hi = [x for x in grup if float(x.get(key, 0) or 0) >= esik]
+        lo = [x for x in grup if float(x.get(key, 0) or 0) < esik]
+        if len(hi) < 8 or len(lo) < 8:
+            continue
+        oh, ol = _oran5(hi), _oran5(lo)
+        out.append((abs(oh-ol), oh-ol, ad, key, esik, oh, ol, len(hi), len(lo)))
+    return sorted(out, reverse=True)
+
+
+def _kombinasyon_kesifleri(grup):
+    """Önceden yazılmış tek bir kombinasyona bağlı kalmadan ikili etkileşim tarar."""
+    if len(grup) < 30:
+        return []
+    specs = []
+    for ad, key in [
+        ("3dk mom", "d3"), ("5dk mom", "d5"), ("Devam", "devam"),
+        ("Kalıcılık", "kalicilik"), ("Genel Güç", "genel"), ("Hacim", "hacim"),
+        ("Lider", "lider"), ("BTC farkı", "btc_fark3")
+    ]:
+        specs.append((ad, key, _medyan(grup, key), "num"))
+    for ad, key in [
+        ("momentum hızlanıyor", "momentum_hiz"), ("hacim hızlanıyor", "hacim_hiz"),
+        ("BTC farkı açılıyor", "btc_fark_ac"), ("lider güçleniyor", "lider_guc"),
+        ("basamaklı trend", "basamak")
+    ]:
+        specs.append((ad, key, True, "bool"))
+    baz = _oran5(grup)
+    sonuc = []
+    for i in range(len(specs)):
+        for j in range(i+1, len(specs)):
+            a, b = specs[i], specs[j]
+            def ok(x, sp):
+                ad, key, es, typ = sp
+                if typ == "bool": return bool(x.get(key))
+                return float(x.get(key, 0) or 0) >= float(es)
+            sec = [x for x in grup if ok(x,a) and ok(x,b)]
+            if len(sec) < 8 or len(sec) > len(grup)*0.80:
+                continue
+            oran = _oran5(sec)
+            lift = oran - baz
+            sonuc.append((lift, oran, len(sec), a, b, baz))
+    return sorted(sonuc, reverse=True)
+
+
+def _rejim_kesifleri(grup):
+    out=[]
+    for rej in ("Güçlü", "Yatay", "Zayıf"):
+        g=[x for x in grup if x.get("piyasa_rejim")==rej]
+        if len(g) >= 12:
+            out.append((rej, len(g), _oran5(g), _ortalama(g,"max_getiri")))
+    return out
+
+
+def kesif_raporu_gerekirse_gonder():
+    """Her 3 günde bir saat 08:00 TR'de keşif + kod önerisi gönderir."""
+    global KESIF_META
+    simdi = time.time()
+    gonder, planli_ts = _s49_planli_rapor_zamani(simdi, KESIF_META)
+    if not gonder:
+        return
+    bas = planli_ts - KESIF_RAPOR_ARALIGI
+    tamam = [x for x in KESIF_KAYITLARI if x.get("tamamlandi") and float(x.get("zaman",0) or 0) >= bas]
+    if len(tamam) < 20:
+        mesaj = f"🧠 S49 3 GÜNLÜK KEŞİF RAPORU\n\nYeterli örnek yok: n={len(tamam)}. En az 20 tamamlanmış güçlü-aday gözlemi bekleniyor."
+        print(mesaj); telegram_gonder(mesaj)
+        KESIF_META["son_rapor"] = planli_ts
+        KESIF_META["son_planli_rapor_ts"] = planli_ts
+        _kesif_meta_kaydet(); return
+
+    basarili=[x for x in tamam if float(x.get("max_getiri",0) or 0) >= 5]
+    sonen=[x for x in tamam if 1.0 <= float(x.get("max_getiri",0) or 0) < 5.0 and ((x.get("son_getiri") is not None and float(x.get("son_getiri",0) or 0) <= 0.5) or float(x.get("max_getiri",0) or 0)-float(x.get("son_getiri",0) or 0) >= 2.0)]
+    zayif=[x for x in tamam if float(x.get("max_getiri",0) or 0) < 1.0]
+
+    # En çok güçlenen üst %20: +5 eşiğine bağlı kalmadan verinin doğal kazananlarını gözlemler.
+    sirali=sorted(tamam, key=lambda x: float(x.get("max_getiri",0) or 0), reverse=True)
+    topn=max(5, int(round(len(sirali)*0.20)))
+    guclenen=sirali[:topn]
+    diger=sirali[topn:]
+
+    sat=[
+        "🧠 S49 3 GÜNLÜK KEŞİF + KOD ÖNERİSİ",
+        "",
+        f"Gözlenen güçlü teknik aday: {len(tamam)} | +%5: {len(basarili)} (%{_oran5(tamam):.1f})",
+        f"Sönen (+%1-5 sonra geri veren): {len(sonen)} | Baştan zayıf (<+%1): {len(zayif)}",
+        "",
+        "🔎 EN ÇOK GÜÇLENEN COİNLERDEN SERBEST GÖZLEM",
+        f"Üst %20 grubun ort. tepesi: %{_ortalama(guclenen,'max_getiri'):+.2f} | diğerleri: %{_ortalama(diger,'max_getiri'):+.2f}",
+    ]
+    prof_fields=[("3dk mom","d3"),("5dk mom","d5"),("Devam","devam"),("Kalıcılık","kalicilik"),("Genel Güç","genel"),("Hacim","hacim"),("Lider","lider")]
+    diffs=[]
+    for ad,key in prof_fields:
+        a,b=_ortalama(guclenen,key),_ortalama(diger,key)
+        diffs.append((abs(a-b), ad, a, b))
+    for _,ad,a,b in sorted(diffs, reverse=True)[:4]:
+        sat.append(f"• {ad}: en güçlü {a:.2f} | diğer {b:.2f}")
+
+    tek=_tekli_kesifler(tamam)
+    sat += ["", "🧪 VERİNİN KENDİ BULDUĞU TEKLİ EŞİKLER"]
+    for _,yon,ad,key,es,oh,ol,nh,nl in tek[:5]:
+        if yon >= 0:
+            sat.append(f"• {ad} ≥ {es:.2f}: +%5 %{oh:.1f} | altı %{ol:.1f} (n={nh}/{nl}) → BONUS/GÜÇLENDİR adayı")
+        else:
+            sat.append(f"• {ad} ≥ {es:.2f}: +%5 %{oh:.1f} | altı %{ol:.1f} (n={nh}/{nl}) → yüksek değer ters etki; CEZA/BANT araştır")
+
+    komb=_kombinasyon_kesifleri(tamam)
+    sat += ["", "🧩 OTOMATİK BULUNAN İKİLİ İLİŞKİLER"]
+    if komb:
+        for lift,oran,n,a,b,baz in komb[:4]:
+            if lift < 5: break
+            sat.append(f"• {a[0]} + {b[0]} → +%5 %{oran:.1f} (n={n}), bazdan {lift:+.1f} puan")
+    else:
+        sat.append("• Yeterince güçlü ikili ilişki yok.")
+
+    rej=_rejim_kesifleri(tamam)
+    if rej:
+        sat += ["", "🌍 PİYASA REJİMİ"]
+        for ad,n,o,t in rej:
+            sat.append(f"• {ad}: n={n} | +%5 %{o:.1f} | ort. tepe %{t:+.2f}")
+
+    if basarili and sonen:
+        sat += ["", "↩️ +%5 YAPAN / SÖNEN AYRIMI"]
+        ay=[]
+        for ad,key in prof_fields + [("10dk mom","d10"),("BTC farkı","btc_fark3")]:
+            a,b=_ortalama(basarili,key),_ortalama(sonen,key)
+            ay.append((abs(a-b),ad,a,b))
+        for _,ad,a,b in sorted(ay, reverse=True)[:4]:
+            sat.append(f"• {ad}: +%5 {a:.2f} | sönen {b:.2f}")
+
+    sat += ["", "📌 Motor sadece önerir; kodu otomatik değiştirmez. Bulgular 3 gün sonra yeniden sınanmalıdır."]
+    mesaj="\n".join(sat)
+    print(mesaj); telegram_gonder(mesaj)
+    KESIF_META["son_rapor"] = planli_ts
+    KESIF_META["son_planli_rapor_ts"] = planli_ts
+    _kesif_meta_kaydet()
+
+
+KESIF_KAYITLARI = _kesif_json_yukle(KESIF_DOSYA, [])
+if not isinstance(KESIF_KAYITLARI, list):
+    KESIF_KAYITLARI = []
+KESIF_META = _kesif_json_yukle(KESIF_META_DOSYA, {})
+if not isinstance(KESIF_META, dict):
+    KESIF_META = {}
+if not KESIF_META.get("baslangic"):
+    KESIF_META["baslangic"] = time.time()
+    KESIF_META["son_rapor"] = KESIF_META["baslangic"]
+    _kesif_meta_kaydet()
+
+
 def _al_ogrenme_yukle():
     try:
         if os.path.exists(AL_OGRENME_DOSYA):
@@ -1588,20 +1925,18 @@ def al_ogrenme_guncelle(ticker):
 
 
 def yuzde5_basariraporu_gerekirse_gonder():
-    """Her 7 günde, rapor penceresindeki sinyallerin +%5 yakalama oranını gönderir."""
+    """Her 3 günde bir saat 08:00 TR'de +%5 yakalama raporunu gönderir."""
     global _YUZDE5_META
 
     simdi = time.time()
-    son_rapor = float(
-        _YUZDE5_META.get("son_rapor", _YUZDE5_META.get("baslangic", simdi)) or simdi
-    )
-    if simdi - son_rapor < YUZDE5_RAPOR_ARALIGI:
+    gonder, planli_ts = _s49_planli_rapor_zamani(simdi, _YUZDE5_META)
+    if not gonder:
         return
 
-    pencere_bas = son_rapor
-    pencere_son = simdi
+    pencere_bas = planli_ts - YUZDE5_RAPOR_ARALIGI
+    pencere_son = planli_ts
 
-    # Yalnız bu 7 günlük rapor penceresinde açılan AL kayıtları.
+    # Yalnız bu 3 günlük rapor penceresinde açılan AL kayıtları.
     tum = [
         x for x in AL_OGRENME_KAYITLARI
         if pencere_bas <= float(x.get("zaman", 0) or 0) < pencere_son
@@ -1625,7 +1960,7 @@ def yuzde5_basariraporu_gerekirse_gonder():
     )
 
     mesaj = (
-        f"📊 7 GÜNLÜK +%5 YAKALAMA RAPORU — {YUZDE5_RAPOR_ETIKETI}\n\n"
+        f"📊 3 GÜNLÜK +%5 YAKALAMA RAPORU — {YUZDE5_RAPOR_ETIKETI}\n\n"
         f"Tamamlanan sinyal: {len(tamam)}\n"
         f"+%5 yapan: {len(basarili)}\n"
         f"+%5 yapamayan: {len(basarisiz)}\n"
@@ -1638,7 +1973,8 @@ def yuzde5_basariraporu_gerekirse_gonder():
     print(mesaj)
     telegram_gonder(mesaj)
 
-    _YUZDE5_META["son_rapor"] = simdi
+    _YUZDE5_META["son_rapor"] = planli_ts
+    _YUZDE5_META["son_planli_rapor_ts"] = planli_ts
     _yuzde5_meta_kaydet(_YUZDE5_META)
 
 
@@ -1936,6 +2272,51 @@ def guc_skoru_hesapla(
 
     return round(max(min(toplam, 100), 0), 2)
 
+
+
+def kod_onerisi_momentum_korumasi(aday):
+    """
+    Haftalık kod önerisindeki en taşınabilir iki bulguyu S49'a uygular:
+      - 3dk mikro momentum >= +0.31%
+      - 5dk mikro momentum >= +0.50%
+
+    Mevcut S49 AL üretimini genişletmez. Yalnız mevcut AL kararlarında iki eşik de
+    sağlanmıyorsa zayıf kısa-vade momentumu nedeniyle AL'ı BEKLE'ye çevirir.
+    Böylece başka bottaki 'Genel Güç' ölçeğini S49'a yanlış eşleştirmeden,
+    doğrudan aynı anlamı taşıyan mikro momentum bulguları kullanılır.
+    """
+    mikro = aday.get("mikro") or {}
+    d3 = float(mikro.get("d3", 0) or 0)
+    d5 = float(mikro.get("d5", 0) or 0)
+
+    d3_ok = d3 >= 0.31
+    d5_ok = d5 >= 0.50
+    puan = (2 if d3_ok else 0) + (2 if d5_ok else 0) + (1 if d3_ok and d5_ok else 0)
+
+    aday["kod_oneri_d3_ok"] = d3_ok
+    aday["kod_oneri_d5_ok"] = d5_ok
+    aday["kod_oneri_momentum_puani"] = puan
+
+    if aday.get("karar") == "🟢 AL" and not (d3_ok or d5_ok):
+        aday["karar"] = "🟡 BEKLE"
+        nedenler = list(aday.get("nedenler", []))
+        nedenler.append(f"Kod önerisi: kısa momentum zayıf (3dk %{d3:+.2f}, 5dk %{d5:+.2f})")
+        aday["nedenler"] = nedenler
+        aday["kod_oneri_veto"] = True
+        return False
+
+    aday["kod_oneri_veto"] = False
+    if aday.get("karar") == "🟢 AL":
+        nedenler = list(aday.get("nedenler", []))
+        teyitler = []
+        if d3_ok:
+            teyitler.append("3dk>=0.31")
+        if d5_ok:
+            teyitler.append("5dk>=0.50")
+        if teyitler:
+            nedenler.append("Kod önerisi momentum teyidi: " + " + ".join(teyitler))
+            aday["nedenler"] = nedenler
+    return True
 
 def stable_coin_mi(symbol):
     coin = symbol.replace("TRY", "")
@@ -2494,8 +2875,10 @@ while True:
 
         # Mevcut ticker cevabını öğrenme katmanında da kullan; ekstra API isteği yok.
         al_ogrenme_guncelle(ticker)
+        kesif_gozlem_guncelle(ticker)
         rejim_raporu_gerekirse_gonder()
         yuzde5_basariraporu_gerekirse_gonder()
+        kesif_raporu_gerekirse_gonder()
 
         ticker_fiyat_haritasi = {}
         for _coin in ticker:
@@ -3064,6 +3447,11 @@ while True:
             a["kalicilik_skoru"] = kal_skor
             a["kalicilik_etiket"] = kal_etiket
             a["kalicilik_nedenler"] = kal_nedenler
+
+            # Haftalık kod önerisi V50: 3dk/5dk kısa-vade momentum koruması.
+            # Yeni AL üretmez; mevcut AL'ın kısa momentum gerçekten başlamış mı diye kontrol eder.
+            kod_onerisi_momentum_korumasi(a)
+
             # Coin daha önce AL aldıysa, canlı teknik durumunu dinamik çıkış motoruna taşı.
             al_takip_teknik_guncelle(a)
 
@@ -3157,6 +3545,12 @@ while True:
                 d10=float(_mik.get("d10", 0) or 0),
             )
 
+        # V51 3 günlük keşif: AL olup olmadığına bakmadan teknik havuzdaki güçlü adayları
+        # gölge olarak 3 saat izler. Böylece bot sadece kendi AL'larından değil,
+        # sonradan en çok güçlenen kaçırılmış coinlerden de kod önerisi çıkarabilir.
+        for _kesif_aday in top10:
+            kesif_gozlem_baslat(_kesif_aday, btc_d, piyasa_medyan3)
+
         # AL kalite koruması: Assistant AL bekletilmez.
         # Yalnızca çok düşük hacim + kısa vade aynı anda sönüyorsa bariz zayıflık veto edilir.
         for _a in top10:
@@ -3183,7 +3577,11 @@ while True:
 
         # İlk aday sıralamasını Radar yapar; H motorundan sonra en güçlü teknik fırsat üste çıkar.
         top10.sort(
-            key=lambda x: (x.get("ai_skoru", 0), x.get("radar_skoru", 0)),
+            key=lambda x: (
+                x.get("kod_oneri_momentum_puani", 0),
+                x.get("ai_skoru", 0),
+                x.get("radar_skoru", 0),
+            ),
             reverse=True
         )
 
@@ -3275,6 +3673,7 @@ while True:
                         f"5+Profil {bes_plus_profil_yumusak(a)[0]}\n\n"
                         f"Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x | Radar {a['radar_skoru']}/100 | BTC 3s %{round(btc, 2)}\n"
                         f"{mikro_satir}"
+                        f"KodÖneri: 3dk {'✅' if a.get('kod_oneri_d3_ok') else '❌'} | 5dk {'✅' if a.get('kod_oneri_d5_ok') else '❌'}\n"
                         f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n\n"
                         f"📌 Takip: +%5 karar noktası | güçlü=KÂRI KORU / zayıf=%5 KÂR SAT\n"
                         f"{neden_alarm}Neden: {neden}\n\n"
