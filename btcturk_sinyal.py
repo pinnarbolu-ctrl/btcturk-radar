@@ -75,12 +75,15 @@ def al_karar_izi(symbol, asama, sonuc, **m):
     except Exception as e:
         print(f"[AL KARAR LOG HATA] {symbol}: {e}")
 
-# V52 KOD ÖNERİ KALİTESİ
-# Amaç: mevcut S49 AL'larını yeni AL üretmeden daha seçici hale getirmek.
-# 3dk/5dk momentum + S49 Genel Güç + Momentum Bloğu + güçlü rejimde Kalıcılık birlikte puanlanır.
+# V52+ KOD ÖNERİ KALİTESİ
+# Rapor bulguları seçicilik/öncelik puanına eklenir; tekil eşikler sert veto değildir.
+# Genel Güç ve Kalıcılık bandı eşikleri yalnız Güçlü piyasa rejiminde bonus verir.
 KOD_ONERI_KALITE_MIN = 76.0
 KOD_ONERI_D3_ESIK = 0.31
 KOD_ONERI_D5_ESIK = 0.50
+KOD_ONERI_MOMENTUM_ESIK = 55.87
+KOD_ONERI_GENEL_ESIK_GUCLU = 65.50
+KOD_ONERI_KALICILIK_BANT_ESIK = 100.0
 
 # AL Rejim / Seçicilik Öğrenmesi
 # AL öğrenme verisini Railway Volume varsa kalıcı alanda tut.
@@ -555,9 +558,16 @@ def kesif_gozlem_baslat(aday, btc_d, piyasa_medyan3):
             return
 
     m = aday.get("mikro") or {}
+    teknik = aday.get("teknik") or {}
+    try:
+        adx = float(teknik.get("adx", 0) or 0)
+    except (TypeError, ValueError):
+        adx = 0.0
     rec = {
         "symbol": symbol, "zaman": simdi, "giris": giris,
         "max_getiri": 0.0, "min_getiri": 0.0, "son_getiri": None, "tamamlandi": False,
+        "hedef4_sure_sn": None, "hedef5_sure_sn": None, "hedef7_sure_sn": None, "hedef20_sure_sn": None,
+        "geri_verme_puan": None, "geri_verme_orani": None,
         "karar": aday.get("karar", ""), "kategori": aday.get("radar_kategori", ""),
         "piyasa_rejim": _rejim_etiketi(piyasa_medyan3),
         "btc_rejim": _rejim_etiketi(float(btc_d.get("3s", 0) or 0)),
@@ -566,8 +576,15 @@ def kesif_gozlem_baslat(aday, btc_d, piyasa_medyan3):
         "kalite": float(aday.get("kalite_skoru", 0) or 0),
         "kod_kalite": float(aday.get("kod_oneri_kalite", 0) or 0),
         "kod_genel": float(aday.get("kod_oneri_genel_norm", 0) or 0),
-        "kod_momentum": float(aday.get("kod_oneri_momentum_blok", 0) or 0),
-        "kesif_v": 2,
+        "kod_momentum": float(aday.get("kod_oneri_momentum_kalite", 0) or 0),
+        "kod_momentum_blok": float(aday.get("kod_oneri_momentum_blok", 0) or 0),
+        "kod_kalicilik_bant": float(aday.get("kod_oneri_kalicilik_bant", 0) or 0),
+        "kod_genel_bonus": float(aday.get("kod_oneri_genel_bonus", 0) or 0),
+        "kod_momentum_bonus": float(aday.get("kod_oneri_momentum_bonus", 0) or 0),
+        "kod_momentum_esik_uygun": bool(float(aday.get("kod_oneri_momentum_kalite", 0) or 0) >= KOD_ONERI_MOMENTUM_ESIK),
+        "kod_genel_esik_guclu_uygun": bool(_rejim_etiketi(piyasa_medyan3) == "Güçlü" and float(aday.get("kod_oneri_genel_norm", 0) or 0) >= KOD_ONERI_GENEL_ESIK_GUCLU),
+        "kod_kal_bant_guclu_uygun": bool(_rejim_etiketi(piyasa_medyan3) == "Güçlü" and float(aday.get("kod_oneri_kalicilik_bant", 0) or 0) >= KOD_ONERI_KALICILIK_BANT_ESIK),
+        "kesif_v": 4,
         "ai": float(aday.get("ai_skoru", 0) or 0),
         "devam": float(aday.get("devam_gucu", 0) or 0),
         "kalicilik": float(aday.get("kalicilik_skoru", 0) or 0),
@@ -586,6 +603,7 @@ def kesif_gozlem_baslat(aday, btc_d, piyasa_medyan3):
         "btc_fark_ac": bool(aday.get("btc_farki_aciliyor")),
         "lider_guc": bool(aday.get("lider_gucleniyor")),
         "basamak": bool(aday.get("basamakli_trend")),
+        "trend_cok_guclu": adx >= 30.0,
     }
     KESIF_KAYITLARI.append(rec)
     _kesif_kaydet()
@@ -614,10 +632,20 @@ def kesif_gozlem_guncelle(ticker):
             r = _pct(f, g)
             k["max_getiri"] = round(max(float(k.get("max_getiri", 0) or 0), r), 3)
             k["min_getiri"] = round(min(float(k.get("min_getiri", 0) or 0), r), 3)
+            gecen_sn = max(0, int(simdi - float(k.get("zaman", simdi))))
+            for hedef in (4, 5, 7, 20):
+                alan = f"hedef{hedef}_sure_sn"
+                if r >= hedef and k.get(alan) is None:
+                    k[alan] = gecen_sn
             degisti = True
         if simdi - float(k.get("zaman", simdi)) >= KESIF_IZLEME_SURESI:
             if f and g > 0:
                 k["son_getiri"] = round(_pct(f, g), 3)
+            tepe = float(k.get("max_getiri", 0) or 0)
+            son = float(k.get("son_getiri", 0) or 0)
+            geri_puan = max(0.0, tepe - son)
+            k["geri_verme_puan"] = round(geri_puan, 3)
+            k["geri_verme_orani"] = round(min(100.0, geri_puan / tepe * 100.0), 1) if tepe > 0 else 0.0
             k["tamamlandi"] = True
             k["tamamlanma_zamani"] = simdi
             degisti = True
@@ -656,7 +684,8 @@ def _tekli_kesifler(grup):
     alanlar = [
         ("3dk momentum", "d3"), ("5dk momentum", "d5"), ("10dk momentum", "d10"),
         ("Kod Öneri Kalitesi", "kod_kalite"), ("Kod Genel Güç", "kod_genel"),
-        ("Kod Momentum Bloğu", "kod_momentum"),
+        ("Genel Güç / Momentum bloğu", "kod_momentum"), ("S49 Momentum Bloğu", "kod_momentum_blok"),
+        ("Kod Kalıcılık Bandı", "kod_kalicilik_bant"),
         ("Devam Gücü", "devam"), ("Kalıcılık", "kalicilik"), ("Genel Güç", "genel"),
         ("Radar", "radar"), ("AI", "ai"), ("Hacim", "hacim"), ("Lider skoru", "lider"),
         ("BTC farkı 3s", "btc_fark3"), ("Mikro skor", "mikro_skor"),
@@ -680,7 +709,8 @@ def _kombinasyon_kesifleri(grup):
     specs = []
     for ad, key in [
         ("3dk mom", "d3"), ("5dk mom", "d5"), ("Kod Kalitesi", "kod_kalite"),
-        ("Kod Genel Güç", "kod_genel"), ("Kod Momentum Bloğu", "kod_momentum"),
+        ("Kod Genel Güç", "kod_genel"), ("Genel Güç / Momentum bloğu", "kod_momentum"),
+        ("S49 Momentum Bloğu", "kod_momentum_blok"), ("Kod Kalıcılık Bandı", "kod_kalicilik_bant"),
         ("Devam", "devam"), ("Kalıcılık", "kalicilik"), ("Genel Güç", "genel"), ("Hacim", "hacim"),
         ("Lider", "lider"), ("BTC farkı", "btc_fark3")
     ]:
@@ -726,7 +756,7 @@ def kesif_raporu_gerekirse_gonder():
     if not gonder:
         return
     bas = planli_ts - KESIF_RAPOR_ARALIGI
-    tamam = [x for x in KESIF_KAYITLARI if x.get("tamamlandi") and int(x.get("kesif_v", 0) or 0) >= 2 and float(x.get("zaman",0) or 0) >= bas]
+    tamam = [x for x in KESIF_KAYITLARI if x.get("tamamlandi") and int(x.get("kesif_v", 0) or 0) >= 4 and float(x.get("zaman",0) or 0) >= bas]
     if len(tamam) < 20:
         mesaj = f"🧠 S49 3 GÜNLÜK KEŞİF RAPORU\n\nYeterli örnek yok: n={len(tamam)}. En az 20 tamamlanmış güçlü-aday gözlemi bekleniyor."
         print(mesaj); telegram_gonder(mesaj)
@@ -735,6 +765,7 @@ def kesif_raporu_gerekirse_gonder():
         _kesif_meta_kaydet(); return
 
     basarili=[x for x in tamam if float(x.get("max_getiri",0) or 0) >= 5]
+    hedef20=[x for x in tamam if float(x.get("max_getiri",0) or 0) >= 20]
     sonen=[x for x in tamam if 1.0 <= float(x.get("max_getiri",0) or 0) < 5.0 and ((x.get("son_getiri") is not None and float(x.get("son_getiri",0) or 0) <= 0.5) or float(x.get("max_getiri",0) or 0)-float(x.get("son_getiri",0) or 0) >= 2.0)]
     zayif=[x for x in tamam if float(x.get("max_getiri",0) or 0) < 1.0]
 
@@ -753,15 +784,43 @@ def kesif_raporu_gerekirse_gonder():
         "🔎 EN ÇOK GÜÇLENEN COİNLERDEN SERBEST GÖZLEM",
         f"Üst %20 grubun ort. tepesi: %{_ortalama(guclenen,'max_getiri'):+.2f} | diğerleri: %{_ortalama(diger,'max_getiri'):+.2f}",
     ]
-    prof_fields=[("3dk mom","d3"),("5dk mom","d5"),("Kod Kalitesi","kod_kalite"),("Kod Genel Güç","kod_genel"),("Kod Momentum Bloğu","kod_momentum"),("Devam","devam"),("Kalıcılık","kalicilik"),("Genel Güç","genel"),("Hacim","hacim"),("Lider","lider")]
+    prof_fields=[("3dk mom","d3"),("5dk mom","d5"),("Kod Kalitesi","kod_kalite"),("Kod Genel Güç","kod_genel"),("Genel Güç / Momentum bloğu","kod_momentum"),("S49 Momentum Bloğu","kod_momentum_blok"),("Devam","devam"),("Kalıcılık","kalicilik"),("Genel Güç","genel"),("Hacim","hacim"),("Lider","lider")]
     diffs=[]
     for ad,key in prof_fields:
         a,b=_ortalama(guclenen,key),_ortalama(diger,key)
         diffs.append((abs(a-b), ad, a, b))
     for _,ad,a,b in sorted(diffs, reverse=True)[:4]:
-        sat.append(f"• {ad}: en güçlü {a:.2f} | diğer {b:.2f}")
+        sat.append(f"• {ad}: en güçlü %20 {a:.2f} | diğerleri {b:.2f}")
+
+    sat += ["", "🚀 +%20 VE ÜZERİNE GİDENLER"]
+    if len(hedef20) >= 5:
+        sat.append(f"+%20 gören: {len(hedef20)}/{len(tamam)} (%{len(hedef20) / len(tamam) * 100:.1f})")
+        diger20=[x for x in tamam if float(x.get("max_getiri",0) or 0) < 20]
+        for ad,key in prof_fields:
+            if len(diger20) < 5:
+                break
+            a,b=_ortalama(hedef20,key),_ortalama(diger20,key)
+            sat.append(f"• {ad}: +%20 grubu {a:.2f} | diğerleri {b:.2f}")
+        sat.append(f"• Medyan +%20 hedef süresi: {_sure_dk(hedef20, 20):.0f} dk" if _sure_dk(hedef20, 20) is not None else "• +%20 hedef süresi: hesaplanamadı")
+    else:
+        sat.append(f"Yeterli örnek yok: n={len(hedef20)}; özellikleri güvenilir biçimde ayırmak için en az 5 gözlem bekleniyor.")
 
     tek=_tekli_kesifler(tamam)
+    sat += ["", "🧪 RAPOR EŞİKLERİNİN S49 SONUÇ TESTİ"]
+    def _esik_karsilastir(etiket, sec, diger):
+        if len(sec) < 5 or len(diger) < 5:
+            sat.append(f"• {etiket}: örnek yetersiz (üst={len(sec)}, alt={len(diger)}; her grupta en az 5 gerekir)")
+            return
+        sat.append(
+            f"• {etiket}: +%5 %{_oran5(sec):.1f} (n={len(sec)}) / alt %{_oran5(diger):.1f} (n={len(diger)})"
+        )
+    _esik_karsilastir("3dk momentum ≥0.31 [tüm rejimler]", [x for x in tamam if float(x.get("d3",0) or 0) >= 0.31], [x for x in tamam if float(x.get("d3",0) or 0) < 0.31])
+    _esik_karsilastir("5dk momentum ≥0.50 [tüm rejimler]", [x for x in tamam if float(x.get("d5",0) or 0) >= 0.50], [x for x in tamam if float(x.get("d5",0) or 0) < 0.50])
+    _esik_karsilastir("Genel Güç/Momentum Bloğu ≥55.87 [tüm rejimler]", [x for x in tamam if x.get("kod_momentum_esik_uygun")], [x for x in tamam if not x.get("kod_momentum_esik_uygun")])
+    _guclu_tamam = [x for x in tamam if x.get("piyasa_rejim") == "Güçlü"]
+    _esik_karsilastir("Genel Güç ≥65.50 [yalnız güçlü rejim]", [x for x in _guclu_tamam if x.get("kod_genel_esik_guclu_uygun")], [x for x in _guclu_tamam if not x.get("kod_genel_esik_guclu_uygun")])
+    _esik_karsilastir("Kalıcılık bandı =100 [yalnız güçlü rejim]", [x for x in _guclu_tamam if x.get("kod_kal_bant_guclu_uygun")], [x for x in _guclu_tamam if not x.get("kod_kal_bant_guclu_uygun")])
+
     sat += ["", "🧪 VERİNİN KENDİ BULDUĞU TEKLİ EŞİKLER"]
     for _,yon,ad,key,es,oh,ol,nh,nl in tek[:5]:
         if yon >= 0:
@@ -777,6 +836,48 @@ def kesif_raporu_gerekirse_gonder():
             sat.append(f"• {a[0]} + {b[0]} → +%5 %{oran:.1f} (n={n}), bazdan {lift:+.1f} puan")
     else:
         sat.append("• Yeterince güçlü ikili ilişki yok.")
+
+    # LRC'de görülen ani genişleme örüntüsünü, Rel+2'yi ayırıcı saymadan test et.
+    def _hedef_orani(grup, hedef):
+        return sum(1 for x in grup if float(x.get("max_getiri", 0) or 0) >= hedef) / len(grup) * 100.0 if grup else 0.0
+
+    def _sure_dk(grup, hedef):
+        alan = f"hedef{hedef}_sure_sn"
+        vals = [float(x[alan]) / 60.0 for x in grup if x.get(alan) is not None]
+        return statistics.median(vals) if vals else None
+
+    def _combo_satiri(etiket, grup):
+        sureler = []
+        for hedef in (4, 5, 7, 20):
+            dk = _sure_dk(grup, hedef)
+            sureler.append(f"+%{hedef} {dk:.0f}dk" if dk is not None else f"+%{hedef} —")
+        geri = _ortalama(grup, "geri_verme_orani")
+        return (
+            f"• {etiket}: n={len(grup)} | +%4 %{_hedef_orani(grup, 4):.1f} | "
+            f"+%5 %{_hedef_orani(grup, 5):.1f} | +%7 %{_hedef_orani(grup, 7):.1f} | "
+            f"+%20 %{_hedef_orani(grup, 20):.1f} | "
+            f"süre {' / '.join(sureler)} | ort. geri verme %{geri:.1f}"
+        )
+
+    trend_mom_hacim = [x for x in tamam if x.get("trend_cok_guclu") and x.get("momentum_hiz") and x.get("hacim_hiz")]
+    trend_mom_hacim_btc = [x for x in trend_mom_hacim if x.get("btc_fark_ac")]
+    trend_mom_hacim_lider = [x for x in trend_mom_hacim if x.get("lider_guc")]
+    trend_mom_hacim_btc_lider = [x for x in trend_mom_hacim if x.get("btc_fark_ac") and x.get("lider_guc")]
+    kal_esik = _medyan(tamam, "kalicilik")
+    trend_mom_hacim_kal = [x for x in trend_mom_hacim if float(x.get("kalicilik", 0) or 0) >= kal_esik]
+    rel2_taban = [x for x in tamam if int(x.get("rel", 0) or 0) >= 2]
+
+    sat += ["", "🧪 GÜÇLÜ TREND + MOMENTUM + HACİM BİRLİKTE TESTİ"]
+    sat.append("Rel +2 ortak taban olarak raporlanır; ayırıcı kombinasyona dahil edilmez.")
+    for etiket, grup in [
+        ("Trend güçlü + momentum hızlanıyor + hacim hızlanıyor", trend_mom_hacim),
+        ("Yukarıdaki üçlü + BTC farkı açılıyor", trend_mom_hacim_btc),
+        ("Yukarıdaki üçlü + lider güçleniyor", trend_mom_hacim_lider),
+        ("Üçlü + BTC farkı + lider güçleniyor", trend_mom_hacim_btc_lider),
+        (f"Üçlü + Kalıcılık medyan üstü (≥{kal_esik:.1f})", trend_mom_hacim_kal),
+    ]:
+        sat.append(_combo_satiri(etiket, grup) if len(grup) >= 8 else f"• {etiket}: yeterli örnek yok (n={len(grup)}, en az 8)")
+    sat.append(_combo_satiri("Referans: Rel +2", rel2_taban) if len(rel2_taban) >= 8 else f"• Referans Rel +2: yeterli örnek yok (n={len(rel2_taban)}, en az 8)")
 
     rej=_rejim_kesifleri(tamam)
     if rej:
@@ -1303,157 +1404,175 @@ def guc_skoru_hesapla(
 
 
 def kod_onerisi_kalite_katmani(aday, piyasa_medyan3=0.0):
-    """
-    V52 - Haftalık kod önerilerini S49 ölçeğine güvenli biçimde uyarlar.
+    """S49 yerel ölçeğinde haftalık rapor bulgularını birleşik kalite puanına uygular.
 
-    Kullanılanlar:
-      1) 3dk momentum >= +0.31
-      2) 5dk momentum >= +0.50
-      3) S49'ın kendi Genel Güç değeri (V11 eşiği birebir kopyalanmaz; normalize edilir)
-      4) S49'a özel Momentum Bloğu
-      5) Yalnız GÜÇLÜ piyasa rejiminde Kalıcılık desteği
-
-    Yeni AL üretmez. Mevcut S49 kararı AL ise kalite düşük olduğunda BEKLE'ye çevirir.
-    Böylece mesaj sayısını azaltmayı ve +%5 aday yoğunluğunu artırmayı amaçlar.
+    Raporun önerdiği tekil kriterler bonus/puan katkısıdır; 3dk veya 5dk eşiğinden
+    en az biri ve toplam kalite eşiği dışında yeni sert veto eklenmez.
     """
     mikro = aday.get("mikro") or {}
     d3 = float(mikro.get("d3", 0) or 0)
     d5 = float(mikro.get("d5", 0) or 0)
-    mikro_skor = float(mikro.get("skor", 0) or 0)
-    genel_raw = float(aday.get("genel_skor", 0) or 0)
     kal = float(aday.get("kalicilik_skoru", 0) or 0)
-
+    ai = float(aday.get("ai_skoru", 0) or 0)
+    devam = float(aday.get("devam_gucu", 0) or 0)
+    radar = float(aday.get("radar_skoru", 0) or 0)
     d3_ok = d3 >= KOD_ONERI_D3_ESIK
     d5_ok = d5 >= KOD_ONERI_D5_ESIK
+    rejim = _rejim_etiketi(piyasa_medyan3)
 
-    # 3dk bileşeni: rapordaki 0.31 eşiği ana kırılma noktası.
-    if d3 >= 0.80:
-        d3_puan = 25.0
-    elif d3 >= 0.50:
-        d3_puan = 22.0
-    elif d3_ok:
-        d3_puan = 18.0
-    elif d3 >= 0.15:
-        d3_puan = 8.0
-    else:
-        d3_puan = 0.0
+    # S49'ın kendi Genel Güç formülü: aynı 0–100 ailesindeki AI, Devam,
+    # Kalıcılık ve Radar puanlarından hesaplanır; ham genel_skor * 4 kullanılmaz.
+    genel_guc = max(0.0, min(100.0,
+        ai * 0.35 + devam * 0.25 + kal * 0.20 + radar * 0.20
+    ))
 
-    # 5dk bileşeni: rapordaki 0.50 eşiği ana kırılma noktası.
-    if d5 >= 1.20:
-        d5_puan = 20.0
-    elif d5 >= 0.80:
-        d5_puan = 17.0
-    elif d5_ok:
-        d5_puan = 14.0
-    elif d5 >= 0.25:
-        d5_puan = 6.0
-    else:
-        d5_puan = 0.0
-
-    # S49 Genel Güç V11 ile aynı ölçek değil.
-    # Bu yüzden raw değeri 0-100'e S49 içinde normalize edip sadece 20 puanlık bileşen yapıyoruz.
-    genel_norm = max(0.0, min(100.0, genel_raw * 4.0))
-    genel_puan = genel_norm * 0.20
-
-    # Momentum Bloğu: tek eşiğe bakmak yerine kısa momentumun şiddeti + hızlanma + mikro yapı.
-    momentum_blok = 0.0
-    momentum_blok += min(40.0, max(0.0, d3) / 0.80 * 40.0)
-    momentum_blok += min(30.0, max(0.0, d5) / 1.20 * 30.0)
+    # S49 yerel Momentum Bloğu: 3dk/5dk hareketi ve ivme bayrakları.
+    d3_parca = min(35.0, max(0.0, d3 / KOD_ONERI_D3_ESIK) * 35.0)
+    d5_parca = min(35.0, max(0.0, d5 / KOD_ONERI_D5_ESIK) * 35.0)
+    momentum_blok = d3_parca + d5_parca
     if aday.get("momentum_hizlaniyor"):
         momentum_blok += 15.0
     if aday.get("hacim_hizlaniyor"):
-        momentum_blok += 8.0
-    if mikro_skor >= 65:
-        momentum_blok += 7.0
+        momentum_blok += 15.0
     momentum_blok = max(0.0, min(100.0, momentum_blok))
-    momentum_blok_puan = momentum_blok * 0.20
 
-    # Kalıcılık önerisi güçlü piyasa için gelmişti; yatay/zayıf piyasada sert ceza yok.
-    rejim = _rejim_etiketi(piyasa_medyan3)
+    # 55.87 eşiği, haftalık rapordaki Genel Güç / Momentum bloğudur:
+    # 1/3/5/10dk yüzdeleri V12 raporundaki 0-nötr=50 dönüşümüyle birleştirilir.
+    def _momentum_100(x):
+        return max(0.0, min(100.0, 50.0 + 12.0 * float(x or 0)))
+    d1 = float(mikro.get("d1", 0) or 0)
+    d10 = float(mikro.get("d10", 0) or 0)
+    momentum_kalite = (
+        0.15 * _momentum_100(d1) + 0.25 * _momentum_100(d3)
+        + 0.30 * _momentum_100(d5) + 0.30 * _momentum_100(d10)
+    )
+
+    # V12 raporundaki Kalıcılık bandı S49 verisinden yeniden hesaplanır.
+    if 88 <= kal <= 94:
+        kal_bant = 100.0
+    elif 84 <= kal < 88:
+        kal_bant = 75.0
+    elif 95 <= kal <= 97:
+        kal_bant = 55.0
+    elif kal > 97:
+        kal_bant = 35.0
+    else:
+        kal_bant = 50.0
+
+    # Temel 0–100 birleşik puan.
+    if d3 >= 0.80: d3_puan = 25.0
+    elif d3 >= 0.50: d3_puan = 22.0
+    elif d3_ok: d3_puan = 18.0
+    elif d3 >= 0.15: d3_puan = 8.0
+    else: d3_puan = 0.0
+
+    if d5 >= 1.20: d5_puan = 20.0
+    elif d5 >= 0.80: d5_puan = 17.0
+    elif d5_ok: d5_puan = 14.0
+    elif d5 >= 0.25: d5_puan = 6.0
+    else: d5_puan = 0.0
+
+    # Rejimden bağımsız S49 Genel Güç ve Momentum Bloğu katkıları.
+    genel_puan = genel_guc * 0.20
+    momentum_puan = momentum_blok * 0.20
+
+    # Kalıcılık için temel puan; güçlü rejimde rapor eşiklerine göre ek bonuslar.
     if rejim == "Güçlü":
-        if 88 <= kal <= 96:
-            kal_puan = 15.0
-            kal_uygun = True
-        elif kal >= 80:
-            kal_puan = 11.0
-            kal_uygun = True
-        elif kal >= 70:
-            kal_puan = 7.0
-            kal_uygun = False
-        else:
-            kal_puan = 3.0
-            kal_uygun = False
+        kal_puan = 15.0 if kal_bant >= KOD_ONERI_KALICILIK_BANT_ESIK else (9.0 if kal >= 80 else 3.0)
     else:
-        # Rapordaki güçlü-rejim bulgusunu başka rejimlere zorla taşımıyoruz.
         kal_puan = 7.5
-        kal_uygun = kal >= 80
 
-    kalite = round(max(0.0, min(
-        100.0,
-        d3_puan + d5_puan + genel_puan + momentum_blok_puan + kal_puan
+    # Raporun 55.87 / 65.50 / 100.00 eşikleri bonus verir, tek başına veto etmez.
+    momentum_bonus = 5.0 if momentum_kalite >= KOD_ONERI_MOMENTUM_ESIK else 0.0
+    genel_bonus = 5.0 if rejim == "Güçlü" and genel_guc >= KOD_ONERI_GENEL_ESIK_GUCLU else 0.0
+    kalicilik_bonus = 5.0 if rejim == "Güçlü" and kal_bant >= KOD_ONERI_KALICILIK_BANT_ESIK else 0.0
+
+    kalite = round(max(0.0, min(100.0,
+        d3_puan + d5_puan + genel_puan + momentum_puan + kal_puan
+        + momentum_bonus + genel_bonus + kalicilik_bonus
     )), 1)
-
-    if kalite >= 85:
-        kalite_etiket = "🔥 ÇOK GÜÇLÜ"
-    elif kalite >= KOD_ONERI_KALITE_MIN:
-        kalite_etiket = "✅ GÜÇLÜ"
-    else:
-        kalite_etiket = "🟡 ZAYIF"
+    kalite_etiket = "🔥 ÇOK GÜÇLÜ" if kalite >= 85 else ("✅ GÜÇLÜ" if kalite >= KOD_ONERI_KALITE_MIN else "🟡 ZAYIF")
 
     aday["kod_oneri_d3_ok"] = d3_ok
     aday["kod_oneri_d5_ok"] = d5_ok
-    aday["kod_oneri_genel_norm"] = round(genel_norm, 1)
+    aday["kod_oneri_genel_norm"] = round(genel_guc, 1)
     aday["kod_oneri_momentum_blok"] = round(momentum_blok, 1)
+    aday["kod_oneri_momentum_kalite"] = round(momentum_kalite, 2)
+    aday["kod_oneri_kalicilik_bant"] = round(kal_bant, 1)
     aday["kod_oneri_rejim"] = rejim
-    aday["kod_oneri_kalicilik_uygun"] = kal_uygun
+    aday["kod_oneri_kalicilik_uygun"] = kal_bant >= KOD_ONERI_KALICILIK_BANT_ESIK
+    aday["kod_oneri_momentum_bonus"] = momentum_bonus
+    aday["kod_oneri_genel_bonus"] = genel_bonus
+    aday["kod_oneri_kalicilik_bonus"] = kalicilik_bonus
     aday["kod_oneri_kalite"] = kalite
     aday["kod_oneri_kalite_etiket"] = kalite_etiket
 
     if aday.get("karar") == "🟢 AL":
         nedenler = list(aday.get("nedenler", []))
-
-        # Eski V51 güvenlik: iki ana momentum eşiğinden en az biri yoksa AL gönderme.
+        # Ana güvenli eşik: iki kısa momentum da zayıfsa mevcut AL, BEKLE olur.
         if not (d3_ok or d5_ok):
             aday["karar"] = "🟡 BEKLE"
-            nedenler.append(
-                f"Kod önerisi: kısa momentum zayıf "
-                f"(3dk %{d3:+.2f}, 5dk %{d5:+.2f})"
-            )
+            nedenler.append(f"Kısa momentum zayıf (3dk %{d3:+.2f}, 5dk %{d5:+.2f})")
             aday["nedenler"] = nedenler
             aday["kod_oneri_veto"] = True
             aday["kod_oneri_veto_nedeni"] = "momentum"
             return False
-
-        # V52 kalite süzgeci: düşük birleşik kaliteyi Telegram AL'dan çıkar.
         if kalite < KOD_ONERI_KALITE_MIN:
             aday["karar"] = "🟡 BEKLE"
-            nedenler.append(
-                f"Kod öneri kalitesi düşük ({kalite:.1f} < {KOD_ONERI_KALITE_MIN:.0f})"
-            )
+            nedenler.append(f"Birleşik kod öneri kalitesi düşük ({kalite:.1f} < {KOD_ONERI_KALITE_MIN:.0f})")
             aday["nedenler"] = nedenler
             aday["kod_oneri_veto"] = True
             aday["kod_oneri_veto_nedeni"] = "kalite"
             return False
-
         teyitler = []
-        if d3_ok:
-            teyitler.append("3dk")
-        if d5_ok:
-            teyitler.append("5dk")
-        if momentum_blok >= 55.87:
-            teyitler.append("Momentum bloğu")
-        if genel_norm >= 65.5:
-            teyitler.append("Genel Güç")
-        if rejim == "Güçlü" and kal_uygun:
-            teyitler.append("Güçlü rejim/Kalıcılık")
-
+        if d3_ok: teyitler.append("3dk")
+        if d5_ok: teyitler.append("5dk")
+        if momentum_bonus: teyitler.append("Genel Güç/Momentum Kalitesi ≥55.87")
+        if genel_bonus: teyitler.append("Güçlü rejimde Genel Güç ≥65.50")
+        if kalicilik_bonus: teyitler.append("Güçlü rejimde Kalıcılık bandı =100")
         if teyitler:
-            nedenler.append("Kod öneri kalite teyidi: " + " + ".join(teyitler))
+            nedenler.append("Kod öneri teyidi: " + " + ".join(teyitler))
         aday["nedenler"] = nedenler
 
     aday["kod_oneri_veto"] = False
     aday["kod_oneri_veto_nedeni"] = ""
     return True
+
+
+def neden_kontrolu(aday):
+    """Telegram AL nedenlerini 10 ölçütte sayar; 5 ana ölçütten en az 3'ü şarttır."""
+    teknik = aday.get("teknik") or {}
+    mikro = aday.get("mikro") or {}
+    try:
+        adx = float(teknik.get("adx", 0) or 0)
+        ema20 = float(teknik.get("ema20", 0) or 0)
+        ema50 = float(teknik.get("ema50", 0) or 0)
+        fiyat = float(aday.get("fiyat", 0) or 0)
+        macd_hist = float(teknik.get("macd_hist", 0) or 0)
+        d3 = float(mikro.get("d3", 0) or 0)
+        d5 = float(mikro.get("d5", 0) or 0)
+    except (TypeError, ValueError):
+        adx = ema20 = ema50 = fiyat = macd_hist = d3 = d5 = 0.0
+
+    checks = [
+        (adx >= 30.0, "Trend çok güçlü"),
+        (bool(aday.get("momentum_hizlaniyor")), "Momentum hızlanıyor"),
+        (bool(aday.get("hacim_hizlaniyor")), "Hacim hızlanıyor"),
+        (bool(aday.get("btc_farki_aciliyor")), "BTC farkı açılıyor"),
+        (bool(aday.get("lider_gucleniyor")), "Lider güçleniyor"),
+        (bool(aday.get("basamakli_trend")), "Basamaklı trend korunuyor"),
+        (d3 >= KOD_ONERI_D3_ESIK, "3dk momentum pozitif"),
+        (d5 >= KOD_ONERI_D5_ESIK, "5dk momentum pozitif"),
+        (ema20 > ema50 and fiyat > ema20, "EMA trendi yukarı"),
+        (macd_hist > 0, "MACD pozitif"),
+    ]
+    ana_sayi = sum(1 for ok, _ in checks[:5] if ok)
+    saglanan = [ad for ok, ad in checks if ok]
+    aday["neden_saglanan"] = saglanan
+    aday["neden_sayi"] = len(saglanan)
+    aday["neden_toplam"] = len(checks)
+    aday["neden_ana_sayi"] = ana_sayi
+    return ana_sayi >= 3
 
 
 def stable_coin_mi(symbol):
@@ -2531,6 +2650,14 @@ while True:
             # V52: haftalık kod önerilerini S49 ölçeğinde birleşik kalite katmanına uygula.
             # Yeni AL üretmez; mevcut AL'ı daha seçici hale getirir.
             kod_onerisi_kalite_katmani(a, piyasa_medyan3_anlik)
+            # Kod önerisi kalitesi mesaj puanı değildir; AL seçimi/sıralaması ve keşif raporunda kullanılır.
+            # AL mesajı için 10 nedenden en az 3 ana neden (trend, momentum, hacim, BTC farkı, liderlik) şart.
+            if a.get("karar") == "🟢 AL" and not neden_kontrolu(a):
+                a["karar"] = "🟡 BEKLE"
+                a.setdefault("nedenler", []).append(
+                    f"Ana neden eşiği karşılanmadı ({a.get('neden_ana_sayi', 0)}/5; en az 3 gerekli)"
+                )
+                al_karar_izi(a.get("symbol", "?"), "neden", "VETO", ana_neden=a.get("neden_ana_sayi", 0))
 
             # Coin daha önce AL aldıysa, canlı teknik durumunu dinamik çıkış motoruna taşı.
 
@@ -2701,64 +2828,26 @@ while True:
                     if not teknik:
                         continue
 
-                    ema_yon = "Yukarı" if teknik["ema20"] > teknik["ema50"] else "Aşağı"
-                    macd_yon = "Pozitif" if teknik["macd_hist"] is not None and teknik["macd_hist"] > 0 else "Negatif"
-                    nedenler = list(a.get("nedenler", []))
-                    hizlar = []
-
-                    if a.get("hacim_hizlaniyor"):
-                        hizlar.append("hacim hızlanıyor")
-                    if a.get("momentum_hizlaniyor"):
-                        hizlar.append("momentum hızlanıyor")
-                    if a.get("btc_farki_aciliyor"):
-                        hizlar.append("BTC farkı açılıyor")
-                    if a.get("lider_gucleniyor"):
-                        hizlar.append("lider güçleniyor")
-                    if a.get("basamakli_trend"):
-                        hizlar.append("basamaklı trend korunuyor")
-
-                    rel_bonus = int(a.get("goreceli_guc_bonus", 0) or 0)
-                    neden_kisa = list(nedenler)
-                    if rel_bonus:
-                        neden_kisa.insert(
-                            0,
-                            f"60dk göreceli güç +{rel_bonus} "
-                            f"(BTC {a.get('coin_btc_60', 0):+.2f} / piyasa {a.get('coin_piyasa_60', 0):+.2f})"
-                        )
-                    neden_kisa.extend(hizlar)
-                    neden_kisa = list(dict.fromkeys(neden_kisa))[:5]
-                    neden_satir = "📌 Neden: " + " • ".join(neden_kisa) if neden_kisa else ""
-
                     mikro = a.get("mikro") or {}
-                    mikro_satir = ""
-                    if mikro:
-                        mikro_satir = (
-                            f"⏱ 1dk %{float(mikro.get('d1', 0) or 0):+.2f} | "
-                            f"3dk %{float(mikro.get('d3', 0) or 0):+.2f} | "
-                            f"5dk %{float(mikro.get('d5', 0) or 0):+.2f} | "
-                            f"10dk %{float(mikro.get('d10', 0) or 0):+.2f}\n"
-                        )
-
+                    neden_saglanan = a.get("neden_saglanan", [])
+                    # Sayı tüm 10 ölçütü kapsar; metinde yalnızca en çok üç ana uygun neden gösterilir.
+                    oncelik = [
+                        "Trend çok güçlü", "Momentum hızlanıyor", "Hacim hızlanıyor",
+                        "BTC farkı açılıyor", "Lider güçleniyor", "Basamaklı trend korunuyor",
+                    ]
+                    gorunen_nedenler = [n for n in oncelik if n in neden_saglanan][:3]
+                    neden_satir = (
+                        f"📌 Neden: {a.get('neden_sayi', 0)}/10"
+                        + (" — " + " • ".join(gorunen_nedenler) if gorunen_nedenler else "")
+                    )
                     gorunen_coin = a['symbol'][:-3] if a['symbol'].endswith("TRY") else a['symbol']
-                    risk = a.get('risk', 'Bilinmiyor')
-                    risk = risk.replace("🟢 ", "").replace("🟡 ", "").replace("🔴 ", "")
-
+                    d3 = float(mikro.get("d3", 0) or 0)
+                    d5 = float(mikro.get("d5", 0) or 0)
                     mesaj += (
-                        f"{gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 AL\n\n"
-                        f"🧠 Kod Kalitesi {a.get('kod_oneri_kalite', 0)}/100 | {a.get('kod_oneri_kalite_etiket', '')}\n"
-                        f"⚡ 3dk {'✅' if a.get('kod_oneri_d3_ok') else '❌'} | "
-                        f"5dk {'✅' if a.get('kod_oneri_d5_ok') else '❌'} | "
-                        f"Momentum Bloğu {a.get('kod_oneri_momentum_blok', 0)}/100\n"
-                        f"💪 Genel Güç {a.get('kod_oneri_genel_norm', 0)}/100\n\n"
-                        f"AI {a.get('ai_skoru', 0)} | Risk {risk} | Erken {a.get('erken_puan', 0)} | "
-                        f"Giriş {a.get('giris_kalitesi', 0)}\n"
-                        f"Devam {a.get('devam_gucu', 0)} | Kalıcılık {a.get('kalicilik_skoru', 0)} | "
-                        f"Rejim {a.get('kod_oneri_rejim', 'Yatay')} | Profil {bes_plus_profil_yumusak(a)[0]}\n\n"
-                        f"Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x | "
-                        f"Radar {a['radar_skoru']}/100 | BTC 3s %{round(btc, 2):+.2f}\n"
-                        f"{mikro_satir}"
-                        f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n\n"
-                        f"{neden_satir}\n\n"
+                        f"{gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 AL\n"
+                        f"{neden_satir}\n"
+                        f"Fiyat {round(a['fiyat'], 4)} | Hacim {a.get('hacim', 0)}x | "
+                        f"3dk %{d3:+.2f} | 5dk %{d5:+.2f}\n\n"
                     )
                 print(mesaj)
                 telegram_gonder(mesaj)
