@@ -31,6 +31,7 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_IDS = [2097448038]
 
 TARAMA_SURESI = 60
+KAR_TAKIP_SURESI = 15          # Açık AL sinyallerinde +%5 kontrolü
 TAM_TARAMA_DONGUSU = 5          # 5 x 60 sn = yaklaşık 5 dk
 HIZLI_HAREKET_ESIGI = 0.40      # 1 dakikalık fiyat değişimi %0.40+ ise hemen derin analiz
 son_fiyatlar = {}
@@ -93,6 +94,8 @@ _AL_DEFAULT_DIR = _RAILWAY_VOLUME if _RAILWAY_VOLUME else "."
 AL_OGRENME_DOSYA = os.getenv("AL_OGRENME_DOSYA", os.path.join(_AL_DEFAULT_DIR, "al_ogrenme_rejim.json"))
 AL_OGRENME_SURESI = 3 * 60 * 60
 AL_BILDIR_KAR_ESIK = 5.0  # AL sinyal fiyatından +%5 görülünce tek bilgilendirme mesajı
+SINYAL_SIRA_PENCERE = 24 * 60 * 60
+SINYAL_SIRA_DOSYA = os.path.join(_AL_DEFAULT_DIR, "s49_sinyal_sira.json")
 REJIM_RAPOR_ARALIGI = 24 * 60 * 60
 SON_REJIM_RAPOR_ZAMANI = time.time()
 
@@ -148,6 +151,71 @@ def _yuzde5_meta_kaydet(meta):
             json.dump(meta, f, ensure_ascii=False)
     except Exception as e:
         print("+%5 rapor meta yazılamadı:", e)
+
+
+def _sinyal_sira_yukle():
+    try:
+        if os.path.exists(SINYAL_SIRA_DOSYA):
+            with open(SINYAL_SIRA_DOSYA, "r", encoding="utf-8") as f:
+                veri = json.load(f)
+                return veri if isinstance(veri, dict) else {}
+    except Exception as e:
+        print("Sinyal sıra dosyası okunamadı:", e)
+    return {}
+
+
+def _sinyal_sira_kaydet():
+    try:
+        klasor = os.path.dirname(os.path.abspath(SINYAL_SIRA_DOSYA))
+        if klasor:
+            os.makedirs(klasor, exist_ok=True)
+        with open(SINYAL_SIRA_DOSYA, "w", encoding="utf-8") as f:
+            json.dump(SINYAL_SIRA_GECMISI, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("Sinyal sıra dosyası yazılamadı:", e)
+
+
+def _sinyal_sira_hazirla(symbol):
+    simdi = time.time()
+    gecmis = SINYAL_SIRA_GECMISI.get(symbol, [])
+    aktif = [
+        x for x in gecmis
+        if simdi - float(x.get("ts", 0) or 0) <= SINYAL_SIRA_PENCERE
+    ]
+    SINYAL_SIRA_GECMISI[symbol] = aktif
+    return len(aktif) + 1, any(bool(x.get("hit5")) for x in aktif)
+
+
+def _sinyal_sira_ekle(symbol, fiyat):
+    simdi = time.time()
+    aktif = [
+        x for x in SINYAL_SIRA_GECMISI.get(symbol, [])
+        if simdi - float(x.get("ts", 0) or 0) <= SINYAL_SIRA_PENCERE
+    ]
+    event_id = f"{symbol}-{int(simdi * 1000)}"
+    aktif.append({"id": event_id, "ts": simdi, "fiyat": float(fiyat or 0), "hit5": False})
+    SINYAL_SIRA_GECMISI[symbol] = aktif
+    _sinyal_sira_kaydet()
+    return event_id
+
+
+def _sinyal_sira_hit5_isaretle(symbol, event_id=None):
+    degisti = False
+    for olay in reversed(SINYAL_SIRA_GECMISI.get(symbol, [])):
+        if event_id is None or olay.get("id") == event_id:
+            if not olay.get("hit5"):
+                olay["hit5"] = True
+                degisti = True
+            break
+    if degisti:
+        _sinyal_sira_kaydet()
+
+
+def _sira_etiketi(n):
+    return f"{int(n)}️⃣"
+
+
+SINYAL_SIRA_GECMISI = _sinyal_sira_yukle()
 
 
 _YUZDE5_META = _yuzde5_meta_yukle()
@@ -971,6 +1039,7 @@ def al_ogrenme_baslat(aday, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris):
         "devam": float(aday.get("devam_gucu", 0) or 0),
         "kalicilik": float(aday.get("kalicilik_skoru", 0) or 0),
         "kategori": aday.get("radar_kategori", ""),
+        "sinyal_event_id": aday.get("_sinyal_event_id"),
         # 60dk göreceli güç bonusu AL filtresi değildir; yalnız ölçüm/öncelik bilgisidir.
         "goreceli_guc_bonus": int(aday.get("goreceli_guc_bonus", 0) or 0),
         "coin_btc_60": round(float(aday.get("coin_btc_60", 0) or 0), 3),
@@ -1012,10 +1081,12 @@ def al_ogrenme_guncelle(ticker):
             # geçmişteki AL sinyalleri adına geriye dönük mesaj gönderilmesini önler.
             if not k.get("kar_mesaji_gonderildi", True) and getiri >= AL_BILDIR_KAR_ESIK:
                 coin_adi = symbol[:-3] if str(symbol).endswith("TRY") else symbol
+                _sinyal_sira_hit5_isaretle(symbol, k.get("sinyal_event_id"))
                 mesaj = (
-                    f"📈 +%{AL_BILDIR_KAR_ESIK:.0f} HEDEF GÖRÜLDÜ — {coin_adi}\n"
-                    f"Sinyal fiyatı {giris:.6f} → güncel fiyat {fiyat:.6f} | Getiri %{getiri:+.2f}\n"
-                    "Bilgilendirme: otomatik alım/satım yapılmadı."
+                    f"💰 +%{AL_BILDIR_KAR_ESIK:.0f} KÂR BÖLGESİ - {coin_adi}\n"
+                    f"İlk AL: {giris:.4f} | Güncel: {fiyat:.4f}\n"
+                    f"Getiri: %{getiri:+.2f}\n"
+                    "Not: Çık emri değil; kârı değerlendirmek / çıkışa hazırlanmak için ara uyarı."
                 )
                 k["kar_mesaji_gonderildi"] = True
                 k["kar_mesaji_zamani"] = simdi
@@ -2846,10 +2917,13 @@ while True:
                         f"Önemli neden: {a.get('neden_ana_sayi', 0)}/5 | {momentum_etiketi}"
                     )
                     gorunen_coin = a['symbol'][:-3] if a['symbol'].endswith("TRY") else a['symbol']
+                    sinyal_sira, onceki_5 = _sinyal_sira_hazirla(a.get("symbol", ""))
+                    sira_prefix = _sira_etiketi(sinyal_sira)
+                    onceki_5_etiket = " | Önceki +%5 ✅" if onceki_5 else ""
                     d3 = float(mikro.get("d3", 0) or 0)
                     d5 = float(mikro.get("d5", 0) or 0)
                     mesaj += (
-                        f"{gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 AL\n"
+                        f"{sira_prefix} {gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 AL{onceki_5_etiket}\n"
                         f"💰 Fiyat: {round(a['fiyat'], 4)}\n"
                         f"{neden_satir}\n"
                         + (" • ".join(gorunen_nedenler) + "\n" if gorunen_nedenler else "")
@@ -2858,6 +2932,9 @@ while True:
                 print(mesaj)
                 telegram_gonder(mesaj)
                 for _g in gonderilecekler:
+                    _g["_sinyal_event_id"] = _sinyal_sira_ekle(
+                        _g.get("symbol", ""), _g.get("fiyat", 0)
+                    )
                     al_karar_izi(_g.get("symbol", "?"), "telegram", "GÖNDERİLDİ")
 
                 # Gönderilen AL sinyallerini yalnızca sonuç araştırması için kaydet; pozisyon açılmaz.
@@ -2866,8 +2943,29 @@ while True:
                 for _a in gonderilecekler:
                     al_ogrenme_baslat(_a, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris_fiyati)
 
-        # Emir/pozisyon takibi yoktur; tarayıcı normal aralıkta yeniden çalışır.
-        time.sleep(TARAMA_SURESI)
+        # Ana radar 60 saniyede bir çalışır. Henüz +%5 mesajı gitmemiş aktif AL varsa
+        # aradaki fiyatı 15 saniyede bir kontrol ederek kısa süreli hedef temasını kaçırmaz.
+        beklenen = 0
+        while beklenen < TARAMA_SURESI:
+            sure = min(KAR_TAKIP_SURESI, TARAMA_SURESI - beklenen)
+            time.sleep(sure)
+            beklenen += sure
+            if beklenen >= TARAMA_SURESI:
+                continue
+            aktif_kar_takibi = any(
+                not k.get("tamamlandi") and not k.get("kar_mesaji_gonderildi", True)
+                for k in AL_OGRENME_KAYITLARI
+            )
+            if not aktif_kar_takibi:
+                continue
+            try:
+                takip_response = requests.get(
+                    "https://api.btcturk.com/api/v2/ticker", timeout=10
+                )
+                takip_response.raise_for_status()
+                al_ogrenme_guncelle(takip_response.json().get("data", []))
+            except Exception as e:
+                print("+%5 hızlı takip hatası:", e)
 
     except Exception as e:
         print("Bot genel hata:", e)
