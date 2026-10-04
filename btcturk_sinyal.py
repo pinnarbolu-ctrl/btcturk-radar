@@ -99,6 +99,17 @@ ATH_MAX_1SAAT = 8.0
 ATH_MAX_3SAAT = 12.0
 ATH_MAX_24SAAT = 30.0
 
+# GMT TİPİ GÜÇLÜ ERKEN UYARI KAPISI
+# Radar/ADX henüz ATH seviyesine çıkmadan; yüksek hacim, göreceli güç,
+# devam ve kalıcılık birlikte güçlüyse kaliteli erken AL korunur.
+GUCLU_ERKEN_MIN_HACIM = 8.0
+GUCLU_ERKEN_MIN_RADAR = 70.0
+GUCLU_ERKEN_MIN_AI = 89.0
+GUCLU_ERKEN_MIN_DEVAM = 72.0
+GUCLU_ERKEN_MIN_KALICILIK = 90.0
+GUCLU_ERKEN_MIN_ADX = 28.0
+GUCLU_ERKEN_MIN_ANA_NEDEN = 4
+
 # AL Rejim / Seçicilik Öğrenmesi
 # AL öğrenme verisini Railway Volume varsa kalıcı alanda tut.
 # AL_OGRENME_DOSYA env ile özel yol verilmişse onu kullanır.
@@ -667,7 +678,10 @@ def kesif_gozlem_baslat(aday, btc_d, piyasa_medyan3):
         "kod_kal_bant_guclu_uygun": bool(_rejim_etiketi(piyasa_medyan3) == "Güçlü" and float(aday.get("kod_oneri_kalicilik_bant", 0) or 0) >= KOD_ONERI_KALICILIK_BANT_ESIK),
         "ath_benzeri": bool(aday.get("ath_benzeri")),
         "ath_kapi_nedenleri": list(aday.get("ath_kapi_nedenleri", [])),
-        "kesif_v": 5,
+        "guclu_erken": bool(aday.get("guclu_erken")),
+        "guclu_erken_nedenleri": list(aday.get("guclu_erken_nedenleri", [])),
+        "mesaj_kapisi": str(aday.get("mesaj_kapisi", "bekle")),
+        "kesif_v": 6,
         "ai": float(aday.get("ai_skoru", 0) or 0),
         "devam": float(aday.get("devam_gucu", 0) or 0),
         "kalicilik": float(aday.get("kalicilik_skoru", 0) or 0),
@@ -839,7 +853,7 @@ def kesif_raporu_gerekirse_gonder():
     if not gonder:
         return
     bas = planli_ts - KESIF_RAPOR_ARALIGI
-    tamam = [x for x in KESIF_KAYITLARI if x.get("tamamlandi") and int(x.get("kesif_v", 0) or 0) >= 5 and float(x.get("zaman",0) or 0) >= bas]
+    tamam = [x for x in KESIF_KAYITLARI if x.get("tamamlandi") and int(x.get("kesif_v", 0) or 0) >= 6 and float(x.get("zaman",0) or 0) >= bas]
     if len(tamam) < 20:
         mesaj = f"🧠 S49 3 GÜNLÜK KEŞİF RAPORU\n\nYeterli örnek yok: n={len(tamam)}. En az 20 tamamlanmış güçlü-aday gözlemi bekleniyor."
         print(mesaj); telegram_gonder(mesaj)
@@ -893,6 +907,29 @@ def kesif_raporu_gerekirse_gonder():
             "iki grupta da en az 8 tamamlanmış gözlem bekleniyor."
         )
     sat.append("• Kod önerileri ancak tekrarlı sonuçta fayda gösterirse bu kapının eşikleri yeniden ayarlanır.")
+
+    erken_gecen = [x for x in tamam if x.get("guclu_erken")]
+    digerleri = [x for x in tamam if not x.get("guclu_erken")]
+    sat += ["", "🚨 GÜÇLÜ ERKEN UYARI KAPISI TESTİ"]
+    if len(erken_gecen) >= 8 and len(digerleri) >= 8:
+        sat.append(
+            f"• Güçlü Erken: n={len(erken_gecen)} | +%5 %{_oran5(erken_gecen):.1f} | "
+            f"ort. tepe %{_ortalama(erken_gecen, 'max_getiri'):+.2f}"
+        )
+        sat.append(
+            f"• Diğer teknik adaylar: n={len(digerleri)} | +%5 %{_oran5(digerleri):.1f} | "
+            f"ort. tepe %{_ortalama(digerleri, 'max_getiri'):+.2f}"
+        )
+        if _oran5(erken_gecen) <= _oran5(digerleri):
+            sat.append("• UYARI: Güçlü Erken yolu ayırıcı görünmüyor; eşikleri gevşetme, yeniden incele.")
+        else:
+            sat.append("• Güçlü Erken yolu faydalı görünüyor; sonraki raporda tekrar doğrula.")
+    else:
+        sat.append(
+            f"• Örnek yetersiz: güçlü erken n={len(erken_gecen)}, diğer n={len(digerleri)}; "
+            "iki grupta da en az 8 tamamlanmış gözlem bekleniyor."
+        )
+    sat.append("• Eşikler tek bir kazanana göre değil, tekrarlanan +%5/+%20 sonuçlarına göre önerilir.")
 
     diffs=[]
     for ad,key in prof_fields:
@@ -1733,6 +1770,76 @@ def ath_benzeri_kapisi(aday):
     uygun = not eksikler
     aday["ath_benzeri"] = uygun
     aday["ath_kapi_nedenleri"] = eksikler
+    return uygun, eksikler
+
+
+def guclu_erken_uyari_kapisi(aday):
+    """GMT tipi erken ve kaliteli AL'ları korur; kendi başına AL üretmez.
+
+    Kısa momentum geçmişi henüz oluşmadığında 0 görülebilir. Bu yol o durumda
+    yüksek hacim + devam + kalıcılık + Rel +2 ve temiz teknik yapıyı birlikte
+    ister. Böylece düşük hacimli Güçleniyor sinyalleri bu istisnadan geçemez.
+    """
+    teknik = aday.get("teknik") or {}
+    mikro = aday.get("mikro") or {}
+    kategori = str(aday.get("radar_kategori", ""))
+
+    try:
+        hacim = float(aday.get("hacim", 0) or 0)
+        radar = float(aday.get("radar_skoru", 0) or 0)
+        ai = float(aday.get("ai_skoru", 0) or 0)
+        devam = float(aday.get("devam_gucu", 0) or 0)
+        kalicilik = float(aday.get("kalicilik_skoru", 0) or 0)
+        rel = int(aday.get("goreceli_guc_bonus", 0) or 0)
+        adx = float(teknik.get("adx", 0) or 0)
+        rsi = float(teknik.get("rsi", 0) or 0)
+        ema20 = float(teknik.get("ema20", 0) or 0)
+        ema50 = float(teknik.get("ema50", 0) or 0)
+        macd = float(teknik.get("macd_hist", 0) or 0)
+        fiyat = float(aday.get("fiyat", 0) or 0)
+        deg1 = float(aday.get("degisim1", 0) or 0)
+        deg3 = float(aday.get("degisim3", 0) or 0)
+        deg24 = float(aday.get("degisim24", 0) or 0)
+        d1 = float(mikro.get("d1", 0) or 0)
+        d3 = float(mikro.get("d3", 0) or 0)
+    except (TypeError, ValueError):
+        hacim = radar = ai = devam = kalicilik = adx = rsi = 0.0
+        ema20 = ema50 = macd = fiyat = 0.0
+        rel = 0
+        deg1 = deg3 = deg24 = 999.0
+        d1 = d3 = -999.0
+
+    erken_profil = "Roket Adayı" in kategori or "Elit" in kategori
+    teknik_temiz = ema20 > ema50 and fiyat > ema20 and macd > 0 and 50 <= rsi <= 75
+    mikro_sonmuyor = not (d1 < -0.15 and d3 <= 0.10)
+    gec_kalma_yok = (
+        deg1 <= 8.0
+        and deg3 <= 12.0
+        and deg24 <= 30.0
+        and not mikro.get("sisti", False)
+    )
+
+    kontroller = [
+        (erken_profil, "Roket/Elit erken profil yok"),
+        (hacim >= GUCLU_ERKEN_MIN_HACIM, f"hacim {hacim:.2f}x < {GUCLU_ERKEN_MIN_HACIM:.1f}x"),
+        (radar >= GUCLU_ERKEN_MIN_RADAR, f"Radar {radar:.1f} < {GUCLU_ERKEN_MIN_RADAR:.0f}"),
+        (ai >= GUCLU_ERKEN_MIN_AI, f"AI {ai:.1f} < {GUCLU_ERKEN_MIN_AI:.0f}"),
+        (devam >= GUCLU_ERKEN_MIN_DEVAM, f"Devam {devam:.1f} < {GUCLU_ERKEN_MIN_DEVAM:.0f}"),
+        (kalicilik >= GUCLU_ERKEN_MIN_KALICILIK, f"Kalıcılık {kalicilik:.1f} < {GUCLU_ERKEN_MIN_KALICILIK:.0f}"),
+        (rel >= 2, "60dk göreceli güç +2 değil"),
+        (adx >= GUCLU_ERKEN_MIN_ADX, f"ADX {adx:.1f} < {GUCLU_ERKEN_MIN_ADX:.0f}"),
+        (teknik_temiz, "EMA/MACD/RSI erken teknik yapısı uygun değil"),
+        (
+            int(aday.get("neden_ana_sayi", 0) or 0) >= GUCLU_ERKEN_MIN_ANA_NEDEN,
+            f"önemli neden {GUCLU_ERKEN_MIN_ANA_NEDEN}/5 altında",
+        ),
+        (mikro_sonmuyor, "kısa momentum sönüyor"),
+        (gec_kalma_yok, "hareket geç/şişmiş bölgede"),
+    ]
+    eksikler = [neden for uygun, neden in kontroller if not uygun]
+    uygun = not eksikler
+    aday["guclu_erken"] = uygun
+    aday["guclu_erken_nedenleri"] = eksikler
     return uygun, eksikler
 
 
@@ -2799,6 +2906,9 @@ while True:
             a["teknik"] = teknik
             karar = h_karar_hesapla(a)
             a.update(karar)
+            # Sonraki kalite katmanları yalnız H motorunun ürettiği gerçek AL'ı
+            # süzer. Güçlü Erken yolu hiçbir BEKLE/SAT adayını sonradan AL yapmaz.
+            a["h_ilk_karar"] = a.get("karar", "🟡 BEKLE")
             giris_k, devam_g = destek_skorlari(a)
             a["giris_kalitesi"] = giris_k
             a["devam_gucu"] = devam_g
@@ -2822,13 +2932,36 @@ while True:
                 al_karar_izi(a.get("symbol", "?"), "neden", "VETO", ana_neden=a.get("neden_ana_sayi", 0))
 
             ath_uygun, ath_eksikler = ath_benzeri_kapisi(a)
-            if a.get("karar") == "🟢 AL" and not ath_uygun:
-                a["karar"] = "🟡 BEKLE"
-                a.setdefault("nedenler", []).append("ATH benzeri mesaj kapısı: " + "; ".join(ath_eksikler))
-                al_karar_izi(
-                    a.get("symbol", "?"), "ath_kapisi", "VETO",
-                    neden="; ".join(ath_eksikler)
+            erken_uygun, erken_eksikler = guclu_erken_uyari_kapisi(a)
+            h_ilk_al = a.get("h_ilk_karar") == "🟢 AL"
+
+            # İki güvenli mesaj yolu vardır:
+            # 1) ATH benzeri çok güçlü yol
+            # 2) GMT tipi, yüksek hacimli Güçlü Erken yol
+            # İkisi de H motorunun başlangıçta AL demesini ve ana nedenleri ister.
+            if h_ilk_al and ana_neden_uygun and ath_uygun:
+                a["karar"] = "🟢 AL"
+                a["mesaj_kapisi"] = "ath"
+            elif h_ilk_al and ana_neden_uygun and erken_uygun:
+                a["karar"] = "🟢 AL"
+                a["mesaj_kapisi"] = "guclu_erken"
+                a.setdefault("nedenler", []).append(
+                    "Güçlü Erken Uyarı: yüksek hacim + devam + kalıcılık + Rel +2"
                 )
+                al_karar_izi(a.get("symbol", "?"), "guclu_erken", "GEÇTİ")
+            elif h_ilk_al:
+                a["karar"] = "🟡 BEKLE"
+                a["mesaj_kapisi"] = "bekle"
+                tum_eksikler = list(dict.fromkeys(ath_eksikler + erken_eksikler))
+                a.setdefault("nedenler", []).append(
+                    "ATH/Güçlü Erken mesaj kapısı: " + "; ".join(tum_eksikler)
+                )
+                al_karar_izi(
+                    a.get("symbol", "?"), "mesaj_kapisi", "VETO",
+                    neden="; ".join(tum_eksikler)
+                )
+            else:
+                a["mesaj_kapisi"] = "bekle"
 
             # Coin daha önce AL aldıysa, canlı teknik durumunu dinamik çıkış motoruna taşı.
 
@@ -3020,9 +3153,15 @@ while True:
                     sinyal_sira, onceki_5 = _sinyal_sira_hazirla(a.get("symbol", ""))
                     sira_prefix = _sira_etiketi(sinyal_sira)
                     onceki_5_etiket = " | Önceki +%5 ✅" if onceki_5 else ""
+                    guclu_erken_baslik = (
+                        "🚨 GÜÇLÜ ERKEN UYARI\n"
+                        if a.get("mesaj_kapisi") == "guclu_erken"
+                        else ""
+                    )
                     d3 = float(mikro.get("d3", 0) or 0)
                     d5 = float(mikro.get("d5", 0) or 0)
                     mesaj += (
+                        f"{guclu_erken_baslik}"
                         f"{sira_prefix} {gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 AL{onceki_5_etiket}\n"
                         f"💰 Fiyat: {round(a['fiyat'], 4)}\n"
                         f"{neden_satir}\n"
