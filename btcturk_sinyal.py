@@ -2836,18 +2836,24 @@ while True:
                         "BTC farkı açılıyor", "Lider güçleniyor", "Basamaklı trend korunuyor",
                     ]
                     gorunen_nedenler = [n for n in oncelik if n in neden_saglanan][:3]
+                    momentum_etiketi = (
+                        "💪 ÇİFT MOMENTUM ✅"
+                        if a.get("kod_oneri_d3_ok") and a.get("kod_oneri_d5_ok")
+                        else "⚡ TEK MOMENTUM"
+                    )
                     neden_satir = (
-                        f"📌 Neden: {a.get('neden_sayi', 0)}/10"
-                        + (" — " + " • ".join(gorunen_nedenler) if gorunen_nedenler else "")
+                        f"📌 Neden: {a.get('neden_sayi', 0)}/10 | "
+                        f"Önemli neden: {a.get('neden_ana_sayi', 0)}/5 | {momentum_etiketi}"
                     )
                     gorunen_coin = a['symbol'][:-3] if a['symbol'].endswith("TRY") else a['symbol']
                     d3 = float(mikro.get("d3", 0) or 0)
                     d5 = float(mikro.get("d5", 0) or 0)
                     mesaj += (
                         f"{gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 AL\n"
+                        f"💰 Fiyat: {round(a['fiyat'], 4)}\n"
                         f"{neden_satir}\n"
-                        f"Fiyat {round(a['fiyat'], 4)} | Hacim {a.get('hacim', 0)}x | "
-                        f"3dk %{d3:+.2f} | 5dk %{d5:+.2f}\n\n"
+                        + (" • ".join(gorunen_nedenler) + "\n" if gorunen_nedenler else "")
+                        + f"Hacim: {a.get('hacim', 0)}x | 3dk: %{d3:+.2f} | 5dk: %{d5:+.2f}\n\n"
                     )
                 print(mesaj)
                 telegram_gonder(mesaj)
