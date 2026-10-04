@@ -86,6 +86,19 @@ KOD_ONERI_MOMENTUM_ESIK = 55.87
 KOD_ONERI_GENEL_ESIK_GUCLU = 65.50
 KOD_ONERI_KALICILIK_BANT_ESIK = 100.0
 
+# ATH BENZERİ MESAJ KAPISI
+# 04.10.2026 gözlemi: ATH güçlü profil + yüksek hacim + yüksek teknik kaliteyle
+# devam etti; STRK düşük hacimle dik hareketin ardından AL verdi ve geri çekildi.
+# Bu eşikler yalnız Telegram AL mesajını süzer. Keşif havuzu bütün adayları izler.
+ATH_MIN_HACIM = 3.0
+ATH_MIN_RADAR = 85.0
+ATH_MIN_AI = 90.0
+ATH_MIN_KOD_KALITE = 85.0
+ATH_MIN_ADX = 30.0
+ATH_MAX_1SAAT = 8.0
+ATH_MAX_3SAAT = 12.0
+ATH_MAX_24SAAT = 30.0
+
 # AL Rejim / Seçicilik Öğrenmesi
 # AL öğrenme verisini Railway Volume varsa kalıcı alanda tut.
 # AL_OGRENME_DOSYA env ile özel yol verilmişse onu kullanır.
@@ -652,7 +665,9 @@ def kesif_gozlem_baslat(aday, btc_d, piyasa_medyan3):
         "kod_momentum_esik_uygun": bool(float(aday.get("kod_oneri_momentum_kalite", 0) or 0) >= KOD_ONERI_MOMENTUM_ESIK),
         "kod_genel_esik_guclu_uygun": bool(_rejim_etiketi(piyasa_medyan3) == "Güçlü" and float(aday.get("kod_oneri_genel_norm", 0) or 0) >= KOD_ONERI_GENEL_ESIK_GUCLU),
         "kod_kal_bant_guclu_uygun": bool(_rejim_etiketi(piyasa_medyan3) == "Güçlü" and float(aday.get("kod_oneri_kalicilik_bant", 0) or 0) >= KOD_ONERI_KALICILIK_BANT_ESIK),
-        "kesif_v": 4,
+        "ath_benzeri": bool(aday.get("ath_benzeri")),
+        "ath_kapi_nedenleri": list(aday.get("ath_kapi_nedenleri", [])),
+        "kesif_v": 5,
         "ai": float(aday.get("ai_skoru", 0) or 0),
         "devam": float(aday.get("devam_gucu", 0) or 0),
         "kalicilik": float(aday.get("kalicilik_skoru", 0) or 0),
@@ -824,7 +839,7 @@ def kesif_raporu_gerekirse_gonder():
     if not gonder:
         return
     bas = planli_ts - KESIF_RAPOR_ARALIGI
-    tamam = [x for x in KESIF_KAYITLARI if x.get("tamamlandi") and int(x.get("kesif_v", 0) or 0) >= 4 and float(x.get("zaman",0) or 0) >= bas]
+    tamam = [x for x in KESIF_KAYITLARI if x.get("tamamlandi") and int(x.get("kesif_v", 0) or 0) >= 5 and float(x.get("zaman",0) or 0) >= bas]
     if len(tamam) < 20:
         mesaj = f"🧠 S49 3 GÜNLÜK KEŞİF RAPORU\n\nYeterli örnek yok: n={len(tamam)}. En az 20 tamamlanmış güçlü-aday gözlemi bekleniyor."
         print(mesaj); telegram_gonder(mesaj)
@@ -853,6 +868,32 @@ def kesif_raporu_gerekirse_gonder():
         f"Üst %20 grubun ort. tepesi: %{_ortalama(guclenen,'max_getiri'):+.2f} | diğerleri: %{_ortalama(diger,'max_getiri'):+.2f}",
     ]
     prof_fields=[("3dk mom","d3"),("5dk mom","d5"),("Kod Kalitesi","kod_kalite"),("Kod Genel Güç","kod_genel"),("Genel Güç / Momentum bloğu","kod_momentum"),("S49 Momentum Bloğu","kod_momentum_blok"),("Devam","devam"),("Kalıcılık","kalicilik"),("Genel Güç","genel"),("Hacim","hacim"),("Lider","lider")]
+
+    ath_gecen = [x for x in tamam if x.get("ath_benzeri")]
+    ath_bekleyen = [x for x in tamam if not x.get("ath_benzeri")]
+    ath_bekleyen_5 = sum(1 for x in ath_bekleyen if float(x.get("max_getiri", 0) or 0) >= 5.0)
+    ath_bekleyen_20 = sum(1 for x in ath_bekleyen if float(x.get("max_getiri", 0) or 0) >= 20.0)
+    sat += ["", "🎯 ATH BENZERİ MESAJ KAPISI TESTİ"]
+    if len(ath_gecen) >= 8 and len(ath_bekleyen) >= 8:
+        sat.append(
+            f"• Kapıyı geçen: n={len(ath_gecen)} | +%5 %{_oran5(ath_gecen):.1f} | "
+            f"ort. tepe %{_ortalama(ath_gecen, 'max_getiri'):+.2f}"
+        )
+        sat.append(
+            f"• Arka planda bekleyen: n={len(ath_bekleyen)} | +%5 %{_oran5(ath_bekleyen):.1f} | "
+            f"kaçan +%5={ath_bekleyen_5}, kaçan +%20={ath_bekleyen_20}"
+        )
+        if _oran5(ath_bekleyen) + 5.0 >= _oran5(ath_gecen):
+            sat.append("• UYARI: Kapı yeterince ayırmıyor olabilir; iyi aday kaçırmamak için eşikleri yeniden incele.")
+        else:
+            sat.append("• Kapı şimdilik seçiciliği artırıyor; sonraki raporda tekrar doğrula.")
+    else:
+        sat.append(
+            f"• Örnek yetersiz: geçen n={len(ath_gecen)}, bekleyen n={len(ath_bekleyen)}; "
+            "iki grupta da en az 8 tamamlanmış gözlem bekleniyor."
+        )
+    sat.append("• Kod önerileri ancak tekrarlı sonuçta fayda gösterirse bu kapının eşikleri yeniden ayarlanır.")
+
     diffs=[]
     for ad,key in prof_fields:
         a,b=_ortalama(guclenen,key),_ortalama(diger,key)
@@ -1644,6 +1685,55 @@ def neden_kontrolu(aday):
     aday["neden_toplam"] = len(checks)
     aday["neden_ana_sayi"] = ana_sayi
     return ana_sayi >= 3
+
+
+def ath_benzeri_kapisi(aday):
+    """Yalnız ATH benzeri güçlü AL'ları Telegram'a geçirir.
+
+    Sonuç keşif kaydına da yazılır. Kapı AL üretmez ve gölge izlemeyi durdurmaz.
+    """
+    teknik = aday.get("teknik") or {}
+    mikro = aday.get("mikro") or {}
+    kategori = str(aday.get("radar_kategori", ""))
+
+    try:
+        hacim = float(aday.get("hacim", 0) or 0)
+        radar = float(aday.get("radar_skoru", 0) or 0)
+        ai = float(aday.get("ai_skoru", 0) or 0)
+        kalite = float(aday.get("kod_oneri_kalite", 0) or 0)
+        adx = float(teknik.get("adx", 0) or 0)
+        deg1 = float(aday.get("degisim1", 0) or 0)
+        deg3 = float(aday.get("degisim3", 0) or 0)
+        deg24 = float(aday.get("degisim24", 0) or 0)
+    except (TypeError, ValueError):
+        hacim = radar = ai = kalite = adx = 0.0
+        deg1 = deg3 = deg24 = 999.0
+
+    premium_profil = "Yıldız" in kategori or "Elit" in kategori
+    cift_momentum = bool(aday.get("kod_oneri_d3_ok") and aday.get("kod_oneri_d5_ok"))
+    gec_kalma_yok = (
+        deg1 <= ATH_MAX_1SAAT
+        and deg3 <= ATH_MAX_3SAAT
+        and deg24 <= ATH_MAX_24SAAT
+        and not mikro.get("sisti", False)
+    )
+
+    kontroller = [
+        (premium_profil, "Yıldız/Elit profil yok"),
+        (cift_momentum, "3dk ve 5dk birlikte güçlü değil"),
+        (hacim >= ATH_MIN_HACIM, f"hacim {hacim:.2f}x < {ATH_MIN_HACIM:.1f}x"),
+        (radar >= ATH_MIN_RADAR, f"Radar {radar:.1f} < {ATH_MIN_RADAR:.0f}"),
+        (ai >= ATH_MIN_AI, f"AI {ai:.1f} < {ATH_MIN_AI:.0f}"),
+        (kalite >= ATH_MIN_KOD_KALITE, f"Kod Kalitesi {kalite:.1f} < {ATH_MIN_KOD_KALITE:.0f}"),
+        (adx >= ATH_MIN_ADX, f"ADX {adx:.1f} < {ATH_MIN_ADX:.0f}"),
+        (int(aday.get("neden_ana_sayi", 0) or 0) >= 3, "önemli neden 3/5 altında"),
+        (gec_kalma_yok, "hareket geç/şişmiş bölgede"),
+    ]
+    eksikler = [neden for uygun, neden in kontroller if not uygun]
+    uygun = not eksikler
+    aday["ath_benzeri"] = uygun
+    aday["ath_kapi_nedenleri"] = eksikler
+    return uygun, eksikler
 
 
 def stable_coin_mi(symbol):
@@ -2723,12 +2813,22 @@ while True:
             kod_onerisi_kalite_katmani(a, piyasa_medyan3_anlik)
             # Kod önerisi kalitesi mesaj puanı değildir; AL seçimi/sıralaması ve keşif raporunda kullanılır.
             # AL mesajı için 10 nedenden en az 3 ana neden (trend, momentum, hacim, BTC farkı, liderlik) şart.
-            if a.get("karar") == "🟢 AL" and not neden_kontrolu(a):
+            ana_neden_uygun = neden_kontrolu(a)
+            if a.get("karar") == "🟢 AL" and not ana_neden_uygun:
                 a["karar"] = "🟡 BEKLE"
                 a.setdefault("nedenler", []).append(
                     f"Ana neden eşiği karşılanmadı ({a.get('neden_ana_sayi', 0)}/5; en az 3 gerekli)"
                 )
                 al_karar_izi(a.get("symbol", "?"), "neden", "VETO", ana_neden=a.get("neden_ana_sayi", 0))
+
+            ath_uygun, ath_eksikler = ath_benzeri_kapisi(a)
+            if a.get("karar") == "🟢 AL" and not ath_uygun:
+                a["karar"] = "🟡 BEKLE"
+                a.setdefault("nedenler", []).append("ATH benzeri mesaj kapısı: " + "; ".join(ath_eksikler))
+                al_karar_izi(
+                    a.get("symbol", "?"), "ath_kapisi", "VETO",
+                    neden="; ".join(ath_eksikler)
+                )
 
             # Coin daha önce AL aldıysa, canlı teknik durumunu dinamik çıkış motoruna taşı.
 
