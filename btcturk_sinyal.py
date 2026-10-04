@@ -110,6 +110,20 @@ GUCLU_ERKEN_MIN_KALICILIK = 90.0
 GUCLU_ERKEN_MIN_ADX = 28.0
 GUCLU_ERKEN_MIN_ANA_NEDEN = 4
 
+# BAT TİPİ MİKRO ERKEN UYARI KAPISI
+# Düşük Radar/hacimde bile 1-3-5dk ivmesi belirgin, RSI sağlıklı ve teknik yapı
+# temizse hareketin başını korur. Güçleniyor profiline uygulanmaz.
+MIKRO_ERKEN_MIN_HACIM = 1.15
+MIKRO_ERKEN_MIN_RADAR = 30.0
+MIKRO_ERKEN_MIN_AI = 80.0
+MIKRO_ERKEN_MIN_DEVAM = 55.0
+MIKRO_ERKEN_MIN_KALICILIK = 70.0
+MIKRO_ERKEN_MIN_ADX = 25.0
+MIKRO_ERKEN_MIN_D1 = 0.80
+MIKRO_ERKEN_MIN_D3 = 1.20
+MIKRO_ERKEN_MIN_D5 = 0.80
+MIKRO_ERKEN_MIN_ANA_NEDEN = 3
+
 # AL Rejim / Seçicilik Öğrenmesi
 # AL öğrenme verisini Railway Volume varsa kalıcı alanda tut.
 # AL_OGRENME_DOSYA env ile özel yol verilmişse onu kullanır.
@@ -680,8 +694,10 @@ def kesif_gozlem_baslat(aday, btc_d, piyasa_medyan3):
         "ath_kapi_nedenleri": list(aday.get("ath_kapi_nedenleri", [])),
         "guclu_erken": bool(aday.get("guclu_erken")),
         "guclu_erken_nedenleri": list(aday.get("guclu_erken_nedenleri", [])),
+        "mikro_erken_mesaj": bool(aday.get("mikro_erken_mesaj")),
+        "mikro_erken_nedenleri": list(aday.get("mikro_erken_nedenleri", [])),
         "mesaj_kapisi": str(aday.get("mesaj_kapisi", "bekle")),
-        "kesif_v": 6,
+        "kesif_v": 7,
         "ai": float(aday.get("ai_skoru", 0) or 0),
         "devam": float(aday.get("devam_gucu", 0) or 0),
         "kalicilik": float(aday.get("kalicilik_skoru", 0) or 0),
@@ -853,7 +869,7 @@ def kesif_raporu_gerekirse_gonder():
     if not gonder:
         return
     bas = planli_ts - KESIF_RAPOR_ARALIGI
-    tamam = [x for x in KESIF_KAYITLARI if x.get("tamamlandi") and int(x.get("kesif_v", 0) or 0) >= 6 and float(x.get("zaman",0) or 0) >= bas]
+    tamam = [x for x in KESIF_KAYITLARI if x.get("tamamlandi") and int(x.get("kesif_v", 0) or 0) >= 7 and float(x.get("zaman",0) or 0) >= bas]
     if len(tamam) < 20:
         mesaj = f"🧠 S49 3 GÜNLÜK KEŞİF RAPORU\n\nYeterli örnek yok: n={len(tamam)}. En az 20 tamamlanmış güçlü-aday gözlemi bekleniyor."
         print(mesaj); telegram_gonder(mesaj)
@@ -930,6 +946,29 @@ def kesif_raporu_gerekirse_gonder():
             "iki grupta da en az 8 tamamlanmış gözlem bekleniyor."
         )
     sat.append("• Eşikler tek bir kazanana göre değil, tekrarlanan +%5/+%20 sonuçlarına göre önerilir.")
+
+    mikro_gecen = [x for x in tamam if x.get("mikro_erken_mesaj")]
+    mikro_diger = [x for x in tamam if not x.get("mikro_erken_mesaj")]
+    sat += ["", "🌱 MİKRO ERKEN UYARI KAPISI TESTİ"]
+    if len(mikro_gecen) >= 8 and len(mikro_diger) >= 8:
+        sat.append(
+            f"• Mikro Erken: n={len(mikro_gecen)} | +%5 %{_oran5(mikro_gecen):.1f} | "
+            f"ort. tepe %{_ortalama(mikro_gecen, 'max_getiri'):+.2f}"
+        )
+        sat.append(
+            f"• Diğer teknik adaylar: n={len(mikro_diger)} | +%5 %{_oran5(mikro_diger):.1f} | "
+            f"ort. tepe %{_ortalama(mikro_diger, 'max_getiri'):+.2f}"
+        )
+        if _oran5(mikro_gecen) <= _oran5(mikro_diger):
+            sat.append("• UYARI: Mikro Erken yolu ayırıcı görünmüyor; eşikleri yeniden incele.")
+        else:
+            sat.append("• Mikro Erken yolu faydalı görünüyor; sonraki raporda tekrar doğrula.")
+    else:
+        sat.append(
+            f"• Örnek yetersiz: mikro erken n={len(mikro_gecen)}, diğer n={len(mikro_diger)}; "
+            "iki grupta da en az 8 tamamlanmış gözlem bekleniyor."
+        )
+    sat.append("• Mikro eşikler tek BAT örneğiyle otomatik değiştirilmez; tekrarlı sonuç aranır.")
 
     diffs=[]
     for ad,key in prof_fields:
@@ -1840,6 +1879,76 @@ def guclu_erken_uyari_kapisi(aday):
     uygun = not eksikler
     aday["guclu_erken"] = uygun
     aday["guclu_erken_nedenleri"] = eksikler
+    return uygun, eksikler
+
+
+def mikro_erken_uyari_kapisi(aday):
+    """BAT tipi güçlü mikro başlangıçları geçirir; kendi başına AL üretmez."""
+    teknik = aday.get("teknik") or {}
+    mikro = aday.get("mikro") or {}
+    kategori = str(aday.get("radar_kategori", ""))
+
+    try:
+        hacim = float(aday.get("hacim", 0) or 0)
+        radar = float(aday.get("radar_skoru", 0) or 0)
+        ai = float(aday.get("ai_skoru", 0) or 0)
+        devam = float(aday.get("devam_gucu", 0) or 0)
+        kalicilik = float(aday.get("kalicilik_skoru", 0) or 0)
+        adx = float(teknik.get("adx", 0) or 0)
+        rsi = float(teknik.get("rsi", 0) or 0)
+        ema20 = float(teknik.get("ema20", 0) or 0)
+        ema50 = float(teknik.get("ema50", 0) or 0)
+        macd = float(teknik.get("macd_hist", 0) or 0)
+        fiyat = float(aday.get("fiyat", 0) or 0)
+        deg1 = float(aday.get("degisim1", 0) or 0)
+        deg3 = float(aday.get("degisim3", 0) or 0)
+        deg24 = float(aday.get("degisim24", 0) or 0)
+        d1 = float(mikro.get("d1", 0) or 0)
+        d3 = float(mikro.get("d3", 0) or 0)
+        d5 = float(mikro.get("d5", 0) or 0)
+        d10 = float(mikro.get("d10", 0) or 0)
+    except (TypeError, ValueError):
+        hacim = radar = ai = devam = kalicilik = adx = rsi = 0.0
+        ema20 = ema50 = macd = fiyat = 0.0
+        deg1 = deg3 = deg24 = 999.0
+        d1 = d3 = d5 = d10 = -999.0
+
+    mikro_profil = "Mikro Erken" in kategori and bool(aday.get("mikro_aday"))
+    teknik_temiz = ema20 > ema50 and fiyat > ema20 and macd > 0 and 50 <= rsi <= 68
+    mikro_ivme = (
+        d1 >= MIKRO_ERKEN_MIN_D1
+        and d3 >= MIKRO_ERKEN_MIN_D3
+        and d5 >= MIKRO_ERKEN_MIN_D5
+        and 0.0 <= d10 <= 3.0
+        and d3 > d10
+    )
+    gec_kalma_yok = (
+        deg1 <= 6.0
+        and deg3 <= 10.0
+        and deg24 <= 30.0
+        and not mikro.get("sisti", False)
+    )
+
+    kontroller = [
+        (mikro_profil, "Mikro Erken profil/teyit yok"),
+        (hacim >= MIKRO_ERKEN_MIN_HACIM, f"hacim {hacim:.2f}x < {MIKRO_ERKEN_MIN_HACIM:.2f}x"),
+        (radar >= MIKRO_ERKEN_MIN_RADAR, f"Radar {radar:.1f} < {MIKRO_ERKEN_MIN_RADAR:.0f}"),
+        (ai >= MIKRO_ERKEN_MIN_AI, f"AI {ai:.1f} < {MIKRO_ERKEN_MIN_AI:.0f}"),
+        (devam >= MIKRO_ERKEN_MIN_DEVAM, f"Devam {devam:.1f} < {MIKRO_ERKEN_MIN_DEVAM:.0f}"),
+        (kalicilik >= MIKRO_ERKEN_MIN_KALICILIK, f"Kalıcılık {kalicilik:.1f} < {MIKRO_ERKEN_MIN_KALICILIK:.0f}"),
+        (adx >= MIKRO_ERKEN_MIN_ADX, f"ADX {adx:.1f} < {MIKRO_ERKEN_MIN_ADX:.0f}"),
+        (teknik_temiz, "EMA/MACD/RSI mikro teknik yapısı uygun değil"),
+        (mikro_ivme, "1-3-5dk güçlü erken ivme yapısı yok"),
+        (
+            int(aday.get("neden_ana_sayi", 0) or 0) >= MIKRO_ERKEN_MIN_ANA_NEDEN,
+            f"önemli neden {MIKRO_ERKEN_MIN_ANA_NEDEN}/5 altında",
+        ),
+        (gec_kalma_yok, "hareket geç/şişmiş bölgede"),
+    ]
+    eksikler = [neden for uygun, neden in kontroller if not uygun]
+    uygun = not eksikler
+    aday["mikro_erken_mesaj"] = uygun
+    aday["mikro_erken_nedenleri"] = eksikler
     return uygun, eksikler
 
 
@@ -2933,11 +3042,13 @@ while True:
 
             ath_uygun, ath_eksikler = ath_benzeri_kapisi(a)
             erken_uygun, erken_eksikler = guclu_erken_uyari_kapisi(a)
+            mikro_erken_uygun, mikro_erken_eksikler = mikro_erken_uyari_kapisi(a)
             h_ilk_al = a.get("h_ilk_karar") == "🟢 AL"
 
-            # İki güvenli mesaj yolu vardır:
+            # Üç güvenli mesaj yolu vardır:
             # 1) ATH benzeri çok güçlü yol
             # 2) GMT tipi, yüksek hacimli Güçlü Erken yol
+            # 3) BAT tipi, kısa ivmesi teyitli Mikro Erken yol
             # İkisi de H motorunun başlangıçta AL demesini ve ana nedenleri ister.
             if h_ilk_al and ana_neden_uygun and ath_uygun:
                 a["karar"] = "🟢 AL"
@@ -2949,12 +3060,21 @@ while True:
                     "Güçlü Erken Uyarı: yüksek hacim + devam + kalıcılık + Rel +2"
                 )
                 al_karar_izi(a.get("symbol", "?"), "guclu_erken", "GEÇTİ")
+            elif h_ilk_al and ana_neden_uygun and mikro_erken_uygun:
+                a["karar"] = "🟢 AL"
+                a["mesaj_kapisi"] = "mikro_erken"
+                a.setdefault("nedenler", []).append(
+                    "Mikro Erken Uyarı: güçlü 1-3-5dk ivmesi + temiz teknik başlangıç"
+                )
+                al_karar_izi(a.get("symbol", "?"), "mikro_erken", "GEÇTİ")
             elif h_ilk_al:
                 a["karar"] = "🟡 BEKLE"
                 a["mesaj_kapisi"] = "bekle"
-                tum_eksikler = list(dict.fromkeys(ath_eksikler + erken_eksikler))
+                tum_eksikler = list(dict.fromkeys(
+                    ath_eksikler + erken_eksikler + mikro_erken_eksikler
+                ))
                 a.setdefault("nedenler", []).append(
-                    "ATH/Güçlü Erken mesaj kapısı: " + "; ".join(tum_eksikler)
+                    "ATH/Güçlü Erken/Mikro Erken mesaj kapısı: " + "; ".join(tum_eksikler)
                 )
                 al_karar_izi(
                     a.get("symbol", "?"), "mesaj_kapisi", "VETO",
@@ -3158,10 +3278,15 @@ while True:
                         if a.get("mesaj_kapisi") == "guclu_erken"
                         else ""
                     )
+                    mikro_erken_baslik = (
+                        "🌱 MİKRO ERKEN UYARI\n"
+                        if a.get("mesaj_kapisi") == "mikro_erken"
+                        else ""
+                    )
                     d3 = float(mikro.get("d3", 0) or 0)
                     d5 = float(mikro.get("d5", 0) or 0)
                     mesaj += (
-                        f"{guclu_erken_baslik}"
+                        f"{guclu_erken_baslik}{mikro_erken_baslik}"
                         f"{sira_prefix} {gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 AL{onceki_5_etiket}\n"
                         f"💰 Fiyat: {round(a['fiyat'], 4)}\n"
                         f"{neden_satir}\n"
