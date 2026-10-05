@@ -38,7 +38,7 @@ son_fiyatlar = {}
 # Fast Scan V2: her coin icin son birkac ticker fiyatini API cagrisi yapmadan hafizada tut.
 # Boylece tek dakikada %0.40 sicramayan ama 3-5 dakikada basamakli hizlanan hareketler de gorulur.
 son_ticker_gecmisi = {}
-TICKER_GECMIS_UZUNLUK = 6
+TICKER_GECMIS_UZUNLUK = 16
 tarama_sayaci = 0
 SON_PIYASA_MEDYAN_60 = 0.0  # Son tam taramadaki TRY coinleri 60dk medyanı
 
@@ -123,6 +123,27 @@ MIKRO_ERKEN_MIN_D1 = 0.80
 MIKRO_ERKEN_MIN_D3 = 1.20
 MIKRO_ERKEN_MIN_D5 = 0.80
 MIKRO_ERKEN_MIN_ANA_NEDEN = 3
+
+# V DÖNÜŞ TEYİDİ - mum rengi/sayısı kullanılmaz.
+V_MIN_DUSUS = 1.50
+V_MIN_TOPARLANMA = 1.00
+V_MIN_GERI_ALIM = 55.0
+V_MAX_DIP_YASI_DK = 8
+V_MIN_HACIM_ORANI = 0.90
+V_MIN_AI = 76.0
+V_MIN_DEVAM = 55.0
+V_MIN_KALICILIK = 65.0
+V_MIN_ADX = 24.0
+V_MIN_ANA_NEDEN = 2
+
+# DENGELİ SEÇİLİ AL - özel dört kalıba tam uymayan kaliteli H-AL'ları korur.
+SECILI_AL_MIN_HACIM = 2.50
+SECILI_AL_MIN_RADAR = 60.0
+SECILI_AL_MIN_AI = 82.0
+SECILI_AL_MIN_DEVAM = 60.0
+SECILI_AL_MIN_KALICILIK = 75.0
+SECILI_AL_MIN_ADX = 27.0
+SECILI_AL_MIN_ANA_NEDEN = 3
 
 # AL Rejim / Seçicilik Öğrenmesi
 # AL öğrenme verisini Railway Volume varsa kalıcı alanda tut.
@@ -289,6 +310,66 @@ def _pct_son(c, n):
     return ((c[-1] - c[-1-n]) / c[-1-n]) * 100
 
 
+def _v_yapisi_hesapla(kapanislar, hacimler=None, pencere=16):
+    """Mum saymadan tepe-dip-toparlanma geometrisini ölçer."""
+    bos = {
+        "v_adayi": False, "v_dusus": 0.0, "v_toparlanma": 0.0,
+        "v_geri_alim": 0.0, "v_dip_yasi": 0, "v_hacim_orani": 0.0,
+    }
+    try:
+        c = [float(x) for x in list(kapanislar or [])[-pencere:] if float(x) > 0]
+        if len(c) < 7:
+            return bos
+        v = [float(x or 0) for x in list(hacimler or [])[-len(c):]]
+        n = len(c)
+        en_iyi = None
+        for dip_i in range(2, n - 1):
+            dip_yasi = n - 1 - dip_i
+            if dip_yasi < 1 or dip_yasi > V_MAX_DIP_YASI_DK:
+                continue
+            once = c[max(0, dip_i - 8):dip_i]
+            if not once:
+                continue
+            tepe = max(once)
+            dip = c[dip_i]
+            guncel = c[-1]
+            if tepe <= dip or dip <= 0:
+                continue
+            dusus = ((tepe - dip) / tepe) * 100
+            toparlanma = ((guncel - dip) / dip) * 100
+            geri_alim = ((guncel - dip) / (tepe - dip)) * 100
+            if dusus < V_MIN_DUSUS or toparlanma < 0.80 or geri_alim < 45.0:
+                continue
+            hacim_orani = 0.0
+            if len(v) == n:
+                once_v = v[max(0, dip_i - 3):dip_i + 1]
+                sonra_v = v[dip_i + 1:]
+                once_ort = sum(once_v) / len(once_v) if once_v else 0.0
+                sonra_ort = sum(sonra_v) / len(sonra_v) if sonra_v else 0.0
+                hacim_orani = sonra_ort / once_ort if once_ort > 0 else 0.0
+            puan = dusus + toparlanma + geri_alim / 10.0 - dip_yasi * 0.10
+            if en_iyi is None or puan > en_iyi[0]:
+                en_iyi = (puan, dusus, toparlanma, geri_alim, dip_yasi, hacim_orani)
+        if en_iyi is None:
+            return bos
+        _, dusus, toparlanma, geri_alim, dip_yasi, hacim_orani = en_iyi
+        return {
+            "v_adayi": bool(
+                dusus >= V_MIN_DUSUS
+                and toparlanma >= 0.80
+                and geri_alim >= 45.0
+                and dip_yasi <= V_MAX_DIP_YASI_DK
+            ),
+            "v_dusus": round(dusus, 2),
+            "v_toparlanma": round(toparlanma, 2),
+            "v_geri_alim": round(geri_alim, 1),
+            "v_dip_yasi": int(dip_yasi),
+            "v_hacim_orani": round(hacim_orani, 2),
+        }
+    except Exception:
+        return bos
+
+
 def mikro_ivme_hesapla(symbol):
     """1-3-5-10 dk fiyat/hacim ivmesi. Ana motoru bozmaz, erken adayı destekler."""
     try:
@@ -323,6 +404,7 @@ def mikro_ivme_hesapla(symbol):
         )
         hacim_ivmeleniyor = hacim1x >= 1.35 or hacim_ivme >= 1.25
         sisti = d10 >= 6.5 or d5 >= 5.0 or d3 >= 4.0
+        v_yapi = _v_yapisi_hesapla(c, v, 16)
 
         skor = 0
         if d1 >= 0.15: skor += 10
@@ -349,6 +431,7 @@ def mikro_ivme_hesapla(symbol):
             "basamak": basamak,
             "sisti": sisti,
             "skor": max(0, min(100, skor)),
+            **v_yapi,
         }
     except Exception as e:
         print(f"[MIKRO] {symbol}: {e}")
@@ -696,8 +779,16 @@ def kesif_gozlem_baslat(aday, btc_d, piyasa_medyan3):
         "guclu_erken_nedenleri": list(aday.get("guclu_erken_nedenleri", [])),
         "mikro_erken_mesaj": bool(aday.get("mikro_erken_mesaj")),
         "mikro_erken_nedenleri": list(aday.get("mikro_erken_nedenleri", [])),
+        "v_donus_mesaj": bool(aday.get("v_donus_mesaj")),
+        "v_donus_nedenleri": list(aday.get("v_donus_nedenleri", [])),
+        "secili_al_mesaj": bool(aday.get("secili_al_mesaj")),
+        "secili_al_nedenleri": list(aday.get("secili_al_nedenleri", [])),
+        "v_dusus": float(m.get("v_dusus", 0) or 0),
+        "v_toparlanma": float(m.get("v_toparlanma", 0) or 0),
+        "v_geri_alim": float(m.get("v_geri_alim", 0) or 0),
+        "v_hacim_orani": float(m.get("v_hacim_orani", 0) or 0),
         "mesaj_kapisi": str(aday.get("mesaj_kapisi", "bekle")),
-        "kesif_v": 7,
+        "kesif_v": 9,
         "ai": float(aday.get("ai_skoru", 0) or 0),
         "devam": float(aday.get("devam_gucu", 0) or 0),
         "kalicilik": float(aday.get("kalicilik_skoru", 0) or 0),
@@ -869,7 +960,7 @@ def kesif_raporu_gerekirse_gonder():
     if not gonder:
         return
     bas = planli_ts - KESIF_RAPOR_ARALIGI
-    tamam = [x for x in KESIF_KAYITLARI if x.get("tamamlandi") and int(x.get("kesif_v", 0) or 0) >= 7 and float(x.get("zaman",0) or 0) >= bas]
+    tamam = [x for x in KESIF_KAYITLARI if x.get("tamamlandi") and int(x.get("kesif_v", 0) or 0) >= 9 and float(x.get("zaman",0) or 0) >= bas]
     if len(tamam) < 20:
         mesaj = f"🧠 S49 3 GÜNLÜK KEŞİF RAPORU\n\nYeterli örnek yok: n={len(tamam)}. En az 20 tamamlanmış güçlü-aday gözlemi bekleniyor."
         print(mesaj); telegram_gonder(mesaj)
@@ -969,6 +1060,52 @@ def kesif_raporu_gerekirse_gonder():
             "iki grupta da en az 8 tamamlanmış gözlem bekleniyor."
         )
     sat.append("• Mikro eşikler tek BAT örneğiyle otomatik değiştirilmez; tekrarlı sonuç aranır.")
+
+    v_gecen = [x for x in tamam if x.get("v_donus_mesaj")]
+    v_diger = [x for x in tamam if not x.get("v_donus_mesaj")]
+    sat += ["", "✅ V DÖNÜŞ TEYİDİ TESTİ"]
+    if len(v_gecen) >= 8 and len(v_diger) >= 8:
+        sat.append(
+            f"• V Dönüş: n={len(v_gecen)} | +%5 %{_oran5(v_gecen):.1f} | "
+            f"ort. tepe %{_ortalama(v_gecen, 'max_getiri'):+.2f}"
+        )
+        sat.append(
+            f"• Diğer teknik adaylar: n={len(v_diger)} | +%5 %{_oran5(v_diger):.1f} | "
+            f"ort. tepe %{_ortalama(v_diger, 'max_getiri'):+.2f}"
+        )
+        if _oran5(v_gecen) <= _oran5(v_diger):
+            sat.append("• UYARI: V dönüş teyidi ayırıcı görünmüyor; eşikleri yeniden incele.")
+        else:
+            sat.append("• V dönüş teyidi faydalı görünüyor; sonraki raporda tekrar doğrula.")
+    else:
+        sat.append(
+            f"• Örnek yetersiz: V dönüş n={len(v_gecen)}, diğer n={len(v_diger)}; "
+            "iki grupta da en az 8 tamamlanmış gözlem bekleniyor."
+        )
+    sat.append("• V eşikleri mum sayısına göre değil, tekrarlanan dönüş başarısına göre önerilir.")
+
+    secili_gecen = [x for x in tamam if x.get("secili_al_mesaj")]
+    secili_diger = [x for x in tamam if not x.get("secili_al_mesaj")]
+    sat += ["", "🟢 SEÇİLİ AL DENGE TESTİ"]
+    if len(secili_gecen) >= 8 and len(secili_diger) >= 8:
+        sat.append(
+            f"• Seçili AL: n={len(secili_gecen)} | +%5 %{_oran5(secili_gecen):.1f} | "
+            f"ort. tepe %{_ortalama(secili_gecen, 'max_getiri'):+.2f}"
+        )
+        sat.append(
+            f"• Mesajsız izlenen: n={len(secili_diger)} | +%5 %{_oran5(secili_diger):.1f} | "
+            f"ort. tepe %{_ortalama(secili_diger, 'max_getiri'):+.2f}"
+        )
+        if _oran5(secili_gecen) <= _oran5(secili_diger):
+            sat.append("• UYARI: Seçili AL yolu yeterince ayırmıyor; eşikleri yeniden sıkılaştır.")
+        else:
+            sat.append("• Seçili AL yolu mesaj sayısı/kalite dengesini iyileştiriyor; tekrar doğrula.")
+    else:
+        sat.append(
+            f"• Örnek yetersiz: seçili AL n={len(secili_gecen)}, diğer n={len(secili_diger)}; "
+            "iki grupta da en az 8 tamamlanmış gözlem bekleniyor."
+        )
+    sat.append("• Bu yolun eşikleri +%5 başarısı düşerse raporda yeniden sıkılaştırılır.")
 
     diffs=[]
     for ad,key in prof_fields:
@@ -1952,6 +2089,110 @@ def mikro_erken_uyari_kapisi(aday):
     return uygun, eksikler
 
 
+def v_donus_uyari_kapisi(aday):
+    """Yalnız yapısal ve teknik olarak teyitli V dönüşlerini mesajlaştırır."""
+    teknik = aday.get("teknik") or {}
+    mikro = aday.get("mikro") or {}
+    kategori = str(aday.get("radar_kategori", ""))
+    try:
+        ai = float(aday.get("ai_skoru", 0) or 0)
+        devam = float(aday.get("devam_gucu", 0) or 0)
+        kalicilik = float(aday.get("kalicilik_skoru", 0) or 0)
+        adx = float(teknik.get("adx", 0) or 0)
+        rsi = float(teknik.get("rsi", 0) or 0)
+        ema20 = float(teknik.get("ema20", 0) or 0)
+        ema50 = float(teknik.get("ema50", 0) or 0)
+        macd = float(teknik.get("macd_hist", 0) or 0)
+        fiyat = float(aday.get("fiyat", 0) or 0)
+        d1 = float(mikro.get("d1", 0) or 0)
+        d3 = float(mikro.get("d3", 0) or 0)
+        v_dusus = float(mikro.get("v_dusus", 0) or 0)
+        v_toparlanma = float(mikro.get("v_toparlanma", 0) or 0)
+        v_geri_alim = float(mikro.get("v_geri_alim", 0) or 0)
+        v_hacim = float(mikro.get("v_hacim_orani", 0) or 0)
+        hacim1x = float(mikro.get("hacim1x", 0) or 0)
+    except (TypeError, ValueError):
+        ai = devam = kalicilik = adx = rsi = 0.0
+        ema20 = ema50 = macd = fiyat = d1 = d3 = 0.0
+        v_dusus = v_toparlanma = v_geri_alim = v_hacim = hacim1x = 0.0
+
+    teknik_temiz = ema20 > ema50 and fiyat > ema20 and macd > 0 and 48 <= rsi <= 68
+    kontroller = [
+        ("V Dönüş" in kategori and bool(aday.get("v_donus_adayi")), "V dönüş profili teyitli değil"),
+        (v_dusus >= V_MIN_DUSUS, f"düşüş %{v_dusus:.2f} < %{V_MIN_DUSUS:.2f}"),
+        (v_toparlanma >= V_MIN_TOPARLANMA, f"toparlanma %{v_toparlanma:.2f} < %{V_MIN_TOPARLANMA:.2f}"),
+        (v_geri_alim >= V_MIN_GERI_ALIM, f"geri alım %{v_geri_alim:.1f} < %{V_MIN_GERI_ALIM:.0f}"),
+        (v_hacim >= V_MIN_HACIM_ORANI or hacim1x >= 1.20, "toparlanma hacmi yetersiz"),
+        (d1 > 0 and d3 > 0, "kısa momentum dönüşü pozitif değil"),
+        (ai >= V_MIN_AI, f"AI {ai:.1f} < {V_MIN_AI:.0f}"),
+        (devam >= V_MIN_DEVAM, f"Devam {devam:.1f} < {V_MIN_DEVAM:.0f}"),
+        (kalicilik >= V_MIN_KALICILIK, f"Kalıcılık {kalicilik:.1f} < {V_MIN_KALICILIK:.0f}"),
+        (adx >= V_MIN_ADX, f"ADX {adx:.1f} < {V_MIN_ADX:.0f}"),
+        (teknik_temiz, "EMA/MACD/RSI dönüş teyidi uygun değil"),
+        (int(aday.get("neden_ana_sayi", 0) or 0) >= V_MIN_ANA_NEDEN, f"önemli neden {V_MIN_ANA_NEDEN}/5 altında"),
+        (not mikro.get("sisti", False), "dönüş kısa vadede şişmiş"),
+    ]
+    eksikler = [neden for uygun, neden in kontroller if not uygun]
+    uygun = not eksikler
+    aday["v_donus_mesaj"] = uygun
+    aday["v_donus_nedenleri"] = eksikler
+    return uygun, eksikler
+
+
+def secili_al_kapisi(aday):
+    """Özel kalıplara sığmayan fakat genel olarak kaliteli H-AL'ları geçirir."""
+    teknik = aday.get("teknik") or {}
+    mikro = aday.get("mikro") or {}
+    try:
+        hacim = float(aday.get("hacim", 0) or 0)
+        radar = float(aday.get("radar_skoru", 0) or 0)
+        ai = float(aday.get("ai_skoru", 0) or 0)
+        devam = float(aday.get("devam_gucu", 0) or 0)
+        kalicilik = float(aday.get("kalicilik_skoru", 0) or 0)
+        kod_kalite = float(aday.get("kod_oneri_kalite", 0) or 0)
+        adx = float(teknik.get("adx", 0) or 0)
+        rsi = float(teknik.get("rsi", 0) or 0)
+        ema20 = float(teknik.get("ema20", 0) or 0)
+        ema50 = float(teknik.get("ema50", 0) or 0)
+        macd = float(teknik.get("macd_hist", 0) or 0)
+        fiyat = float(aday.get("fiyat", 0) or 0)
+        deg1 = float(aday.get("degisim1", 0) or 0)
+        deg3 = float(aday.get("degisim3", 0) or 0)
+        deg24 = float(aday.get("degisim24", 0) or 0)
+    except (TypeError, ValueError):
+        hacim = radar = ai = devam = kalicilik = kod_kalite = adx = rsi = 0.0
+        ema20 = ema50 = macd = fiyat = 0.0
+        deg1 = deg3 = deg24 = 999.0
+
+    teknik_temiz = ema20 > ema50 and fiyat > ema20 and macd > 0 and 48 <= rsi <= 75
+    en_az_bir_momentum = bool(aday.get("kod_oneri_d3_ok") or aday.get("kod_oneri_d5_ok"))
+    gec_kalma_yok = (
+        deg1 <= 8.0
+        and deg3 <= 12.0
+        and deg24 <= 30.0
+        and not mikro.get("sisti", False)
+    )
+    kontroller = [
+        (hacim >= SECILI_AL_MIN_HACIM, f"hacim {hacim:.2f}x < {SECILI_AL_MIN_HACIM:.1f}x"),
+        (radar >= SECILI_AL_MIN_RADAR, f"Radar {radar:.1f} < {SECILI_AL_MIN_RADAR:.0f}"),
+        (ai >= SECILI_AL_MIN_AI, f"AI {ai:.1f} < {SECILI_AL_MIN_AI:.0f}"),
+        (devam >= SECILI_AL_MIN_DEVAM, f"Devam {devam:.1f} < {SECILI_AL_MIN_DEVAM:.0f}"),
+        (kalicilik >= SECILI_AL_MIN_KALICILIK, f"Kalıcılık {kalicilik:.1f} < {SECILI_AL_MIN_KALICILIK:.0f}"),
+        (kod_kalite >= KOD_ONERI_KALITE_MIN, f"Kod Kalitesi {kod_kalite:.1f} < {KOD_ONERI_KALITE_MIN:.0f}"),
+        (adx >= SECILI_AL_MIN_ADX, f"ADX {adx:.1f} < {SECILI_AL_MIN_ADX:.0f}"),
+        (teknik_temiz, "EMA/MACD/RSI genel teknik yapısı uygun değil"),
+        (en_az_bir_momentum, "3dk/5dk momentum teyidi yok"),
+        (int(aday.get("neden_ana_sayi", 0) or 0) >= SECILI_AL_MIN_ANA_NEDEN, f"önemli neden {SECILI_AL_MIN_ANA_NEDEN}/5 altında"),
+        (str(aday.get("risk", "")) != "Yüksek", "risk yüksek"),
+        (gec_kalma_yok, "hareket geç/şişmiş bölgede"),
+    ]
+    eksikler = [neden for uygun, neden in kontroller if not uygun]
+    uygun = not eksikler
+    aday["secili_al_mesaj"] = uygun
+    aday["secili_al_nedenleri"] = eksikler
+    return uygun, eksikler
+
+
 def stable_coin_mi(symbol):
     coin = symbol.replace("TRY", "")
     return coin in STABLE_COINLER
@@ -2389,7 +2630,23 @@ def h_karar_hesapla(aday):
         and (mikro.get("hacim_ivmeleniyor") or float(mikro.get("hacim1x", 0) or 0) >= 1.40)
     )
 
-    if normal_al or elit_al or yildiz_istisna or erken_al or mikro_erken_al:
+    # V dönüş yolu mum sayısına değil tepe-dip-toparlanma geometrisine dayanır.
+    v_donus_al = (
+        aday.get("v_donus_adayi", False)
+        and "V Dönüş" in kategori
+        and ema_yukari
+        and rsi is not None
+        and 48 <= rsi <= 68
+        and macd_pozitif
+        and adx is not None
+        and adx >= V_MIN_ADX
+        and skor >= V_MIN_AI
+        and float(mikro.get("d1", 0) or 0) > 0
+        and float(mikro.get("d3", 0) or 0) > 0
+        and not mikro.get("sisti", False)
+    )
+
+    if normal_al or elit_al or yildiz_istisna or erken_al or mikro_erken_al or v_donus_al:
         karar = "🟢 AL"
     elif skor >= 55:
         karar = "🟡 BEKLE"
@@ -2525,17 +2782,22 @@ while True:
                 # Tek dakikada %0.40 yapmasa bile 3 dk +%0.75 veya 5 dk +%1.10
                 # basamakli hizlanan coin derin incelemeye girer. TT tipi hareketleri kacirmamak icin.
                 ticker_basamak_hizli = (hizli_degisim3 >= 0.75 or hizli_degisim5 >= 1.10)
+                ticker_v_yapi = _v_yapisi_hesapla(gecmis, None, TICKER_GECMIS_UZUNLUK)
+                ticker_v_adayi = bool(ticker_v_yapi.get("v_adayi"))
 
                 if (
                     not tam_tarama
                     and abs(hizli_degisim) < HIZLI_HAREKET_ESIGI
                     and not ticker_basamak_hizli
+                    and not ticker_v_adayi
                     and not havuzda
                 ):
                     continue
 
                 if not tam_tarama:
-                    if havuzda and abs(hizli_degisim) < HIZLI_HAREKET_ESIGI and not ticker_basamak_hizli:
+                    if ticker_v_adayi:
+                        kaynak = "VON"
+                    elif havuzda and abs(hizli_degisim) < HIZLI_HAREKET_ESIGI and not ticker_basamak_hizli:
                         kaynak = "HAVUZ"
                     elif ticker_basamak_hizli and abs(hizli_degisim) < HIZLI_HAREKET_ESIGI:
                         kaynak = "HIZLI3"
@@ -2786,6 +3048,12 @@ while True:
                             and hacim_kat >= 1.50
                             and btc_fark3 >= -0.8
                         )
+                        # Mum saymadan ticker tepe-dip-toparlanma ön alarmı
+                        or (
+                            ticker_v_adayi
+                            and hacim_kat >= 0.90
+                            and btc_fark3 >= -1.0
+                        )
                     )
                 )
 
@@ -2872,6 +3140,7 @@ while True:
                     "erken_aday": erken_aday,
                     "assistant_ana_aday": assistant_ana_aday,
                     "mikro_on_alarm": mikro_on_alarm,
+                    "ticker_v_adayi": ticker_v_adayi,
                     "hizli_degisim1": round(hizli_degisim, 3),
                     "hizli_degisim3": round(hizli_degisim3, 3),
                     "hizli_degisim5": round(hizli_degisim5, 3),
@@ -2950,6 +3219,7 @@ while True:
         mikro_on_top = sorted(
             [a for a in adaylar if a.get("mikro_on_alarm")],
             key=lambda x: (
+                1 if x.get("ticker_v_adayi") else 0,
                 x.get("hizli_degisim3", 0),
                 x.get("hizli_degisim5", 0),
                 x.get("hacim", 0),
@@ -2988,11 +3258,27 @@ while True:
                 and (mikro.get("hacim_ivmeleniyor") or float(mikro.get("hacim1x", 0) or 0) >= 1.30)
                 and float(a.get("btc_fark3", 0) or 0) >= -0.8
             )
+            a["v_donus_adayi"] = bool(
+                mikro.get("v_adayi")
+                and float(mikro.get("v_dusus", 0) or 0) >= V_MIN_DUSUS
+                and float(mikro.get("v_toparlanma", 0) or 0) >= V_MIN_TOPARLANMA
+                and float(mikro.get("v_geri_alim", 0) or 0) >= V_MIN_GERI_ALIM
+                and int(mikro.get("v_dip_yasi", 99) or 99) <= V_MAX_DIP_YASI_DK
+                and (
+                    float(mikro.get("v_hacim_orani", 0) or 0) >= V_MIN_HACIM_ORANI
+                    or float(mikro.get("hacim1x", 0) or 0) >= 1.20
+                )
+                and float(a.get("btc_fark3", 0) or 0) >= -1.0
+                and not mikro.get("sisti", False)
+            )
 
             # Normal Radar kapısından gelmeyen coin ancak gerçek mikro teyit aldıysa
             # teknik AL motoruna geçebilir. Mikro teyit yoksa burada elenir.
             if a.get("mikro_on_alarm") and not a.get("assistant_ana_aday"):
-                if a["mikro_aday"]:
+                if a["v_donus_adayi"]:
+                    a["radar_kategori"] = "✅ V Dönüş"
+                    a["assistant_ana_aday"] = True
+                elif a["mikro_aday"]:
                     a["erken_aday"] = True
                     a["radar_kategori"] = "🌱 Mikro Erken"
                     a["assistant_ana_aday"] = True
@@ -3043,13 +3329,18 @@ while True:
             ath_uygun, ath_eksikler = ath_benzeri_kapisi(a)
             erken_uygun, erken_eksikler = guclu_erken_uyari_kapisi(a)
             mikro_erken_uygun, mikro_erken_eksikler = mikro_erken_uyari_kapisi(a)
+            v_donus_uygun, v_donus_eksikler = v_donus_uyari_kapisi(a)
+            secili_uygun, secili_eksikler = secili_al_kapisi(a)
             h_ilk_al = a.get("h_ilk_karar") == "🟢 AL"
+            v_ana_neden_uygun = int(a.get("neden_ana_sayi", 0) or 0) >= V_MIN_ANA_NEDEN
 
-            # Üç güvenli mesaj yolu vardır:
+            # Dört özel yol + dengeli Seçili AL yolu vardır:
             # 1) ATH benzeri çok güçlü yol
             # 2) GMT tipi, yüksek hacimli Güçlü Erken yol
             # 3) BAT tipi, kısa ivmesi teyitli Mikro Erken yol
-            # İkisi de H motorunun başlangıçta AL demesini ve ana nedenleri ister.
+            # 4) Mum saymadan tepe-dip-toparlanma teyitli V Dönüş yolu
+            # 5) Özel kalıba tam uymasa da genel kaliteyi geçen Seçili AL
+            # Tümü H motorunun başlangıçta AL demesini ve kendi teyitlerini ister.
             if h_ilk_al and ana_neden_uygun and ath_uygun:
                 a["karar"] = "🟢 AL"
                 a["mesaj_kapisi"] = "ath"
@@ -3067,14 +3358,29 @@ while True:
                     "Mikro Erken Uyarı: güçlü 1-3-5dk ivmesi + temiz teknik başlangıç"
                 )
                 al_karar_izi(a.get("symbol", "?"), "mikro_erken", "GEÇTİ")
+            elif h_ilk_al and v_ana_neden_uygun and v_donus_uygun:
+                a["karar"] = "🟢 AL"
+                a["mesaj_kapisi"] = "v_donus"
+                a.setdefault("nedenler", []).append(
+                    "V Dönüş Teyitli: dipten hızlı toparlanma + geri alım + teknik onay"
+                )
+                al_karar_izi(a.get("symbol", "?"), "v_donus", "GEÇTİ")
+            elif h_ilk_al and ana_neden_uygun and secili_uygun:
+                a["karar"] = "🟢 AL"
+                a["mesaj_kapisi"] = "secili_al"
+                a.setdefault("nedenler", []).append(
+                    "Seçili AL: genel kalite + teknik teyit + sağlıklı momentum"
+                )
+                al_karar_izi(a.get("symbol", "?"), "secili_al", "GEÇTİ")
             elif h_ilk_al:
                 a["karar"] = "🟡 BEKLE"
                 a["mesaj_kapisi"] = "bekle"
                 tum_eksikler = list(dict.fromkeys(
                     ath_eksikler + erken_eksikler + mikro_erken_eksikler
+                    + v_donus_eksikler + secili_eksikler
                 ))
                 a.setdefault("nedenler", []).append(
-                    "ATH/Güçlü Erken/Mikro Erken mesaj kapısı: " + "; ".join(tum_eksikler)
+                    "Özel/Seçili AL mesaj kapısı: " + "; ".join(tum_eksikler)
                 )
                 al_karar_izi(
                     a.get("symbol", "?"), "mesaj_kapisi", "VETO",
@@ -3283,14 +3589,32 @@ while True:
                         if a.get("mesaj_kapisi") == "mikro_erken"
                         else ""
                     )
+                    v_donus_baslik = (
+                        "✅ V DÖNÜŞ TEYİTLİ\n"
+                        if a.get("mesaj_kapisi") == "v_donus"
+                        else ""
+                    )
+                    secili_al_baslik = (
+                        "🟢 SEÇİLİ AL\n"
+                        if a.get("mesaj_kapisi") == "secili_al"
+                        else ""
+                    )
+                    v_donus_satir = ""
+                    if a.get("mesaj_kapisi") == "v_donus":
+                        v_donus_satir = (
+                            f"V: düşüş %-{float(mikro.get('v_dusus', 0) or 0):.2f} | "
+                            f"toparlanma %+{float(mikro.get('v_toparlanma', 0) or 0):.2f} | "
+                            f"geri alım %{float(mikro.get('v_geri_alim', 0) or 0):.0f}\n"
+                        )
                     d3 = float(mikro.get("d3", 0) or 0)
                     d5 = float(mikro.get("d5", 0) or 0)
                     mesaj += (
-                        f"{guclu_erken_baslik}{mikro_erken_baslik}"
+                        f"{guclu_erken_baslik}{mikro_erken_baslik}{v_donus_baslik}{secili_al_baslik}"
                         f"{sira_prefix} {gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 AL{onceki_5_etiket}\n"
                         f"💰 Fiyat: {round(a['fiyat'], 4)}\n"
                         f"{neden_satir}\n"
                         + (" • ".join(gorunen_nedenler) + "\n" if gorunen_nedenler else "")
+                        + v_donus_satir
                         + f"Hacim: {a.get('hacim', 0)}x | 3dk: %{d3:+.2f} | 5dk: %{d5:+.2f}\n\n"
                     )
                 print(mesaj)
