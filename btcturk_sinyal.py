@@ -1,5 +1,5 @@
 # ==========================================
-# S49 V18 | DENGELİ SEÇİCİLİK + GELİŞMİŞ 3 GÜNLÜK ÖĞRENME | EMİRSİZ RADAR
+# S49 V19 | DENGELİ SEÇİCİLİK + 48S UZUN TREND KEŞFİ | EMİRSİZ RADAR
 # Amaç: +%5 yapanların ortak güç yapısını bilgi/puan olarak kullanmak; iyi adayları sert eşiklerle boğmamak.
 # AL/SAT yalnızca tarayıcı sinyali ve bilgilendirme etiketidir; emir, pozisyon ve zarar-kes takibi yoktur.
 # Taban: main (21).py
@@ -177,6 +177,19 @@ KESIF_ORNEKLEME_ARALIGI = 30 * 60   # aynı coin için en fazla 30 dk'da bir yen
 KESIF_DOSYA = os.path.join(_AL_DEFAULT_DIR, "s49_guc_kesif_3gun.json")
 KESIF_META_DOSYA = os.path.join(_AL_DEFAULT_DIR, "s49_guc_kesif_meta.json")
 KESIF_MAX_KAYIT = 4000
+
+# V19 UZUN TREND / BÜYÜK HAREKET KEŞFİ
+# AL üretmez ve Telegram seçimini değiştirmez. Bütün uygun TRY coinlerini
+# 12 saatte bir başlangıç özellikleriyle kaydeder, 48 saat gölge izler.
+UZUN_KESIF_DOSYA = os.path.join(_AL_DEFAULT_DIR, "s49_uzun_trend_48s.json")
+UZUN_META_DOSYA = os.path.join(_AL_DEFAULT_DIR, "s49_uzun_trend_meta.json")
+UZUN_IZLEME_SURESI = 48 * 60 * 60
+UZUN_ORNEKLEME_ARALIGI = 12 * 60 * 60
+UZUN_RAPOR_ARALIGI = 7 * 24 * 60 * 60
+UZUN_ILK_RAPOR_TS = 1791782100.0  # 12.10.2026 08:15 Türkiye saati
+UZUN_MAX_KAYIT = 12000
+UZUN_HEDEFLER = (5, 10, 20, 40, 60, 70)
+UZUN_UFUKLAR = ((3, 3 * 60 * 60), (5, 5 * 60 * 60), (12, 12 * 60 * 60), (24, 24 * 60 * 60), (48, 48 * 60 * 60))
 
 
 def _s49_planli_rapor_zamani(simdi, meta):
@@ -1362,6 +1375,423 @@ if not KESIF_META.get("baslangic"):
     KESIF_META["baslangic"] = time.time()
     KESIF_META["son_rapor"] = KESIF_META["baslangic"]
     _kesif_meta_kaydet()
+
+
+def _uzun_kaydet():
+    try:
+        klasor = os.path.dirname(os.path.abspath(UZUN_KESIF_DOSYA))
+        if klasor:
+            os.makedirs(klasor, exist_ok=True)
+        with open(UZUN_KESIF_DOSYA, "w", encoding="utf-8") as f:
+            json.dump(UZUN_KAYITLARI[-UZUN_MAX_KAYIT:], f, ensure_ascii=False)
+    except Exception as e:
+        print("Uzun trend kayıtları yazılamadı:", e)
+
+
+def _uzun_meta_kaydet():
+    try:
+        klasor = os.path.dirname(os.path.abspath(UZUN_META_DOSYA))
+        if klasor:
+            os.makedirs(klasor, exist_ok=True)
+        with open(UZUN_META_DOSYA, "w", encoding="utf-8") as f:
+            json.dump(UZUN_META, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("Uzun trend meta yazılamadı:", e)
+
+
+def uzun_kesif_toplu_baslat(adaylar, btc_d, piyasa_medyan1, piyasa_medyan3):
+    """Tam taramada bütün uygun TRY coinlerini 12 saatte bir gölge kayda alır."""
+    if not adaylar:
+        return
+    simdi = time.time()
+    son_zaman = {}
+    for k in reversed(UZUN_KAYITLARI[-5000:]):
+        symbol = k.get("symbol")
+        if symbol and symbol not in son_zaman:
+            son_zaman[symbol] = float(k.get("zaman", 0) or 0)
+
+    eklendi = False
+    for a in adaylar:
+        symbol = a.get("symbol")
+        giris = float(a.get("fiyat", 0) or 0)
+        if not symbol or giris <= 0:
+            continue
+        if simdi - son_zaman.get(symbol, 0) < UZUN_ORNEKLEME_ARALIGI:
+            continue
+        rec = {
+            "symbol": symbol,
+            "zaman": simdi,
+            "giris": giris,
+            "max_getiri": 0.0,
+            "min_getiri": 0.0,
+            "son_getiri": None,
+            "tamamlandi": False,
+            "telegrama_gonderildi": False,
+            "kod_surumu": "V19",
+            "piyasa_rejim": _rejim_etiketi(piyasa_medyan3),
+            "btc_rejim": _rejim_etiketi(float(btc_d.get("3s", 0) or 0)),
+            "piyasa_medyan1": round(float(piyasa_medyan1 or 0), 3),
+            "piyasa_medyan3": round(float(piyasa_medyan3 or 0), 3),
+            "btc1": round(float(btc_d.get("1s", 0) or 0), 3),
+            "btc3": round(float(btc_d.get("3s", 0) or 0), 3),
+            "hacim": float(a.get("hacim", 0) or 0),
+            "degisim1": float(a.get("degisim1", 0) or 0),
+            "degisim3": float(a.get("degisim3", 0) or 0),
+            "degisim24": float(a.get("degisim24", 0) or 0),
+            "radar": float(a.get("radar_skoru", 0) or 0),
+            "genel": float(a.get("genel_skor", 0) or 0),
+            "kalite": float(a.get("kalite_skoru", 0) or 0),
+            "lider": float(a.get("lider_skoru", 0) or 0),
+            "btc_fark3": float(a.get("btc_fark3", 0) or 0),
+            "btc_guc": float(a.get("btc_guc_skoru", 0) or 0),
+            "hacim_hiz": bool(a.get("hacim_hizlaniyor")),
+            "momentum_hiz": bool(a.get("momentum_hizlaniyor")),
+            "btc_fark_ac": bool(a.get("btc_farki_aciliyor")),
+            "lider_guc": bool(a.get("lider_gucleniyor")),
+            "basamak": bool(a.get("basamakli_trend")),
+            "zirve_yakin": bool(a.get("zirve_yakin")),
+            "yeni_zirve": bool(a.get("yeni_zirve")),
+            "satis_baskisi": bool(a.get("satis_baskisi")),
+            "pozitif12_oran": float(a.get("pozitif12_oran", 0) or 0),
+            "momentum6": float(a.get("momentum6", 0) or 0),
+            "maks_saatlik": float(a.get("maks_saatlik", 0) or 0),
+            "tek_saat_payi": float(a.get("tek_saat_payi", 0) or 0),
+            "zirve_uzaklik12": float(a.get("zirve_uzaklik12", 0) or 0),
+            "s49_aday": bool(a.get("assistant_ana_aday") or a.get("mikro_on_alarm")),
+        }
+        for saat, _ in UZUN_UFUKLAR:
+            rec[f"getiri_{saat}s"] = None
+        for hedef in UZUN_HEDEFLER:
+            rec[f"hedef{hedef}_sure_sn"] = None
+        UZUN_KAYITLARI.append(rec)
+        son_zaman[symbol] = simdi
+        eklendi = True
+    if eklendi:
+        del UZUN_KAYITLARI[:-UZUN_MAX_KAYIT]
+        _uzun_kaydet()
+
+
+def uzun_kesif_guncelle(ticker):
+    if not UZUN_KAYITLARI:
+        return
+    simdi = time.time()
+    fiyatlar = {}
+    for coin in ticker:
+        try:
+            symbol = coin.get("pair", "")
+            fiyat = float(coin.get("last", 0) or 0)
+            if symbol and fiyat > 0:
+                fiyatlar[symbol] = fiyat
+        except Exception:
+            pass
+    degisti = False
+    for k in UZUN_KAYITLARI:
+        if k.get("tamamlandi"):
+            continue
+        fiyat = fiyatlar.get(k.get("symbol"))
+        giris = float(k.get("giris", 0) or 0)
+        if not fiyat or giris <= 0:
+            continue
+        getiri = _pct(fiyat, giris)
+        eski_max = float(k.get("max_getiri", 0) or 0)
+        eski_min = float(k.get("min_getiri", 0) or 0)
+        yeni_max = max(eski_max, getiri)
+        yeni_min = min(eski_min, getiri)
+        if yeni_max != eski_max or yeni_min != eski_min:
+            k["max_getiri"] = round(yeni_max, 3)
+            k["min_getiri"] = round(yeni_min, 3)
+            degisti = True
+        gecen = simdi - float(k.get("zaman", simdi) or simdi)
+        for hedef in UZUN_HEDEFLER:
+            alan = f"hedef{hedef}_sure_sn"
+            if k.get(alan) is None and getiri >= hedef:
+                k[alan] = round(gecen, 1)
+                degisti = True
+        for saat, sure in UZUN_UFUKLAR:
+            alan = f"getiri_{saat}s"
+            if k.get(alan) is None and gecen >= sure:
+                k[alan] = round(getiri, 3)
+                degisti = True
+        if gecen >= UZUN_IZLEME_SURESI:
+            k["son_getiri"] = round(getiri, 3)
+            k["getiri_48s"] = round(getiri, 3)
+            tepe = float(k.get("max_getiri", 0) or 0)
+            k["geri_verme_orani"] = round(max(0.0, (tepe - getiri) / tepe * 100.0), 1) if tepe > 0 else 0.0
+            k["tamamlandi"] = True
+            k["tamamlanma_zamani"] = simdi
+            degisti = True
+    if degisti:
+        _uzun_kaydet()
+
+
+def uzun_kesif_telegram_isaretle(aday):
+    symbol = aday.get("symbol")
+    if not symbol:
+        return
+    simdi = time.time()
+    for k in reversed(UZUN_KAYITLARI[-2000:]):
+        if k.get("symbol") != symbol:
+            continue
+        if simdi - float(k.get("zaman", 0) or 0) > UZUN_ORNEKLEME_ARALIGI:
+            break
+        k["telegrama_gonderildi"] = True
+        k["telegram_gonderim_zamani"] = simdi
+        k["mesaj_kapisi"] = str(aday.get("mesaj_kapisi", ""))
+        _uzun_kaydet()
+        return
+
+
+def _uzun_benzersiz_hareketler(kayitlar):
+    hareketler = []
+    son = {}
+    for k in sorted(kayitlar, key=lambda x: float(x.get("zaman", 0) or 0)):
+        symbol = k.get("symbol")
+        zaman = float(k.get("zaman", 0) or 0)
+        onceki = son.get(symbol)
+        if onceki is None or zaman - float(onceki.get("ilk_zaman", 0) or 0) >= UZUN_IZLEME_SURESI:
+            h = dict(k)
+            h["ilk_zaman"] = zaman
+            hareketler.append(h)
+            son[symbol] = h
+            continue
+        onceki["max_getiri"] = max(float(onceki.get("max_getiri", 0) or 0), float(k.get("max_getiri", 0) or 0))
+        onceki["min_getiri"] = min(float(onceki.get("min_getiri", 0) or 0), float(k.get("min_getiri", 0) or 0))
+        onceki["telegrama_gonderildi"] = bool(onceki.get("telegrama_gonderildi") or k.get("telegrama_gonderildi"))
+        for hedef in UZUN_HEDEFLER:
+            alan = f"hedef{hedef}_sure_sn"
+            degerler = [x for x in (onceki.get(alan), k.get(alan)) if x is not None]
+            onceki[alan] = min(degerler) if degerler else None
+    return hareketler
+
+
+def _uzun_oran(grup, hedef):
+    return sum(1 for x in grup if float(x.get("max_getiri", 0) or 0) >= hedef) / len(grup) * 100.0 if grup else 0.0
+
+
+def _uzun_kural_adaylari(grup, hedef=20):
+    """Eski %70 / yeni %30 ayrımında iki tarafta da çalışan kuralları bulur."""
+    if len(grup) < 40:
+        return []
+    sirali = sorted(grup, key=lambda x: float(x.get("zaman", 0) or 0))
+    kes = max(28, int(len(sirali) * 0.70))
+    egitim, dogrulama = sirali[:kes], sirali[kes:]
+    if len(dogrulama) < 10:
+        return []
+
+    def quantile(veri, alan, q):
+        degerler = sorted(float(x.get(alan, 0) or 0) for x in veri)
+        if not degerler:
+            return 0.0
+        konum = (len(degerler) - 1) * q
+        alt = int(konum)
+        ust = min(alt + 1, len(degerler) - 1)
+        agirlik = konum - alt
+        return degerler[alt] * (1.0 - agirlik) + degerler[ust] * agirlik
+
+    baz_e = _uzun_oran(egitim, hedef)
+    baz_d = _uzun_oran(dogrulama, hedef)
+    sartlar = []
+    for ad, alan in [
+        ("Hacim", "hacim"), ("1s momentum", "degisim1"), ("3s momentum", "degisim3"),
+        ("24s hareket", "degisim24"), ("Radar", "radar"), ("Lider", "lider"),
+        ("BTC farkı", "btc_fark3"), ("Genel skor", "genel"),
+        ("Pozitif saat oranı", "pozitif12_oran"), ("6s momentum", "momentum6"),
+        ("Tek saate sıkışma payı", "tek_saat_payi"), ("Zirveye uzaklık", "zirve_uzaklik12"),
+    ]:
+        q25 = quantile(egitim, alan, 0.25)
+        q50 = quantile(egitim, alan, 0.50)
+        q75 = quantile(egitim, alan, 0.75)
+        for esik in sorted(set((q25, q50, q75))):
+            for yon in (">=", "<"):
+                sartlar.append({"ad": ad, "alan": alan, "esik": esik, "yon": yon, "tip": "num"})
+        if q75 > q25:
+            sartlar.append({"ad": ad, "alan": alan, "alt": q25, "ust": q75, "yon": "bant", "tip": "band"})
+    for ad, alan in [
+        ("Hacim hızlanıyor", "hacim_hiz"), ("Momentum hızlanıyor", "momentum_hiz"),
+        ("BTC farkı açılıyor", "btc_fark_ac"), ("Lider güçleniyor", "lider_guc"),
+        ("Basamaklı trend", "basamak"), ("S49 adayı", "s49_aday"),
+    ]:
+        sartlar.append({"ad": ad, "alan": alan, "esik": True, "yon": "=", "tip": "bool"})
+
+    def uygun(x, sart):
+        if sart["tip"] == "bool":
+            return bool(x.get(sart["alan"]))
+        deger = float(x.get(sart["alan"], 0) or 0)
+        if sart["tip"] == "band":
+            return sart["alt"] <= deger <= sart["ust"]
+        return deger >= sart["esik"] if sart["yon"] == ">=" else deger < sart["esik"]
+
+    tekler = []
+    for sart in sartlar:
+        e = [x for x in egitim if uygun(x, sart)]
+        d = [x for x in dogrulama if uygun(x, sart)]
+        if len(e) < 10 or len(d) < 5 or len(e) > len(egitim) * 0.85:
+            continue
+        oe, od = _uzun_oran(e, hedef), _uzun_oran(d, hedef)
+        le, ld = oe - baz_e, od - baz_d
+        if le >= 3.0 and ld >= 2.0:
+            tekler.append({"sartlar": [sart], "oran_e": oe, "oran_d": od, "n_e": len(e), "n_d": len(d), "lift": min(le, ld)})
+
+    ikililer = []
+    en_iyi_sartlar = [x["sartlar"][0] for x in sorted(tekler, key=lambda z: z["lift"], reverse=True)[:8]]
+    for i in range(len(en_iyi_sartlar)):
+        for j in range(i + 1, len(en_iyi_sartlar)):
+            s1, s2 = en_iyi_sartlar[i], en_iyi_sartlar[j]
+            if s1["alan"] == s2["alan"]:
+                continue
+            e = [x for x in egitim if uygun(x, s1) and uygun(x, s2)]
+            d = [x for x in dogrulama if uygun(x, s1) and uygun(x, s2)]
+            if len(e) < 8 or len(d) < 5:
+                continue
+            oe, od = _uzun_oran(e, hedef), _uzun_oran(d, hedef)
+            le, ld = oe - baz_e, od - baz_d
+            if le >= 5.0 and ld >= 3.0:
+                ikililer.append({"sartlar": [s1, s2], "oran_e": oe, "oran_d": od, "n_e": len(e), "n_d": len(d), "lift": min(le, ld)})
+    return sorted(tekler + ikililer, key=lambda z: (len(z["sartlar"]), z["lift"]), reverse=True)[:6]
+
+
+def _uzun_sart_metni(sart):
+    if sart["tip"] == "bool":
+        return sart["ad"]
+    if sart["tip"] == "band":
+        return f"{sart['ad']} {float(sart['alt']):.2f}–{float(sart['ust']):.2f}"
+    return f"{sart['ad']} {sart['yon']} {float(sart['esik']):.2f}"
+
+
+def _uzun_oneri_durumlari(kurallar):
+    onceki = UZUN_META.get("oneriler", {}) if isinstance(UZUN_META.get("oneriler", {}), dict) else {}
+    yeni = {}
+    sonuc = []
+    for kural in kurallar:
+        imza = "+".join(f"{s['alan']}:{s['yon']}" for s in kural["sartlar"])
+        seri = int((onceki.get(imza) or {}).get("seri", 0) or 0) + 1
+        durum = "BONUS ADAYI" if seri >= 3 else ("GÖLGE TEST" if seri >= 2 else "İZLE")
+        yeni[imza] = {"seri": seri, "durum": durum, "son_gorulme": time.time()}
+        sonuc.append((durum, seri, kural))
+    UZUN_META["oneriler"] = yeni
+    return sonuc
+
+
+def _uzun_planli_rapor(simdi):
+    if simdi < UZUN_ILK_RAPOR_TS:
+        return False, UZUN_ILK_RAPOR_TS
+    idx = int((simdi - UZUN_ILK_RAPOR_TS) // UZUN_RAPOR_ARALIGI)
+    planli = UZUN_ILK_RAPOR_TS + idx * UZUN_RAPOR_ARALIGI
+    return float(UZUN_META.get("son_planli_rapor_ts", 0) or 0) < planli, planli
+
+
+def uzun_trend_raporu_gerekirse_gonder():
+    simdi = time.time()
+    gonder, planli = _uzun_planli_rapor(simdi)
+    if not gonder:
+        return
+    bas = planli - UZUN_RAPOR_ARALIGI
+    ham = [x for x in UZUN_KAYITLARI if x.get("tamamlandi") and float(x.get("zaman", 0) or 0) >= bas]
+    tamam = _uzun_benzersiz_hareketler(ham)
+    if len(tamam) < 20:
+        mesaj = (
+            "🌊 S49 UZUN TREND + BÜYÜK HAREKET KEŞFİ\n\n"
+            f"48 saati tamamlayan benzersiz hareket: {len(tamam)}\n"
+            "Yeterli örnek yok; ilk güvenilir rapor için en az 20 hareket bekleniyor.\n"
+            "Motor arka planda izlemeye devam ediyor; AL mesajlarını değiştirmez."
+        )
+        print(mesaj); telegram_gonder(mesaj)
+        UZUN_META["son_planli_rapor_ts"] = planli
+        _uzun_meta_kaydet()
+        return
+
+    istikrarli = [
+        x for x in tamam
+        if float(x.get("max_getiri", 0) or 0) >= 20
+        and float(x.get("getiri_24s", 0) or 0) >= 10
+        and float(x.get("getiri_48s", 0) or 0) >= 10
+        and float(x.get("geri_verme_orani", 100) or 100) <= 50
+    ]
+    sonen = [
+        x for x in tamam
+        if float(x.get("max_getiri", 0) or 0) >= 20
+        and (float(x.get("getiri_48s", 0) or 0) <= 5 or float(x.get("geri_verme_orani", 0) or 0) >= 70)
+    ]
+    telegram_buyuk = [x for x in tamam if x.get("telegrama_gonderildi") and float(x.get("max_getiri", 0) or 0) >= 20]
+    kacan_buyuk = [x for x in tamam if not x.get("telegrama_gonderildi") and float(x.get("max_getiri", 0) or 0) >= 20]
+    en_iyiler = sorted(tamam, key=lambda x: float(x.get("max_getiri", 0) or 0), reverse=True)[:5]
+
+    sat = [
+        "🌊 S49 UZUN TREND + BÜYÜK HAREKET KEŞFİ",
+        "",
+        f"48 saati tamamlayan benzersiz hareket: {len(tamam)}",
+        f"İstikrarlı +%20 hareket: {len(istikrarli)} | +%20 görüp sönen: {len(sonen)}",
+    ]
+    for hedef in UZUN_HEDEFLER:
+        sat.append(f"• +%{hedef}: {sum(1 for x in tamam if float(x.get('max_getiri', 0) or 0) >= hedef)}/{len(tamam)} (%{_uzun_oran(tamam, hedef):.1f})")
+    sat += [
+        "",
+        "📨 BÜYÜK HAREKET YAKALAMA",
+        f"• Telegram'ın yakaladığı +%20: {len(telegram_buyuk)}",
+        f"• Arka planda bulunup mesajlanmayan +%20: {len(kacan_buyuk)}",
+        "",
+        "🏆 EN ÇOK GİDENLER",
+    ]
+    for x in en_iyiler:
+        coin = str(x.get("symbol", "")).replace("TRY", "")
+        sat.append(
+            f"• {coin}: tepe %{float(x.get('max_getiri', 0) or 0):+.1f} | "
+            f"24s %{float(x.get('getiri_24s', 0) or 0):+.1f} | 48s %{float(x.get('getiri_48s', 0) or 0):+.1f}"
+        )
+
+    topn = max(5, int(round(len(tamam) * 0.20)))
+    ust = sorted(tamam, key=lambda x: float(x.get("max_getiri", 0) or 0), reverse=True)[:topn]
+    diger = sorted(tamam, key=lambda x: float(x.get("max_getiri", 0) or 0), reverse=True)[topn:]
+    farklar = []
+    for ad, alan in [
+        ("Hacim", "hacim"), ("1s momentum", "degisim1"), ("3s momentum", "degisim3"),
+        ("Radar", "radar"), ("Lider", "lider"), ("BTC farkı", "btc_fark3"),
+        ("Pozitif saat oranı", "pozitif12_oran"), ("6s momentum", "momentum6"),
+        ("Tek saate sıkışma payı", "tek_saat_payi"), ("Zirveye uzaklık", "zirve_uzaklik12"),
+    ]:
+        a = sum(float(x.get(alan, 0) or 0) for x in ust) / len(ust) if ust else 0.0
+        b = sum(float(x.get(alan, 0) or 0) for x in diger) / len(diger) if diger else 0.0
+        farklar.append((abs(a - b) / (abs(b) + 1.0), ad, a, b))
+    sat += ["", "🔎 EN GÜÇLÜ %20 BAŞLANGIÇ PROFİLİ"]
+    for _, ad, a, b in sorted(farklar, reverse=True)[:4]:
+        sat.append(f"• {ad}: üst grup {a:.2f} | diğerleri {b:.2f}")
+
+    kurallar = _uzun_kural_adaylari(tamam, 20)
+    sat += ["", "🧠 DOĞRULAMALI KOD ÖNERİLERİ (+%20 / 48s)"]
+    if not kurallar:
+        sat.append("• Eğitim ve sonraki doğrulama bölümünde birlikte güçlenen yeterli kural yok.")
+    else:
+        for durum, seri, kural in _uzun_oneri_durumlari(kurallar):
+            metin = " + ".join(_uzun_sart_metni(s) for s in kural["sartlar"])
+            sat.append(
+                f"• {durum} ({seri}/3): {metin} | "
+                f"eski veri +%20 %{kural['oran_e']:.1f} (n={kural['n_e']}) | "
+                f"yeni veri %{kural['oran_d']:.1f} (n={kural['n_d']})"
+            )
+
+    buyuk60 = [x for x in tamam if float(x.get("max_getiri", 0) or 0) >= 60]
+    sat += ["", "🚀 +%60 / +%70 ÖZEL İNCELEME"]
+    if len(buyuk60) < 5:
+        sat.append(f"• +%60 gören n={len(buyuk60)}; güvenilir ortak özellik için en az 5 benzersiz hareket bekleniyor.")
+    else:
+        for ad, alan in [("Hacim", "hacim"), ("3s momentum", "degisim3"), ("Radar", "radar"), ("Lider", "lider"), ("BTC farkı", "btc_fark3")]:
+            a = sum(float(x.get(alan, 0) or 0) for x in buyuk60) / len(buyuk60)
+            bgr = [x for x in tamam if x not in buyuk60]
+            b = sum(float(x.get(alan, 0) or 0) for x in bgr) / len(bgr) if bgr else 0.0
+            sat.append(f"• {ad}: +%60 grubu {a:.2f} | diğerleri {b:.2f}")
+    sat += ["", "📌 Bu motor yalnız öğrenir; AL kodunu veya Telegram kapılarını otomatik değiştirmez."]
+    mesaj = "\n".join(sat)
+    print(mesaj); telegram_gonder(mesaj)
+    UZUN_META["son_planli_rapor_ts"] = planli
+    _uzun_meta_kaydet()
+
+
+UZUN_KAYITLARI = _kesif_json_yukle(UZUN_KESIF_DOSYA, [])
+if not isinstance(UZUN_KAYITLARI, list):
+    UZUN_KAYITLARI = []
+UZUN_META = _kesif_json_yukle(UZUN_META_DOSYA, {})
+if not isinstance(UZUN_META, dict):
+    UZUN_META = {}
 
 
 def _al_ogrenme_yukle():
@@ -2908,9 +3338,11 @@ while True:
         # Mevcut ticker cevabını öğrenme katmanında da kullan; ekstra API isteği yok.
         al_ogrenme_guncelle(ticker)
         kesif_gozlem_guncelle(ticker)
+        uzun_kesif_guncelle(ticker)
         rejim_raporu_gerekirse_gonder()
         yuzde5_basariraporu_gerekirse_gonder()
         kesif_raporu_gerekirse_gonder()
+        uzun_trend_raporu_gerekirse_gonder()
 
         ticker_fiyat_haritasi = {}
         for _coin in ticker:
@@ -2926,6 +3358,7 @@ while True:
         piyasa_degisim1leri = []
         piyasa_degisim3leri = []
         adaylar = []
+        uzun_piyasa_adaylari = []
 
         for coin in ticker:
             try:
@@ -3316,6 +3749,51 @@ while True:
                     or roket_adayi
                 )
 
+                # V19: Tam piyasa taramasında yalnız S49 adaylarını değil, bütün
+                # uygun TRY coinlerini 48 saatlik uzun trend gölge motoruna ver.
+                # Kayıt 12 saatlik örnekleme korumasıyla açılır; burada AL üretilmez.
+                if tam_tarama:
+                    _pozitif12 = sum(1 for _i in range(max(0, len(c) - 12), len(c)) if c[_i] > o[_i])
+                    _pozitif12_oran = _pozitif12 / min(12, len(c)) * 100.0 if c else 0.0
+                    _saatlik_getiriler = [
+                        ((c[_i] / c[_i - 1]) - 1.0) * 100.0
+                        for _i in range(max(1, len(c) - 12), len(c))
+                        if c[_i - 1]
+                    ]
+                    _maks_saatlik = max(_saatlik_getiriler) if _saatlik_getiriler else 0.0
+                    _momentum6 = ((c[-1] / c[-7]) - 1.0) * 100.0 if len(c) >= 7 and c[-7] else 0.0
+                    _zirve_uzaklik12 = ((fiyat / max(h[-12:])) - 1.0) * 100.0 if h[-12:] and max(h[-12:]) else 0.0
+                    _tek_saat_payi = (_maks_saatlik / degisim24 * 100.0) if degisim24 > 0.1 and _maks_saatlik > 0 else 0.0
+                    uzun_piyasa_adaylari.append({
+                        "symbol": symbol,
+                        "fiyat": fiyat,
+                        "radar_skoru": radar_skoru,
+                        "genel_skor": round(genel_skor, 2),
+                        "kalite_skoru": round(kalite_skoru, 2),
+                        "hacim": round(hacim_kat, 2),
+                        "degisim1": round(degisim1, 2),
+                        "degisim3": round(degisim3, 2),
+                        "degisim24": round(degisim24, 2),
+                        "btc_fark3": round(btc_fark3, 2),
+                        "btc_guc_skoru": btc_guc_skoru,
+                        "lider_skoru": round(lider_skoru, 2),
+                        "hacim_hizlaniyor": hacim_hizlaniyor,
+                        "momentum_hizlaniyor": momentum_hizlaniyor,
+                        "btc_farki_aciliyor": btc_farki_aciliyor,
+                        "lider_gucleniyor": lider_gucleniyor,
+                        "basamakli_trend": basamakli_trend,
+                        "zirve_yakin": zirve_yakin,
+                        "yeni_zirve": yeni_zirve,
+                        "satis_baskisi": satis_baskisi,
+                        "pozitif12_oran": round(_pozitif12_oran, 1),
+                        "momentum6": round(_momentum6, 2),
+                        "maks_saatlik": round(_maks_saatlik, 2),
+                        "tek_saat_payi": round(_tek_saat_payi, 1),
+                        "zirve_uzaklik12": round(_zirve_uzaklik12, 2),
+                        "assistant_ana_aday": assistant_ana_aday,
+                        "mikro_on_alarm": mikro_on_alarm,
+                    })
+
                 # Klasik aday değilse bile Mikro Ön Alarm teknik ön havuza sokabilir.
                 # Asıl adaylık biraz aşağıda gerçek 1-3-5-10 dk verisiyle doğrulanır.
                 if not assistant_ana_aday and not mikro_on_alarm:
@@ -3373,6 +3851,11 @@ while True:
 
             except Exception as e:
                 print(f"Coin hata ({coin.get('pair', '?')}):", e)
+
+        if tam_tarama and uzun_piyasa_adaylari:
+            _uzun_medyan1 = statistics.median(piyasa_degisim1leri) if piyasa_degisim1leri else 0.0
+            _uzun_medyan3 = statistics.median(piyasa_degisim3leri) if piyasa_degisim3leri else 0.0
+            uzun_kesif_toplu_baslat(uzun_piyasa_adaylari, btc_d, _uzun_medyan1, _uzun_medyan3)
 
         # --------------------------------------------------
         # 60DK BAĞIMSIZ GÖRECELİ GÜÇ BONUSU
@@ -3824,6 +4307,7 @@ while True:
                 telegram_gonder(mesaj)
                 for _g in gonderilecekler:
                     kesif_telegram_isaretle(_g)
+                    uzun_kesif_telegram_isaretle(_g)
                     _g["_sinyal_event_id"] = _sinyal_sira_ekle(
                         _g.get("symbol", ""), _g.get("fiyat", 0)
                     )
