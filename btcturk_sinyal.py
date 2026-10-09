@@ -1103,6 +1103,14 @@ def kesif_raporu_gerekirse_gonder():
             sat.append(f"• Kaçanlarda {neden}: {adet}")
     prof_fields=[("3dk mom","d3"),("5dk mom","d5"),("Kod Kalitesi","kod_kalite"),("Kod Genel Güç","kod_genel"),("Genel Güç / Momentum bloğu","kod_momentum"),("S49 Momentum Bloğu","kod_momentum_blok"),("Devam","devam"),("Kalıcılık","kalicilik"),("Genel Güç","genel"),("Hacim","hacim"),("Lider","lider")]
 
+    # Hedef süresi hem +%20 bölümünde hem kombinasyon testinde kullanılır.
+    # İlk kullanımdan önce tanımlı olmalı; aksi halde yeterli +%20 örneğinde
+    # keşif/kod önerisi raporu UnboundLocalError ile yarıda kalır.
+    def _sure_dk(grup, hedef):
+        alan = f"hedef{hedef}_sure_sn"
+        vals = [float(x[alan]) / 60.0 for x in grup if x.get(alan) is not None]
+        return statistics.median(vals) if vals else None
+
     ath_gecen = [x for x in tamam if x.get("ath_benzeri")]
     ath_bekleyen = [x for x in tamam if not x.get("ath_benzeri")]
     ath_bekleyen_5 = sum(1 for x in ath_bekleyen if float(x.get("max_getiri", 0) or 0) >= 5.0)
@@ -1303,11 +1311,6 @@ def kesif_raporu_gerekirse_gonder():
     # LRC'de görülen ani genişleme örüntüsünü, Rel+2'yi ayırıcı saymadan test et.
     def _hedef_orani(grup, hedef):
         return sum(1 for x in grup if float(x.get("max_getiri", 0) or 0) >= hedef) / len(grup) * 100.0 if grup else 0.0
-
-    def _sure_dk(grup, hedef):
-        alan = f"hedef{hedef}_sure_sn"
-        vals = [float(x[alan]) / 60.0 for x in grup if x.get(alan) is not None]
-        return statistics.median(vals) if vals else None
 
     def _combo_satiri(etiket, grup):
         sureler = []
