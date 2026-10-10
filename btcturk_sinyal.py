@@ -2140,6 +2140,17 @@ def aktif_al_takibi_var_mi(symbol):
     return False
 
 
+def mesaj_kapisi_etiketi(mesaj_kapisi):
+    """Sonuç mesajında ilk AL'ın hangi Telegram yolundan geldiğini gösterir."""
+    return {
+        "guclu_erken": "🚨 GÜÇLÜ ERKEN UYARI",
+        "mikro_erken": "🌱 MİKRO ERKEN UYARI",
+        "v_donus": "✅ V DÖNÜŞ TEYİTLİ",
+        "secili_al": "🟢 SEÇİLİ AL",
+        "ath": "🔥 ATH BENZERİ",
+    }.get(str(mesaj_kapisi or ""), "S49 AL")
+
+
 def al_ogrenme_guncelle(ticker):
     if not AL_OGRENME_KAYITLARI:
         return
@@ -2172,9 +2183,11 @@ def al_ogrenme_guncelle(ticker):
             # geçmişteki AL sinyalleri adına geriye dönük mesaj gönderilmesini önler.
             if not k.get("kar_mesaji_gonderildi", True) and getiri >= AL_BILDIR_KAR_ESIK:
                 coin_adi = symbol[:-3] if str(symbol).endswith("TRY") else symbol
+                kaynak_etiketi = mesaj_kapisi_etiketi(k.get("mesaj_kapisi"))
                 _sinyal_sira_hit5_isaretle(symbol, k.get("sinyal_event_id"))
                 mesaj = (
                     f"💰 +%{AL_BILDIR_KAR_ESIK:.0f} KÂR BÖLGESİ - {coin_adi}\n"
+                    f"Kaynak: {kaynak_etiketi}\n"
                     f"İlk AL: {giris:.4f} | Güncel: {fiyat:.4f}\n"
                     f"Getiri: %{getiri:+.2f}\n"
                     "Not: Çık emri değil; kârı değerlendirmek / çıkışa hazırlanmak için ara uyarı."
