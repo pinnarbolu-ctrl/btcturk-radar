@@ -1,7 +1,10 @@
 # ==========================================
-# S49 V22 | RAPOR ONAYLI BTC-MOMENTUM + ÜÇ BOT GÖLGE TAKİBİ | EMİRSİZ RADAR
+# S49 V23 | BAŞLIK ZİRVE PERFORMANSI + SESSİZ REJİM RAPORU | EMİRSİZ RADAR
 # Amaç: +%5 yapanların ortak güç yapısını bilgi/puan olarak kullanmak; iyi adayları sert eşiklerle boğmamak.
 # AL/SAT yalnızca tarayıcı sinyali ve bilgilendirme etiketidir; emir, pozisyon ve zarar-kes takibi yoktur.
+# AL Rejim / Seçicilik verisi arka planda toplanır; günlük Telegram raporu gönderilmez.
+# Üç günlük keşif raporu, mesaj başlıklarını zirve getirilerine göre ayrıca karşılaştırır.
+# Aynı coinin aktif 3 saatlik AL takibi bitmeden ikinci AL mesajı gönderilmez.
 # Taban: main (21).py
 # Teknik radar + 1-3-5-10 dk erken yakalama
 # Giris/Devam skorları sadece bilgi, AL için veto DEGIL
@@ -877,7 +880,7 @@ def kesif_gozlem_baslat(aday, btc_d, piyasa_medyan3):
         "kod_veto_nedeni": str(aday.get("kod_oneri_veto_nedeni", "")),
         "neden_ana_sayi": int(aday.get("neden_ana_sayi", 0) or 0),
         "risk": str(aday.get("risk", "")),
-        "kod_surumu": "V22",
+        "kod_surumu": "V23",
         "kesif_v": 12,
         "ai": float(aday.get("ai_skoru", 0) or 0),
         "devam": float(aday.get("devam_gucu", 0) or 0),
@@ -991,6 +994,66 @@ def _medyan(grup, alan):
         except Exception:
             pass
     return statistics.median(vals) if vals else 0.0
+
+
+def _mesaj_basligi_performans_satirlari(mesajlanan):
+    """Gerçek Telegram AL'larını başlıklarına göre kıyaslar; karar motorunu etkilemez."""
+    basliklar = [
+        ("guclu_erken", "🚨 Güçlü Erken"),
+        ("mikro_erken", "🌱 Mikro Erken"),
+        ("v_donus", "✅ V Dönüş"),
+        ("secili_al", "🟢 Seçili AL"),
+        ("ath", "🔥 ATH Benzeri"),
+    ]
+    satirlar = ["", "🏆 MESAJ BAŞLIKLARI ZİRVE PERFORMANSI"]
+    sonuclar = []
+
+    for anahtar, etiket in basliklar:
+        grup = [x for x in mesajlanan if str(x.get("mesaj_kapisi", "")) == anahtar]
+        if not grup:
+            satirlar.append(f"• {etiket}: veri yok")
+            continue
+
+        n = len(grup)
+        tepeler = [float(x.get("max_getiri", 0) or 0) for x in grup]
+        p5 = sum(1 for v in tepeler if v >= 5.0) / n * 100.0
+        p10 = sum(1 for v in tepeler if v >= 10.0) / n * 100.0
+        p20 = sum(1 for v in tepeler if v >= 20.0) / n * 100.0
+        ort_tepe = sum(tepeler) / n
+        medyan_tepe = statistics.median(tepeler)
+        en_yuksek = max(tepeler)
+        yanlis = sum(
+            1 for x in grup
+            if float(x.get("max_getiri", 0) or 0) < 5.0
+            and float(x.get("min_getiri", 0) or 0) <= AL_YANLIS_SINYAL_ESIK
+        ) / n * 100.0
+        hedef5_sureleri = [
+            float(x.get("hedef5_sure_sn")) / 60.0
+            for x in grup if x.get("hedef5_sure_sn") is not None
+        ]
+        sure_metni = (
+            f" | +%5 medyan {statistics.median(hedef5_sureleri):.0f}dk"
+            if hedef5_sureleri else ""
+        )
+        satirlar.append(
+            f"• {etiket}: n={n} | +%5 %{p5:.1f} | +%10 %{p10:.1f} | +%20 %{p20:.1f} | "
+            f"zirve ort. %{ort_tepe:+.2f} / medyan %{medyan_tepe:+.2f} / en yüksek %{en_yuksek:+.2f} | "
+            f"yanlış %{yanlis:.1f}{sure_metni}"
+        )
+        sonuclar.append((n, medyan_tepe, ort_tepe, etiket))
+
+    yeterli = [x for x in sonuclar if x[0] >= 5]
+    if yeterli:
+        n, medyan_tepe, ort_tepe, etiket = max(yeterli, key=lambda x: (x[1], x[2], x[0]))
+        satirlar.append(
+            f"• Düzenli zirve lideri: {etiket} | medyan %{medyan_tepe:+.2f} | "
+            f"ortalama %{ort_tepe:+.2f} | n={n}"
+        )
+    else:
+        satirlar.append("• Zirve lideri için her başlıkta en az 5 tamamlanmış mesaj bekleniyor.")
+
+    satirlar.append("• Liderlik tek en yüksek coine göre değil; medyan, ortalama ve örnek sayısıyla belirlenir.")
+    return satirlar
 
 
 def _tekli_kesifler(grup):
@@ -1140,7 +1203,7 @@ def kesif_raporu_gerekirse_gonder():
 
     benzersiz = _benzersiz_kesif_hareketleri(tamam)
     benzersiz_5 = [x for x in benzersiz if float(x.get("max_getiri", 0) or 0) >= 5.0]
-    telegram_takipli = [x for x in tamam if x.get("kod_surumu") in {"V18", "V19", "V20", "V21", "V22"}]
+    telegram_takipli = [x for x in tamam if x.get("kod_surumu") in {"V18", "V19", "V20", "V21", "V22", "V23"}]
     telegram_takipli_5 = [x for x in telegram_takipli if float(x.get("max_getiri", 0) or 0) >= 5.0]
     mesajlanan = [x for x in telegram_takipli if x.get("telegrama_gonderildi")]
     yakalanan_5 = [x for x in telegram_takipli_5 if x.get("telegrama_gonderildi")]
@@ -1169,6 +1232,8 @@ def kesif_raporu_gerekirse_gonder():
     if kacan_5:
         for neden, adet in _kacan_kazanan_nedenleri(kacan_5)[:4]:
             sat.append(f"• Kaçanlarda {neden}: {adet}")
+
+    sat.extend(_mesaj_basligi_performans_satirlari(mesajlanan))
 
     # V22: Eski botların aynı veri üzerindeki gölge AL'larını S49 mesajlarıyla
     # karşılaştır. Aynı coin/hareket tek kayıttır; birden fazla bot etiketi taşıyabilir.
@@ -1203,7 +1268,7 @@ def kesif_raporu_gerekirse_gonder():
     sat.append("• Gölge motor yalnız öğrenir; S49 kodunu ve Telegram AL kapılarını otomatik değiştirmez.")
 
     sat += ["", "🧪 H-BEKLE + BTC AYRIŞMA/MOMENTUM GÖLGE TESTİ"]
-    btc_mom_v22 = [x for x in tamam if str(x.get("kod_surumu", "")) == "V22"]
+    btc_mom_v22_v23 = [x for x in tamam if str(x.get("kod_surumu", "")) in {"V22", "V23"}]
     btc_mom_gruplar = [
         ("BTC≥3.08 + 3dk≥0.31", "btc_mom_bekle_d3"),
         ("BTC≥3.08 + 5dk≥0.32", "btc_mom_bekle_d5"),
@@ -1211,7 +1276,7 @@ def kesif_raporu_gerekirse_gonder():
         ("BTC≥3.08 + Radar≥54.90", "btc_mom_bekle_radar"),
     ]
     for etiket, alan in btc_mom_gruplar:
-        grup = [x for x in btc_mom_v22 if x.get(alan)]
+        grup = [x for x in btc_mom_v22_v23 if x.get(alan)]
         if len(grup) >= 8:
             sat.append(
                 f"• {etiket}: n={len(grup)} | +%5 %{_oran5(grup):.1f} | "
@@ -1219,7 +1284,7 @@ def kesif_raporu_gerekirse_gonder():
             )
         else:
             sat.append(f"• {etiket}: örnek yetersiz (n={len(grup)}, en az 8)")
-    btc_mom_tumu = [x for x in btc_mom_v22 if x.get("btc_mom_bekle_golge")]
+    btc_mom_tumu = [x for x in btc_mom_v22_v23 if x.get("btc_mom_bekle_golge")]
     if len(btc_mom_tumu) >= 40:
         sat.append(
             f"• Birleşik gölge havuzu: n={len(btc_mom_tumu)} | +%5 %{_oran5(btc_mom_tumu):.1f}."
@@ -1604,7 +1669,7 @@ def uzun_kesif_toplu_baslat(adaylar, btc_d, piyasa_medyan1, piyasa_medyan3):
             "son_getiri": None,
             "tamamlandi": False,
             "telegrama_gonderildi": False,
-            "kod_surumu": "V22",
+            "kod_surumu": "V23",
             "piyasa_rejim": _rejim_etiketi(piyasa_medyan3),
             "btc_rejim": _rejim_etiketi(float(btc_d.get("3s", 0) or 0)),
             "piyasa_medyan1": round(float(piyasa_medyan1 or 0), 3),
@@ -2054,7 +2119,7 @@ def al_ogrenme_baslat(aday, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris):
         "hacim_hizlaniyor": bool(aday.get("hacim_hizlaniyor")),
         "btc_farki_aciliyor": bool(aday.get("btc_farki_aciliyor")),
         "neden_ana_sayi": int(aday.get("neden_ana_sayi", 0) or 0),
-        "kod_surumu": "V22",
+        "kod_surumu": "V23",
         "sinyal_event_id": aday.get("_sinyal_event_id"),
         # 60dk göreceli güç bonusu AL filtresi değildir; yalnız ölçüm/öncelik bilgisidir.
         "goreceli_guc_bonus": int(aday.get("goreceli_guc_bonus", 0) or 0),
@@ -2063,6 +2128,16 @@ def al_ogrenme_baslat(aday, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris):
     }
     AL_OGRENME_KAYITLARI.append(kayit)
     _al_ogrenme_kaydet()
+
+
+def aktif_al_takibi_var_mi(symbol):
+    """Aynı coin için açık sonuç takibi varsa yinelenen Telegram AL'ını engeller."""
+    if not symbol:
+        return False
+    for k in reversed(AL_OGRENME_KAYITLARI[-500:]):
+        if k.get("symbol") == symbol and not k.get("tamamlandi"):
+            return True
+    return False
 
 
 def al_ogrenme_guncelle(ticker):
@@ -3868,7 +3943,7 @@ while True:
         al_ogrenme_guncelle(ticker)
         kesif_gozlem_guncelle(ticker)
         uzun_kesif_guncelle(ticker)
-        rejim_raporu_gerekirse_gonder()
+        # V23: Rejim/seçicilik öğrenmesi sürer; günlük Telegram raporu kapalıdır.
         yuzde5_basariraporu_gerekirse_gonder()
         kesif_raporu_gerekirse_gonder()
         uzun_trend_raporu_gerekirse_gonder()
@@ -4811,6 +4886,15 @@ while True:
                 # Aynı AL kararını tekrar gönderme.
                 if onceki_karar == karar:
                     al_karar_izi(symbol, "telegram", "GELMEDİ", neden="aynı AL kararı tekrar")
+                    continue
+
+                # Karar AL -> BEKLE -> AL şeklinde değişse veya bot yeniden başlasa bile,
+                # ilk AL'ın üç saatlik sonuç takibi sürerken aynı coini tekrar mesajlama.
+                if aktif_al_takibi_var_mi(symbol):
+                    al_karar_izi(
+                        symbol, "telegram", "GELMEDİ",
+                        neden="aktif AL takibi sürüyor; tekrar mesaj engellendi"
+                    )
                     continue
 
                 al_karar_izi(symbol, "telegram", "GÖNDERİLECEK")
