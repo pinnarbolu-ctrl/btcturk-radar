@@ -29,6 +29,8 @@
 # V31: Başlık/neden başarıları yalnız gerçek Telegram fiyatı ve event-id kaydından hesaplanır.
 # V31.1: Piyasa Ara Durumu, tam piyasa taramasında BTC + piyasa genişliğini ölçer.
 # V31.1: Bilgilendirme mesajı AL kapısını değiştirmez; 3/6 saat doğruluğu raporlanır.
+# V31.2: Doğrulanmış zayıf rejimde göreceli liderlere gerçek Düşen Piyasa
+# Fırsatı mesajı gönderir; +%2/+%3/+%5 sonucu normal V31'den ayrı raporlanır.
 # Taban: main (21).py
 # Teknik radar + 1-3-5-10 dk erken yakalama
 # Giris/Devam skorları sadece bilgi, AL için veto DEGIL
@@ -126,6 +128,19 @@ KOD_ONERI_LIDER_D3_BONUS = 5.0
 REL60_BTC_ESIK = 2.16
 REL60_PIYASA_ESIK = 2.19
 REL60_BIRLESIK_BONUS = 5.0
+
+# DÜŞEN PİYASA FIRSATI — gerçek Telegram yolu, normal V31 AL'dan ayrı ölçülür.
+# Yalnız 30 dakika doğrulanmış Zayıf/Çok Zayıf rejimde; piyasadan güçlü ayrışan
+# ve kısa tepkiyi 3dk+5dk ile doğrulayan coinler için çalışır.
+DUSEN_PIYASA_MIN_BTC_REL60 = 2.16
+DUSEN_PIYASA_MIN_PIYASA_REL60 = 2.19
+DUSEN_PIYASA_MIN_D3 = 0.05
+DUSEN_PIYASA_MIN_D5 = 0.05
+DUSEN_PIYASA_MIN_TEPKI = 0.35
+DUSEN_PIYASA_MIN_RADAR = 45.0
+DUSEN_PIYASA_MIN_DEVAM = 55.0
+DUSEN_PIYASA_MIN_HACIM = 1.15
+DUSEN_PIYASA_YANLIS_ESIK = -1.5
 
 # 09.10.2026 üç günlük raporunda, BTC'den ayrışma ile kısa momentumun
 # birlikte olması +%5 yapanları yaklaşık %35-37 düzeyinde ayırdı.
@@ -1615,6 +1630,7 @@ def _mesaj_basligi_performans_satirlari(mesajlanan):
         ("mikro_erken", "🌱 Mikro Erken"),
         ("v_donus", "✅ V Dönüş"),
         ("secili_al", "🟢 Seçili AL"),
+        ("dusen_piyasa_firsati", "🔻 Düşen Piyasa Fırsatı"),
         ("v12_kurtarma", "🛟 V12 Kurtarma"),
         ("ath", "🔥 ATH Benzeri"),
     ]
@@ -2731,6 +2747,7 @@ def _uzun_baslik_performans_satirlari(tamam):
         ("mikro_erken", "🌱 Mikro Erken"),
         ("v_donus", "✅ V Dönüş"),
         ("secili_al", "🟢 Seçili AL"),
+        ("dusen_piyasa_firsati", "🔻 Düşen Piyasa Fırsatı"),
         ("v12_kurtarma", "🛟 V12 Kurtarma"),
         ("ath", "🔥 ATH Benzeri"),
     ]
@@ -3141,6 +3158,8 @@ def al_ogrenme_baslat(aday, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris):
         "max_getiri": 0.0,
         "min_getiri": 0.0,
         "son_getiri": None,
+        "hedef2_sure_sn": None,
+        "hedef3_sure_sn": None,
         "hedef4_sure_sn": None,
         "hedef5_sure_sn": None,
         "hedef7_sure_sn": None,
@@ -3416,6 +3435,7 @@ def mesaj_kapisi_etiketi(mesaj_kapisi):
         "mikro_erken": "🌱 MİKRO ERKEN UYARI",
         "v_donus": "✅ V DÖNÜŞ TEYİTLİ",
         "secili_al": "🟢 SEÇİLİ AL",
+        "dusen_piyasa_firsati": "🔻 DÜŞEN PİYASA FIRSATI",
         "v12_kurtarma": "🛟 V12 KURTARMA TEYİDİ",
         "ath": "🔥 ATH BENZERİ",
     }.get(str(mesaj_kapisi or ""), "S49 AL")
@@ -3448,7 +3468,7 @@ def al_ogrenme_guncelle(ticker):
             k["max_getiri"] = round(max(float(k.get("max_getiri", 0) or 0), getiri), 3)
             k["min_getiri"] = round(min(float(k.get("min_getiri", 0) or 0), getiri), 3)
             gecen_sn = max(0, int(simdi - float(k.get("zaman", simdi))))
-            for hedef in (4, 5, 7, 20):
+            for hedef in (2, 3, 4, 5, 7, 20):
                 alan = f"hedef{hedef}_sure_sn"
                 if getiri >= hedef and k.get(alan) is None:
                     k[alan] = gecen_sn
@@ -3675,6 +3695,49 @@ def iki_asamali_teyit_raporu(tamam):
     return "\n".join(satirlar)
 
 
+def dusen_piyasa_firsati_raporu(kayitlar):
+    """Düşen piyasa mesajlarını normal V31 +%5 başarısına karıştırmadan ölçer."""
+    tamam = [
+        x for x in kayitlar
+        if x.get("tamamlandi")
+        and str(x.get("mesaj_kapisi", "")) == "dusen_piyasa_firsati"
+    ]
+    acik = [
+        x for x in kayitlar
+        if not x.get("tamamlandi")
+        and str(x.get("mesaj_kapisi", "")) == "dusen_piyasa_firsati"
+    ]
+    sat = ["🔻 DÜŞEN PİYASA FIRSATI — AYRI BAŞARI TESTİ"]
+    if not tamam:
+        sat.append(f"• Tamamlanan mesaj yok | bekleyen={len(acik)}")
+        sat.append("• Bu başlık normal V31 başarı oranına dahil edilmez.")
+        return "\n".join(sat)
+
+    n = len(tamam)
+    def hedef_orani(hedef):
+        return sum(1 for x in tamam if float(x.get("max_getiri", 0) or 0) >= hedef) / n * 100.0
+
+    yanlis = sum(
+        1 for x in tamam
+        if float(x.get("max_getiri", 0) or 0) < 2.0
+        and float(x.get("min_getiri", 0) or 0) <= DUSEN_PIYASA_YANLIS_ESIK
+    )
+    tepeler = [float(x.get("max_getiri", 0) or 0) for x in tamam]
+    dipler = [float(x.get("min_getiri", 0) or 0) for x in tamam]
+    sure2 = [float(x.get("hedef2_sure_sn")) / 60.0 for x in tamam if x.get("hedef2_sure_sn") is not None]
+    sure3 = [float(x.get("hedef3_sure_sn")) / 60.0 for x in tamam if x.get("hedef3_sure_sn") is not None]
+    sat.extend([
+        f"• Tamamlanan={n} | bekleyen={len(acik)}",
+        f"• +%2 %{hedef_orani(2):.1f} | +%3 %{hedef_orani(3):.1f} | +%5 %{hedef_orani(5):.1f}",
+        f"• Yanlış tepki (-%{abs(DUSEN_PIYASA_YANLIS_ESIK):.1f}, +%2 görmeden): %{yanlis / n * 100.0:.1f}",
+        f"• Zirve medyan %{statistics.median(tepeler):+.2f} | dip medyan %{statistics.median(dipler):+.2f}",
+        f"• +%2 medyan süre: {statistics.median(sure2):.0f}dk" if sure2 else "• +%2 medyan süre: hedef gören yok",
+        f"• +%3 medyan süre: {statistics.median(sure3):.0f}dk" if sure3 else "• +%3 medyan süre: hedef gören yok",
+        "• Bu başlık normal V31 başarı oranına dahil edilmez; yalnız zayıf piyasa kısa tepki yoludur.",
+    ])
+    return "\n".join(sat)
+
+
 def yuzde5_basariraporu_gerekirse_gonder():
     """Her 3 günde bir saat 08:00 TR'de +%5 yakalama raporunu gönderir."""
     global _YUZDE5_META
@@ -3693,8 +3756,12 @@ def yuzde5_basariraporu_gerekirse_gonder():
         if pencere_bas <= float(x.get("zaman", 0) or 0) < pencere_son
     ]
 
-    tamam = [x for x in tum if x.get("tamamlandi")]
-    acik = [x for x in tum if not x.get("tamamlandi")]
+    dusen_piyasa_metni = dusen_piyasa_firsati_raporu(tum)
+    # Düşen Piyasa Fırsatı farklı hedef/risk mantığıyla çalıştığı için ana
+    # V31 +%5 hesabına karıştırılmaz; hemen alttaki ayrı bölümde ölçülür.
+    normal_tum = [x for x in tum if str(x.get("mesaj_kapisi", "")) != "dusen_piyasa_firsati"]
+    tamam = [x for x in normal_tum if x.get("tamamlandi")]
+    acik = [x for x in normal_tum if not x.get("tamamlandi")]
     basarili = [
         x for x in tamam
         if float(x.get("max_getiri", 0) or 0) >= 5.0
@@ -3984,6 +4051,7 @@ def yuzde5_basariraporu_gerekirse_gonder():
         f"{teyit_metni}\n\n"
         f"{v12_kurtarma_metni}\n\n"
         f"{rejim_metni}\n\n"
+        f"{dusen_piyasa_metni}\n\n"
         f"{piyasa_ara_metni}\n\n"
         f"{yanlis_analiz_metni}\n\n"
         f"Not: Başarı = AL sonrası 3 saat içinde en az +%5 tepe. Yanlış = +%5 görmeden en az -%{abs(AL_YANLIS_SINYAL_ESIK):.1f} ters hareket."
@@ -4542,6 +4610,60 @@ def neden_kontrolu(aday):
     aday["neden_toplam"] = len(checks)
     aday["neden_ana_sayi"] = ana_sayi
     return ana_sayi >= 3
+
+
+def dusen_piyasa_firsati_kapisi(aday):
+    """Zayıf piyasada göreceli liderin kısa tepki mesajı için bağımsız kapı.
+
+    Bu yol H motorunun AL demesini şart koşmaz; çünkü ana EMA trendi aşağıyken
+    kısa tepkiyi yakalamayı amaçlar. Bunun karşılığında piyasa rejimi, iki ayrı
+    60dk göreceli güç alanı, 3/5dk tepki ve temiz kısa teknik yapı birlikte
+    zorunludur. Normal V31 başarısına karıştırılmaz, raporda ayrı ölçülür.
+    """
+    teknik = aday.get("teknik") or {}
+    mikro = aday.get("mikro") or {}
+    rejim = str(PIYASA_ARA_DURUM.get("onayli_rejim", "") or "")
+    try:
+        fiyat = float(aday.get("fiyat", 0) or 0)
+        ema20 = float(teknik.get("ema20", 0) or 0)
+        rsi = float(teknik.get("rsi", 0) or 0)
+        macd = float(teknik.get("macd_hist", 0) or 0)
+        radar = float(aday.get("radar_skoru", 0) or 0)
+        devam = float(aday.get("devam_gucu", 0) or 0)
+        hacim = float(aday.get("hacim", 0) or 0)
+        rel_btc = float(aday.get("coin_btc_60", 0) or 0)
+        rel_piyasa = float(aday.get("coin_piyasa_60", 0) or 0)
+        d3 = float(mikro.get("d3", 0) or 0)
+        d5 = float(mikro.get("d5", 0) or 0)
+    except (TypeError, ValueError):
+        fiyat = ema20 = rsi = macd = radar = devam = hacim = 0.0
+        rel_btc = rel_piyasa = d3 = d5 = -999.0
+
+    kontroller = [
+        (rejim in {"Zayıf", "Çok Zayıf"}, "piyasa rejimi doğrulanmış zayıf değil"),
+        (rel_btc >= DUSEN_PIYASA_MIN_BTC_REL60,
+         f"Coin-BTC 60dk {rel_btc:.2f} < {DUSEN_PIYASA_MIN_BTC_REL60:.2f}"),
+        (rel_piyasa >= DUSEN_PIYASA_MIN_PIYASA_REL60,
+         f"Coin-Piyasa 60dk {rel_piyasa:.2f} < {DUSEN_PIYASA_MIN_PIYASA_REL60:.2f}"),
+        (d3 >= DUSEN_PIYASA_MIN_D3, f"3dk tepki %{d3:+.2f} yetersiz"),
+        (d5 >= DUSEN_PIYASA_MIN_D5, f"5dk tepki %{d5:+.2f} yetersiz"),
+        (max(d3, d5) >= DUSEN_PIYASA_MIN_TEPKI,
+         f"3/5dk tepkiden hiçbiri %{DUSEN_PIYASA_MIN_TEPKI:.2f} değil"),
+        (fiyat > ema20 > 0, "fiyat EMA20 üzerine dönemedi"),
+        (macd > 0, "MACD kısa tepkiyi doğrulamıyor"),
+        (45 <= rsi <= 72, f"RSI {rsi:.1f} kısa tepki bandı dışında"),
+        (radar >= DUSEN_PIYASA_MIN_RADAR, f"Radar {radar:.1f} yetersiz"),
+        (devam >= DUSEN_PIYASA_MIN_DEVAM, f"Devam {devam:.1f} yetersiz"),
+        (hacim >= DUSEN_PIYASA_MIN_HACIM, f"Hacim {hacim:.2f}x yetersiz"),
+        ("Yüksek" not in str(aday.get("risk", "") or ""), "risk yüksek"),
+        (not bool(mikro.get("sisti", False)), "kısa hareket şişmiş"),
+    ]
+    eksikler = [neden for uygun, neden in kontroller if not uygun]
+    uygun = not eksikler
+    aday["dusen_piyasa_firsati"] = uygun
+    aday["dusen_piyasa_rejimi"] = rejim
+    aday["dusen_piyasa_nedenleri"] = eksikler
+    return uygun, eksikler
 
 
 def ath_benzeri_kapisi(aday):
@@ -6301,6 +6423,7 @@ while True:
             mikro_erken_uygun, mikro_erken_eksikler = mikro_erken_uyari_kapisi(a)
             v_donus_uygun, v_donus_eksikler = v_donus_uyari_kapisi(a)
             secili_uygun, secili_eksikler = secili_al_kapisi(a)
+            dusen_uygun, dusen_eksikler = dusen_piyasa_firsati_kapisi(a)
             h_ilk_al = a.get("h_ilk_karar") == "🟢 AL"
             mesaj_adayi = bool(a.get("orijinal_s49_aday", True))
             v_ana_neden_uygun = int(a.get("neden_ana_sayi", 0) or 0) >= V_MIN_ANA_NEDEN
@@ -6341,6 +6464,20 @@ while True:
                     "Seçili AL: genel kalite + teknik teyit + sağlıklı momentum"
                 )
                 al_karar_izi(a.get("symbol", "?"), "secili_al", "GEÇTİ")
+            elif dusen_uygun:
+                # Ana trend aşağıyken H'nin klasik EMA trend AL'ını beklemeyen,
+                # fakat piyasa ayrışması + 3/5dk tepkiyi birlikte isteyen ayrı yol.
+                a["karar"] = "🟢 AL"
+                a["mesaj_kapisi"] = "dusen_piyasa_firsati"
+                a.setdefault("nedenler", []).append(
+                    "Düşen Piyasa Fırsatı: güçlü 60dk ayrışma + 3/5dk kısa tepki"
+                )
+                al_karar_izi(
+                    a.get("symbol", "?"), "dusen_piyasa_firsati", "GEÇTİ",
+                    rejim=a.get("dusen_piyasa_rejimi", ""),
+                    coin_btc60=float(a.get("coin_btc_60", 0) or 0),
+                    coin_piyasa60=float(a.get("coin_piyasa_60", 0) or 0),
+                )
             elif h_ilk_al:
                 a["karar"] = "🟡 BEKLE"
                 a["mesaj_kapisi"] = "bekle"
@@ -6592,6 +6729,12 @@ while True:
                         f"📌 Neden: {a.get('neden_sayi', 0)}/10 | "
                         f"Önemli neden: {a.get('neden_ana_sayi', 0)}/5 | {momentum_etiketi}"
                     )
+                    if a.get("mesaj_kapisi") == "dusen_piyasa_firsati":
+                        neden_satir = (
+                            f"📌 Kısa tepki teyidi | 60dk BTC farkı "
+                            f"%{float(a.get('coin_btc_60', 0) or 0):+.2f} | "
+                            f"Piyasa farkı %{float(a.get('coin_piyasa_60', 0) or 0):+.2f}"
+                        )
                     gorunen_coin = a['symbol'][:-3] if a['symbol'].endswith("TRY") else a['symbol']
                     sinyal_sira, onceki_5 = _sinyal_sira_hazirla(a.get("symbol", ""))
                     sira_prefix = _sira_etiketi(sinyal_sira)
@@ -6616,6 +6759,11 @@ while True:
                         if a.get("mesaj_kapisi") == "secili_al"
                         else ""
                     )
+                    dusen_piyasa_baslik = (
+                        "🔻 DÜŞEN PİYASA FIRSATI\n"
+                        if a.get("mesaj_kapisi") == "dusen_piyasa_firsati"
+                        else ""
+                    )
                     v_donus_satir = ""
                     if a.get("mesaj_kapisi") == "v_donus":
                         v_donus_satir = (
@@ -6626,12 +6774,20 @@ while True:
                     d3 = float(mikro.get("d3", 0) or 0)
                     d5 = float(mikro.get("d5", 0) or 0)
                     rel60_satir = (
-                        "60dk Göreceli Güç: Güçlü\n"
+                        (
+                            f"Piyasa {'çok zayıf' if a.get('dusen_piyasa_rejimi') == 'Çok Zayıf' else 'zayıf'}; "
+                            "coin piyasadan güçlü ayrışıyor.\n"
+                            "3dk/5dk tepki teyitli ✅\n"
+                            "60dk Göreceli Güç: Çok Güçlü\n"
+                            "Not: Ana trend aşağı; yalnız kısa tepki adayıdır.\n"
+                        )
+                        if a.get("mesaj_kapisi") == "dusen_piyasa_firsati"
+                        else "60dk Göreceli Güç: Güçlü\n"
                         if a.get("kod_oneri_rel60_uygun")
                         else ""
                     )
                     mesaj += (
-                        f"{guclu_erken_baslik}{mikro_erken_baslik}{v_donus_baslik}{secili_al_baslik}"
+                        f"{guclu_erken_baslik}{mikro_erken_baslik}{v_donus_baslik}{secili_al_baslik}{dusen_piyasa_baslik}"
                         f"{sira_prefix} {gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 AL{onceki_5_etiket}\n"
                         f"💰 Fiyat: {round(a['fiyat'], 4)}\n"
                         f"{neden_satir}\n"
