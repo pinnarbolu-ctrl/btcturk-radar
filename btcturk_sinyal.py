@@ -1,5 +1,5 @@
 # ==========================================
-# S49 V31 | %2 GEÇ KALMA CANLI KORUMASI | V12 YERİNE KARŞILAŞTIRMA BOTU
+# S49 V31 | %2 GEÇ KALMA GÖLGE ÖLÇÜMÜ | V12 YERİNE KARŞILAŞTIRMA BOTU
 # Amaç: +%5 yapanların ortak güç yapısını bilgi/puan olarak kullanmak; iyi adayları sert eşiklerle boğmamak.
 # AL/SAT yalnızca tarayıcı sinyali ve bilgilendirme etiketidir; emir, pozisyon ve zarar-kes takibi yoktur.
 # AL Rejim / Seçicilik verisi arka planda toplanır; günlük Telegram raporu gönderilmez.
@@ -24,13 +24,15 @@
 # V30: İlk gölge gözlem ile gerçek Telegram AL arasındaki gecikme/yükseliş aynı event id ile ölçülür.
 # V30: H=BEKLE + BTC/momentum erken adaylarında 5dk fiyat koruma yalnız gölgede sınanır.
 # V30: Geç kalma/kovalama veto bantları raporlanır; canlı Telegram'ı otomatik değiştirmez.
-# V31: İlk teknik gölge gözleminden sonra fiyatı %2'den fazla yükselen aday canlı AL olarak gönderilmez.
-# V31: Elenen aday gölgede 3 saat izlenir; kazanan koruma ve yanlış eleme başarısı raporlanır.
+# V31: İlk teknik gölge gözleminden sonraki %2 yükseliş bandı yalnız gölgede ölçülür.
+# V31: Bu bant Telegram AL mesajını engellemez; varsayımsal kazanan koruma/yanlış eleme raporlanır.
 # V31: Başlık/neden başarıları yalnız gerçek Telegram fiyatı ve event-id kaydından hesaplanır.
 # V31.1: Piyasa Ara Durumu, tam piyasa taramasında BTC + piyasa genişliğini ölçer.
 # V31.1: Bilgilendirme mesajı AL kapısını değiştirmez; 3/6 saat doğruluğu raporlanır.
 # V31.2: Doğrulanmış zayıf rejimde göreceli liderlere gerçek Düşen Piyasa
 # Fırsatı mesajı gönderir; +%2/+%3/+%5 sonucu normal V31'den ayrı raporlanır.
+# V31.3: ADX + Genel Güç/Devam haftalık bulgusu yalnız gölgede sınanır;
+# canlı AL puanını veya kapılarını değiştirmez, sonuçları 3 günlük raporda ayrılır.
 # Taban: main (21).py
 # Teknik radar + 1-3-5-10 dk erken yakalama
 # Giris/Devam skorları sadece bilgi, AL için veto DEGIL
@@ -128,6 +130,12 @@ KOD_ONERI_LIDER_D3_BONUS = 5.0
 REL60_BTC_ESIK = 2.16
 REL60_PIYASA_ESIK = 2.19
 REL60_BIRLESIK_BONUS = 5.0
+
+# 24.10.2026 Assistant haftalık raporu — yalnız gölge teyit.
+# Genel Güç (H/AI skoru) ile Devam aynı güç ailesidir; ayrı ayrı puanlanmaz.
+HAFTALIK_GOLGE_ADX_ESIK = 33.66
+HAFTALIK_GOLGE_GENEL_ESIK = 83.69
+HAFTALIK_GOLGE_DEVAM_ESIK = 71.20
 
 # DÜŞEN PİYASA FIRSATI — gerçek Telegram yolu, normal V31 AL'dan ayrı ölçülür.
 # Yalnız 30 dakika doğrulanmış Zayıf/Çok Zayıf rejimde; piyasadan güçlü ayrışan
@@ -262,7 +270,7 @@ SON_REJIM_RAPOR_ZAMANI = time.time()
 # Sonraki raporlar her 3 günde bir yine 08:00'de planlanır.
 YUZDE5_RAPOR_ARALIGI = 3 * 24 * 60 * 60
 S49_ILK_3GUN_RAPOR_TS = 1791262800.0  # 2026-10-06 05:00 UTC = 08:00 TR
-YUZDE5_RAPOR_ETIKETI = "BTCTÜRK SİNYAL 49 — V31 GEÇ KALMA KORUMALI"
+YUZDE5_RAPOR_ETIKETI = "BTCTÜRK SİNYAL 49 — V31 GEÇ KALMA GÖLGE ÖLÇÜMLÜ"
 _YUZDE5_META_DOSYA = os.path.join(_AL_DEFAULT_DIR, "s49_v31_yuzde5_basariraporu.json")
 
 # 3 GÜNLÜK KEŞİF / KOD GELİŞTİRME MOTORU
@@ -1215,6 +1223,9 @@ def kesif_gozlem_baslat(aday, btc_d, piyasa_medyan3):
         "coin_piyasa_60": float(aday.get("coin_piyasa_60", 0) or 0),
         "rel60_birlesik_uygun": bool(aday.get("kod_oneri_rel60_uygun")),
         "rel60_birlesik_bonus": float(aday.get("kod_oneri_rel60_bonus", 0) or 0),
+        "haftalik_golge_adx_ok": bool(aday.get("haftalik_golge_adx_ok")),
+        "haftalik_golge_guc_ok": bool(aday.get("haftalik_golge_guc_ok")),
+        "haftalik_golge_birlesik_ok": bool(aday.get("haftalik_golge_birlesik_ok")),
         "d1": float(m.get("d1", 0) or 0), "d3": float(m.get("d3", 0) or 0),
         "d5": float(m.get("d5", 0) or 0), "d10": float(m.get("d10", 0) or 0),
         "mikro_skor": float(m.get("skor", 0) or 0),
@@ -1230,10 +1241,10 @@ def kesif_gozlem_baslat(aday, btc_d, piyasa_medyan3):
 
 
 def gec_kalma_canli_kontrolu(aday):
-    """İlk teknik gözlemden %2'den fazla uzaklaşan AL'ı Telegram'da engeller.
+    """İlk teknik gözlemden %2'den fazla uzaklaşmayı yalnız gölgede ölçer.
 
-    Karar yalnız canlı mesajı etkiler. Adayın gölge kaydı açık kalır ve üç
-    saatlik sonucu raporda kabul/veto karşılaştırmasına girer.
+    Telegram AL mesajını engellemez. Adayın üç saatlik sonucu raporda,
+    %2 kuralı uygulanmış olsaydı geçecek/elenecek diye karşılaştırılır.
     """
     symbol = str(aday.get("symbol", ""))
     fiyat = float(aday.get("fiyat", 0) or 0)
@@ -1258,13 +1269,13 @@ def gec_kalma_canli_kontrolu(aday):
         return True, 0.0, "ilk fiyat geçersiz"
 
     getiri = round(_pct(fiyat, ilk_fiyat), 3)
-    kabul = getiri <= GEC_KALMA_CANLI_MAX_GETIRI
+    golge_kabul = getiri <= GEC_KALMA_CANLI_MAX_GETIRI
     aday["gec_kalma_ilk_fiyat"] = ilk_fiyat
     aday["gec_kalma_getiri"] = getiri
-    aday["gec_kalma_canli_kabul"] = kabul
+    aday["gec_kalma_canli_kabul"] = golge_kabul
     kayit["gec_kalma_canli_aday"] = True
-    kayit["gec_kalma_canli_kabul"] = kabul
-    kayit["gec_kalma_canli_veto"] = not kabul
+    kayit["gec_kalma_canli_kabul"] = golge_kabul
+    kayit["gec_kalma_canli_veto"] = not golge_kabul
     kayit["gec_kalma_canli_getiri"] = getiri
     kayit["gec_kalma_canli_fiyat"] = fiyat
     kayit["gec_kalma_canli_zamani"] = simdi
@@ -1273,7 +1284,8 @@ def gec_kalma_canli_kontrolu(aday):
     neden = (
         f"ilk teknik gözlemden %{getiri:+.2f}; sınır %{GEC_KALMA_CANLI_MAX_GETIRI:.2f}"
     )
-    return kabul, getiri, neden
+    # Gölge sonucu kaydedilir; canlı Telegram yolu her zaman açık kalır.
+    return True, getiri, neden
 
 
 def kesif_telegram_isaretle(aday):
@@ -1479,7 +1491,7 @@ def _gec_kalma_rapor_satirlari(mesajlanan, mesajlanan_golge):
     sat = ["", "⏳ V31 GERÇEK MESAJ GECİKME / KOVALAMA ÖLÇÜMÜ"]
     if not eslesen:
         sat.append("• Yeni V31 mesajlarının event-id eşleşmesi ve 3 saatlik sonucu bekleniyor.")
-        sat.append(f"• Canlı koruma aktif: ilk teknik gözlemden >%{GEC_KALMA_CANLI_MAX_GETIRI:.0f} yükselen AL gönderilmez.")
+        sat.append(f"• Gölge ölçüm aktif: >%{GEC_KALMA_CANLI_MAX_GETIRI:.0f} yükseliş bandı Telegram'ı engellemez.")
         return sat
 
     kazanan = [p for p in eslesen if float(p[1].get("max_getiri", 0) or 0) >= 5.0]
@@ -1533,7 +1545,7 @@ def _gec_kalma_rapor_satirlari(mesajlanan, mesajlanan_golge):
             f"kazanan koruma %{(korunan / len(kazanan) * 100.0) if kazanan else 0.0:.1f} | "
             f"yanlış eleme %{(elenen / len(yanlis) * 100.0) if yanlis else 0.0:.1f}"
         )
-    sat.append(f"• V31 canlı kuralı: yalnız ≤%{GEC_KALMA_CANLI_MAX_GETIRI:.0f} bandı Telegram AL'a geçebilir.")
+    sat.append(f"• V31 gölge kuralı: ≤%{GEC_KALMA_CANLI_MAX_GETIRI:.0f} ve üstü karşılaştırılır; Telegram AL engellenmez.")
     return sat
 
 
@@ -1555,22 +1567,58 @@ def _gec_kalma_canli_sonuc_satirlari(tamam):
             and float(x.get("min_getiri", 0) or 0) <= AL_YANLIS_SINYAL_ESIK
         ) / len(grup) * 100.0
 
-    sat = ["", "🛡️ V31 %2 GEÇ KALMA CANLI KORUMASI"]
+    sat = ["", "🧪 V31 %2 GEÇ KALMA GÖLGE TESTİ"]
     if not adaylar:
-        sat.append("• Henüz tamamlanan canlı koruma adayı yok.")
+        sat.append("• Henüz tamamlanan gölge ölçüm adayı yok.")
         return sat
     sat.append(
-        f"• Toplam aday={len(adaylar)} | kabul={len(kabul)} | veto={len(veto)}"
+        f"• Toplam aday={len(adaylar)} | ≤%2={len(kabul)} | >%2={len(veto)}"
     )
     sat.append(
-        f"• Kabul edilen: +%5 %{_oran5(kabul):.1f} | yanlış %{yanlis_oran(kabul):.1f} | "
+        f"• ≤%2 gölge grubu: +%5 %{_oran5(kabul):.1f} | yanlış %{yanlis_oran(kabul):.1f} | "
         f"ort. tepe %{_ortalama(kabul, 'max_getiri'):+.2f}"
     )
     sat.append(
-        f"• Telegram'dan elenen: +%5 %{_oran5(veto):.1f} | yanlış %{yanlis_oran(veto):.1f} | "
+        f"• >%2 gölge grubu: +%5 %{_oran5(veto):.1f} | yanlış %{yanlis_oran(veto):.1f} | "
         f"ort. tepe %{_ortalama(veto, 'max_getiri'):+.2f}"
     )
-    sat.append("• Elenenler mesajlanmaz; gölgede izlenerek kaçan kazanan sayısı ölçülür.")
+    sat.append("• İki grup da Telegram'a açıktır; kural yalnız karşılaştırma amacıyla ölçülür.")
+    return sat
+
+
+def _haftalik_guc_golge_rapor_satirlari(tamam):
+    """ADX + Genel/Devam haftalık bulgusunu canlı kapıya dokunmadan ölçer."""
+    v31 = [
+        x for x in tamam
+        if str(x.get("kod_surumu", "")) == "V31"
+        and "haftalik_golge_birlesik_ok" in x
+        and str(x.get("mesaj_kapisi", "")) != "dusen_piyasa_firsati"
+    ]
+    adx_gecen = [x for x in v31 if x.get("haftalik_golge_adx_ok")]
+    adx_diger = [x for x in v31 if not x.get("haftalik_golge_adx_ok")]
+    guc_gecen = [x for x in v31 if x.get("haftalik_golge_guc_ok")]
+    guc_diger = [x for x in v31 if not x.get("haftalik_golge_guc_ok")]
+    birlesik = [x for x in v31 if x.get("haftalik_golge_birlesik_ok")]
+    birlesik_diger = [x for x in v31 if not x.get("haftalik_golge_birlesik_ok")]
+
+    sat = ["", "🧪 V31 ADX + GENEL/DEVAM GÖLGE TEYİDİ"]
+    if not v31:
+        sat.append("• Yeni V31 gözlemleri tamamlandığında geçen/geçmeyen başarı karşılaştırılacak.")
+        return sat
+    sat.append(
+        f"• ADX ≥{HAFTALIK_GOLGE_ADX_ESIK:.2f}: n={len(adx_gecen)} | +%5 %{_oran5(adx_gecen):.1f} | "
+        f"altı n={len(adx_diger)} | +%5 %{_oran5(adx_diger):.1f}"
+    )
+    sat.append(
+        f"• Genel ≥{HAFTALIK_GOLGE_GENEL_ESIK:.2f} veya Devam ≥{HAFTALIK_GOLGE_DEVAM_ESIK:.2f}: "
+        f"n={len(guc_gecen)} | +%5 %{_oran5(guc_gecen):.1f} | diğer n={len(guc_diger)} | "
+        f"+%5 %{_oran5(guc_diger):.1f}"
+    )
+    sat.append(
+        f"• İkisi birlikte: n={len(birlesik)} | +%5 %{_oran5(birlesik):.1f} | "
+        f"geçmeyen n={len(birlesik_diger)} | +%5 %{_oran5(birlesik_diger):.1f}"
+    )
+    sat.append("• Yalnız gölge ölçümdür; canlı AL puanı, kapıları ve Düşen Piyasa Fırsatı değişmez.")
     return sat
 
 
@@ -1977,6 +2025,7 @@ def kesif_raporu_gerekirse_gonder():
     sat.extend(_kisa_neden_performans_satirlari(mesajlanan))
     sat.extend(_gec_kalma_rapor_satirlari(mesajlanan, mesajlanan_golge))
     sat.extend(_gec_kalma_canli_sonuc_satirlari(tamam))
+    sat.extend(_haftalik_guc_golge_rapor_satirlari(tamam))
     sat.extend(_erken_5dk_rapor_satirlari(tamam))
 
     v31_kayitlari = [x for x in tamam if str(x.get("kod_surumu", "")) == "V31"]
@@ -3212,6 +3261,9 @@ def al_ogrenme_baslat(aday, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris):
         "coin_piyasa_60": round(float(aday.get("coin_piyasa_60", 0) or 0), 3),
         "rel60_birlesik_uygun": bool(aday.get("kod_oneri_rel60_uygun")),
         "rel60_birlesik_bonus": float(aday.get("kod_oneri_rel60_bonus", 0) or 0),
+        "haftalik_golge_adx_ok": bool(aday.get("haftalik_golge_adx_ok")),
+        "haftalik_golge_guc_ok": bool(aday.get("haftalik_golge_guc_ok")),
+        "haftalik_golge_birlesik_ok": bool(aday.get("haftalik_golge_birlesik_ok")),
         "v12_kurtarma": bool(aday.get("v12_kurtarma")),
         "v12_kurtarma_ilk_fiyat": float(aday.get("v12_kurtarma_ilk_fiyat", 0) or 0),
         "v12_kurtarma_5dk_getiri": float(aday.get("v12_kurtarma_5dk_getiri", 0) or 0),
@@ -4509,6 +4561,18 @@ def kod_onerisi_kalite_katmani(aday, piyasa_medyan3=0.0):
     )
     rel60_bonus = REL60_BIRLESIK_BONUS if rel60_uygun else 0.0
 
+    # V31.3 haftalık bulgusu yalnız ölçülür. Canlı kalite puanına eklenmez,
+    # H kararını ve Telegram kapılarını değiştirmez. Genel/Devam aynı aile
+    # kabul edildiği için OR ile tek teyit olarak saklanır.
+    teknik = aday.get("teknik") or {}
+    adx = float(teknik.get("adx", 0) or 0)
+    haftalik_adx_ok = adx >= HAFTALIK_GOLGE_ADX_ESIK
+    haftalik_guc_ok = (
+        ai >= HAFTALIK_GOLGE_GENEL_ESIK
+        or devam >= HAFTALIK_GOLGE_DEVAM_ESIK
+    )
+    haftalik_birlesik_ok = haftalik_adx_ok and haftalik_guc_ok
+
     kalite = round(max(0.0, min(100.0,
         d3_puan + d5_puan + genel_puan + momentum_puan + kal_puan
         + birlesik_momentum_bonus + genel_bonus + lider_d3_bonus + rel60_bonus
@@ -4533,6 +4597,9 @@ def kod_onerisi_kalite_katmani(aday, piyasa_medyan3=0.0):
     aday["kod_oneri_lider_d3_bonus"] = lider_d3_bonus
     aday["kod_oneri_rel60_uygun"] = rel60_uygun
     aday["kod_oneri_rel60_bonus"] = rel60_bonus
+    aday["haftalik_golge_adx_ok"] = haftalik_adx_ok
+    aday["haftalik_golge_guc_ok"] = haftalik_guc_ok
+    aday["haftalik_golge_birlesik_ok"] = haftalik_birlesik_ok
     aday["kod_oneri_kalite"] = kalite
     aday["kod_oneri_kalite_etiket"] = kalite_etiket
 
@@ -6669,8 +6736,8 @@ while True:
                     al_karar_izi(symbol, "telegram", "GELMEDİ", neden=f"karar={karar}")
                     continue
 
-                # V31 canlı geç-kalma koruması: aday ilk teknik gözlemden sonra
-                # %2'den fazla yükseldiyse AL mesajı gönderme; gölge takibi sürsün.
+                # V31 geç-kalma ölçümü: %2 bandını rapor için kaydet.
+                # Sonuç canlı Telegram AL mesajını artık engellemez.
                 gec_kalma_kabul, gec_kalma_getiri, gec_kalma_neden = gec_kalma_canli_kontrolu(a)
                 if not gec_kalma_kabul:
                     al_karar_izi(
@@ -6680,9 +6747,7 @@ while True:
                     )
                     continue
 
-                # Geç-kalma vetosundan dönen aday aynı AL durumunda kalsa bile
-                # sonraki taramada yeniden ölçülebilsin. Eşik altına geri çekilirse
-                # geçerli yeni AL olarak gönderilebilir.
+                # Gölge ölçümünden sonra normal Telegram akışı devam eder.
                 son_ai_kararlar[symbol] = karar
 
                 # Aynı AL kararını tekrar gönderme.
@@ -6716,7 +6781,7 @@ while True:
                     neden_saglanan = a.get("neden_saglanan", [])
                     # Sayı tüm 10 ölçütü kapsar; metinde yalnızca en çok üç ana uygun neden gösterilir.
                     oncelik = [
-                        "Trend çok güçlü", "Momentum hızlanıyor", "Hacim hızlanıyor",
+                        "Momentum hızlanıyor", "Hacim hızlanıyor",
                         "BTC farkı açılıyor", "Lider güçleniyor", "Basamaklı trend korunuyor",
                     ]
                     gorunen_nedenler = [n for n in oncelik if n in neden_saglanan][:3]
@@ -6773,13 +6838,25 @@ while True:
                         )
                     d3 = float(mikro.get("d3", 0) or 0)
                     d5 = float(mikro.get("d5", 0) or 0)
+                    adx_degeri = float(teknik.get("adx", 0) or 0)
+                    trend_gucu_etiketi = (
+                        "Çok Güçlü" if adx_degeri >= HAFTALIK_GOLGE_ADX_ESIK
+                        else "Güçlü" if adx_degeri >= 25.0
+                        else "Orta" if adx_degeri >= 20.0
+                        else "Zayıf"
+                    )
+                    guc_ozet_satir = (
+                        f"Trend Gücü: {trend_gucu_etiketi} (ADX {adx_degeri:.1f})\n"
+                        f"Genel Güç: {float(a.get('ai_skoru', 0) or 0):.0f}/100 | "
+                        f"Devam Gücü: {float(a.get('devam_gucu', 0) or 0):.0f}/100\n"
+                    )
                     rel60_satir = (
                         (
                             f"Piyasa {'çok zayıf' if a.get('dusen_piyasa_rejimi') == 'Çok Zayıf' else 'zayıf'}; "
                             "coin piyasadan güçlü ayrışıyor.\n"
                             "3dk/5dk tepki teyitli ✅\n"
                             "60dk Göreceli Güç: Çok Güçlü\n"
-                            "Not: Ana trend aşağı; yalnız kısa tepki adayıdır.\n"
+                            "Not: Genel piyasa trendi aşağı; yalnız kısa tepki adayıdır.\n"
                         )
                         if a.get("mesaj_kapisi") == "dusen_piyasa_firsati"
                         else "60dk Göreceli Güç: Güçlü\n"
@@ -6791,6 +6868,7 @@ while True:
                         f"{sira_prefix} {gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 AL{onceki_5_etiket}\n"
                         f"💰 Fiyat: {round(a['fiyat'], 4)}\n"
                         f"{neden_satir}\n"
+                        + guc_ozet_satir
                         + (" • ".join(gorunen_nedenler) + "\n" if gorunen_nedenler else "")
                         + v_donus_satir
                         + rel60_satir
