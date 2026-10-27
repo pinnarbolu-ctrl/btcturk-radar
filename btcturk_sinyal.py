@@ -33,6 +33,8 @@
 # Fırsatı mesajı gönderir; +%2/+%3/+%5 sonucu normal V31'den ayrı raporlanır.
 # V31.3: ADX + Genel Güç/Devam haftalık bulgusu yalnız gölgede sınanır;
 # canlı AL puanını veya kapılarını değiştirmez, sonuçları 3 günlük raporda ayrılır.
+# V31.4: Kod Genel Güç ≥63.70 tüm rejimlerde tek +5 kalite desteğidir.
+# Hacim hızlanması bilgi/neden olarak kalır fakat Önemli neden 3/5'e sayılmaz.
 # Taban: main (21).py
 # Teknik radar + 1-3-5-10 dk erken yakalama
 # Giris/Devam skorları sadece bilgi, AL için veto DEGIL
@@ -112,7 +114,7 @@ def al_karar_izi(symbol, asama, sonuc, **m):
 
 # V52+ KOD ÖNERİ KALİTESİ
 # Rapor bulguları seçicilik/öncelik puanına eklenir; tekil eşikler sert veto değildir.
-# Genel Güç ve Kalıcılık bandı eşikleri yalnız Güçlü piyasa rejiminde bonus verir.
+# Kod Genel Güç tüm rejimlerde tek bonus; eski güçlü-rejim eşiği yalnız rapor referansıdır.
 KOD_ONERI_KALITE_MIN = 76.0
 KOD_ONERI_D3_ESIK = 0.31
 KOD_ONERI_D5_ESIK = 0.32
@@ -120,6 +122,7 @@ KOD_ONERI_D5_ESIK = 0.32
 # Böylece rapor önerisi mesajları bir anda aşırı çoğaltmaz.
 KOD_ONERI_D5_TAM_PUAN_ESIK = 0.50
 KOD_ONERI_MOMENTUM_ESIK = 55.87
+KOD_ONERI_GENEL_ESIK_TUM = 63.70
 KOD_ONERI_GENEL_ESIK_GUCLU = 65.50
 # Yalnız raporlama için korunur; artık kalite puanı/bonusu üretmez.
 KOD_ONERI_KALICILIK_BANT_ESIK = 100.0
@@ -2361,6 +2364,11 @@ def kesif_raporu_gerekirse_gonder():
     _esik_karsilastir("5dk momentum ≥0.32 [V22 bonus eşiği]", [x for x in tamam if float(x.get("d5",0) or 0) >= 0.32], [x for x in tamam if float(x.get("d5",0) or 0) < 0.32])
     _esik_karsilastir("5dk momentum ≥0.50 [eski referans]", [x for x in tamam if float(x.get("d5",0) or 0) >= 0.50], [x for x in tamam if float(x.get("d5",0) or 0) < 0.50])
     _esik_karsilastir("Genel Güç/Momentum Bloğu ≥55.87 [tüm rejimler]", [x for x in tamam if x.get("kod_momentum_esik_uygun")], [x for x in tamam if not x.get("kod_momentum_esik_uygun")])
+    _esik_karsilastir(
+        f"Kod Genel Güç ≥{KOD_ONERI_GENEL_ESIK_TUM:.2f} [tüm rejimler, +5 destek]",
+        [x for x in tamam if float(x.get("kod_genel", 0) or 0) >= KOD_ONERI_GENEL_ESIK_TUM],
+        [x for x in tamam if float(x.get("kod_genel", 0) or 0) < KOD_ONERI_GENEL_ESIK_TUM],
+    )
     _guclu_tamam = [x for x in tamam if x.get("piyasa_rejim") == "Güçlü"]
     _esik_karsilastir("Genel Güç ≥65.50 [yalnız güçlü rejim]", [x for x in _guclu_tamam if x.get("kod_genel_esik_guclu_uygun")], [x for x in _guclu_tamam if not x.get("kod_genel_esik_guclu_uygun")])
     _esik_karsilastir("Kalıcılık bandı =100 [yalnız güçlü rejim]", [x for x in _guclu_tamam if x.get("kod_kal_bant_guclu_uygun")], [x for x in _guclu_tamam if not x.get("kod_kal_bant_guclu_uygun")])
@@ -4525,9 +4533,10 @@ def kod_onerisi_kalite_katmani(aday, piyasa_medyan3=0.0):
     else:
         kal_puan = 7.5
 
-    # Raporun 55.87 / 65.50 eşikleri bonus verir, tek başına veto etmez.
+    # Momentum ve tüm-rejim Genel Güç eşikleri destek verir, tek başına veto etmez.
+    # Genel Güç bonusu rejimlere göre üst üste bindirilmez; en fazla tek +5'tir.
     momentum_bonus = 5.0 if momentum_kalite >= KOD_ONERI_MOMENTUM_ESIK else 0.0
-    genel_bonus = 5.0 if rejim == "Güçlü" and genel_guc >= KOD_ONERI_GENEL_ESIK_GUCLU else 0.0
+    genel_bonus = 5.0 if genel_guc >= KOD_ONERI_GENEL_ESIK_TUM else 0.0
     kalicilik_bonus = 0.0
 
     # BTC farkı + kısa momentum tek bir birleşik bonus olarak uygulanır.
@@ -4628,7 +4637,8 @@ def kod_onerisi_kalite_katmani(aday, piyasa_medyan3=0.0):
             teyitler.append("BTC farkı ≥3.08 + kısa momentum" + radar_ek)
         elif momentum_bonus:
             teyitler.append("Genel Güç/Momentum Kalitesi ≥55.87")
-        if genel_bonus: teyitler.append("Güçlü rejimde Genel Güç ≥65.50")
+        if genel_bonus:
+            teyitler.append(f"Kod Genel Güç ≥{KOD_ONERI_GENEL_ESIK_TUM:.2f}")
         if lider_d3_bonus: teyitler.append("Lider güçleniyor + 3dk momentum")
         if rel60_bonus:
             teyitler.append(
@@ -4644,7 +4654,7 @@ def kod_onerisi_kalite_katmani(aday, piyasa_medyan3=0.0):
 
 
 def neden_kontrolu(aday):
-    """Telegram AL nedenlerini 10 ölçütte sayar; 5 ana ölçütten en az 3'ü şarttır."""
+    """Telegram AL nedenlerini 10 ölçütte sayar; hacim dışı 5 ana ölçütten 3'ü şarttır."""
     teknik = aday.get("teknik") or {}
     mikro = aday.get("mikro") or {}
     try:
@@ -4670,7 +4680,14 @@ def neden_kontrolu(aday):
         (ema20 > ema50 and fiyat > ema20, "EMA trendi yukarı"),
         (macd_hist > 0, "MACD pozitif"),
     ]
-    ana_sayi = sum(1 for ok, _ in checks[:5] if ok)
+    # Hacim hızlanması son raporlarda ayırıcı çıkmadı. Mesajda ve 10 neden
+    # toplamında kalır; ana 5 artık trend, momentum, BTC farkı, liderlik ve
+    # basamaklı trenddir.
+    ana_etiketler = {
+        "Trend çok güçlü", "Momentum hızlanıyor", "BTC farkı açılıyor",
+        "Lider güçleniyor", "Basamaklı trend korunuyor",
+    }
+    ana_sayi = sum(1 for ok, ad in checks if ok and ad in ana_etiketler)
     saglanan = [ad for ok, ad in checks if ok]
     aday["neden_saglanan"] = saglanan
     aday["neden_sayi"] = len(saglanan)
